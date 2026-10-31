@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.idea/
+.vscode/
+.impeccable/
+.env
+.env.*
+*.log
+*.zip
+conf.json
+tests/artifacts/
+.DS_Store
+Thumbs.db

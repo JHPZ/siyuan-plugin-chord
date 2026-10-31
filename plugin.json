@@ -1,0 +1,42 @@
+{
+  "name": "siyuan-plugin-chord",
+  "author": "SSZM",
+  "url": "",
+  "version": "0.7.0",
+  "minAppVersion": "3.8.9",
+  "kernels": [
+    "all"
+  ],
+  "backends": [
+    "all"
+  ],
+  "frontends": [
+    "desktop",
+    "desktop-window",
+    "browser-desktop"
+  ],
+  "disabledInPublish": true,
+  "displayName": {
+    "default": "Chord",
+    "zh-CN": "和弦"
+  },
+  "description": {
+    "default": "Write together in SiYuan: shared presence, pointers and selections, block edit locks, and personal undo.",
+    "zh-CN": "一起写，也各自从容。看见彼此的阅读与选区，以块为界协作编辑，撤销自己的那一步。"
+  },
+  "readme": {
+    "default": "README.en.md",
+    "zh-CN": "README.md"
+  },
+  "icon": "icon.png",
+  "preview": "preview.png",
+  "keywords": [
+    "协作",
+    "多人编辑",
+    "块锁",
+    "个人撤销",
+    "collaboration",
+    "presence",
+    "undo"
+  ]
+}
