@@ -1,6 +1,6 @@
 # 开发和弦
 
-读代码时，可以先分清两件事：哪些状态属于所有窗口，哪些事情只能由当前窗口决定。和弦沿着这条线组织实现。
+和弦分为内核和前端两部分：内核维护所有窗口共享的协作状态，前端处理本窗口的交互与显示。个人撤销记录也保存在前端。可以从 `kernel.js` 的 RPC 绑定和 `index.js` 的加载入口开始读。
 
 ## 项目结构
 
@@ -12,7 +12,7 @@ siyuan-plugin-chord/
 ├─ plugin.json               思源插件身份与兼容范围
 ├─ package.json              开发命令与发布文件白名单
 ├─ i18n/                     中文、英文提示
-├─ icon.png / preview.png    插件资料
+├─ icon.png                  插件图标
 ├─ docs/                     使用、开发、发布与素材说明
 ├─ scripts/                  仓库检查与 Windows 打包工具
 ├─ tests/                    模拟内核和真实浏览器回归
@@ -21,7 +21,7 @@ siyuan-plugin-chord/
 
 ## 开发环境
 
-需要 Node.js 22 或以上；本次整理实际使用 Node.js 24。运行时没有第三方依赖，不需要 `npm install` 或编译。插件本身仍由思源加载，不是独立 Node 服务。
+需要 Node.js 22 或以上。运行时没有第三方依赖，不需要 `npm install` 或编译。插件本身仍由思源加载，不是独立 Node 服务。
 
 打包脚本使用 Node.js 与 Windows 自带的 `tar.exe`，不修改 PowerShell 执行策略。其他系统可运行 JavaScript 测试，但本仓库暂未提供其打包入口。
 

@@ -25,7 +25,7 @@ for (const file of pkg.files) {
     assert.ok(fs.lstatSync(path.join(root, file)).isFile(), file);
 }
 for (const file of ['index.js', 'kernel.js', 'index.css', 'plugin.json', 'package.json', 'LICENSE',
-    'i18n/en.json', 'i18n/zh-CN.json', manifest.icon, manifest.preview, ...Object.values(manifest.readme)]) {
+    'i18n/en.json', 'i18n/zh-CN.json', manifest.icon, ...Object.values(manifest.readme)]) {
     assert.ok(pkg.files.includes(file), 'Missing release resource: ' + file);
 }
 for (const file of ['index.js', 'kernel.js']) new vm.Script(read(file), { filename: file });
@@ -36,7 +36,7 @@ for (const key of Object.keys(en)) {
     const slots = (text) => [...text.matchAll(/\$\{[^}]+\}/g)].map((match) => match[0]).sort();
     assert.deepEqual(slots(en[key]), slots(zh[key]), 'Translation placeholders differ: ' + key);
 }
-for (const [file, width, height, limit] of [['icon.png', 160, 160, 64 * 1024], ['preview.png', 1024, 768, 512 * 1024]]) {
+for (const [file, width, height, limit] of [['icon.png', 160, 160, 64 * 1024]]) {
     const bytes = fs.readFileSync(path.join(root, file));
     assert.equal(bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', file);
     assert.equal(bytes.readUInt32BE(16), width, file);assert.equal(bytes.readUInt32BE(20), height, file);

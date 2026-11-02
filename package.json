@@ -1,8 +1,8 @@
 {
   "name": "siyuan-plugin-chord",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Chord · 和弦 — shared presence, block edit locks and personal undo for SiYuan.",
+  "description": "Chord · 和弦 — 加强思源的多人编辑能力",
   "author": "SSZM",
   "main": "index.js",
   "license": "MIT",
@@ -16,9 +16,10 @@
   "engines": { "node": ">=22" },
   "files": [
     "index.js", "kernel.js", "index.css", "plugin.json", "package.json",
-    "i18n/en.json", "i18n/zh-CN.json", "icon.png", "preview.png",
-    "README.md", "README.en.md", "LICENSE", "NOTICE.md", "CHANGELOG.md", "CONTRIBUTING.md",
+    "i18n/en.json", "i18n/zh-CN.json", "icon.png",
+    "README.md", "README.en.md", "LICENSE", "CHANGELOG.md",
     "docs/guide.md", "docs/development.md", "docs/releasing.md",
-    "docs/assets/README.md", "docs/assets/chord.svg", "docs/assets/preview.svg"
+    "docs/assets/README.md", "docs/assets/chord-icon.png",
+    "docs/assets/chord-cover.webp", "docs/assets/chord-poster.png"
   ]
 }
