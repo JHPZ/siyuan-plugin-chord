@@ -44,6 +44,7 @@ npm run build
 | `presenceLeave(sessionId, generation)` / `getStatus()` | 注销 / 在线状态 |
 | `cursorUpdate(sessionId, generation, sequence, cursor)` | 指针锚点或 null |
 | `selectionUpdate(sessionId, generation, sequence, selection)` | 文本选区或 null |
+| `editingUpdate(sessionId, generation, sequence, editing)` | 当前聚焦的文档 ID、块 ID 或 null，无排他性 |
 | `cursorSnapshot()` / `setCursorTick(tick)` | 展示快照 / 共享频率 |
 
 广播仅有 `presence-changed` 和 `cursor-changed`。不传选中的正文，会话密钥不出现在公共快照。参数必须验证 ID、类型、代次、序号和范围。

@@ -217,12 +217,69 @@ async function test(name, run) {
                     if(offline)throw Error('Offline');
                     if(name==='presenceHeartbeat')return {count:1,clients:[{name:'A',hue:120,documentId:'20261030165150-doc0001'}],self:{name:'A',hue:120}};
                     if(name==='cursorSnapshot')return {tick:10,cursors:[],selections:[]};
-                    if(['cursorUpdate','selectionUpdate','presenceLeave'].includes(name))return true;
+                    if(['cursorUpdate','selectionUpdate','editingUpdate','presenceLeave'].includes(name))return true;
                     throw Error('Unexpected RPC '+name);
                 }})}}});
         const input=cursorTextRoot(block), original=input.innerHTML;
         try {
             await plugin.onload();await plugin.onLayoutReady();
+            await test('编辑框合并同块多人，随滚动裁剪，缺失块不显示且不改正文', async () => {
+                await expose(block,10);select(block,10);
+                const editing=captureEditing(), before=block.outerHTML;
+                assert(editing?.blockId===block.dataset.nodeId,'focused caret not captured');
+                const activity={name:'<b>Bob</b>',hue:210,editing};
+                plugin.clients.push({name:activity.name});
+                plugin.updateCursors({tick:10,cursors:[],editing:[{name:'A',hue:120,editing},activity]});
+                await frame();
+                let markers=document.querySelectorAll('.collab-editing');
+                assert(markers.length===1 && markers[0].textContent==='A、<b>Bob</b> 正在编辑','same-block participants missing');
+                assert(!markers[0].querySelector('b'),'name interpreted as HTML');
+                assert(getComputedStyle(markers[0]).pointerEvents==='none','editing frame intercepts input');
+                assert(block.outerHTML===before,'frame rewrote block');
+                const clip=scroller.getBoundingClientRect(), rect=markers[0].getBoundingClientRect();
+                assert(rect.top>=clip.top && rect.bottom<=clip.bottom+1,'frame outside scroll viewport');
+                scroller.scrollTop+=32;plugin.renderEditing();
+                assert(markers[0].getBoundingClientRect().bottom<=clip.bottom+1,'frame did not follow scroll');
+                scroller.scrollTop=0;await frame();
+                const walker=document.createTreeWalker(cursorTextRoot(block),4), texts=[];let node;
+                while((node=walker.nextNode()))texts.push([node,node.textContent]);
+                const originalHeight=markers[0].getBoundingClientRect().height;
+                try {
+                    for(const [text] of texts)text.textContent='x';await frame();
+                    assert(markers[0].getBoundingClientRect().height!==originalHeight,'text-only resize did not update frame');
+                } finally {for(const [text,value] of texts)text.textContent=value;await frame();}
+                block.classList.add('fn__none');await frame();
+                assert(!document.querySelector('.collab-editing'),'hidden block retained frame');
+                block.classList.remove('fn__none');await frame();
+                const saved=editing.documentId;
+                plugin.updateCursors({tick:10,cursors:[],editing:[{...activity,editing:{...editing,documentId:'20261030165150-other01'}}]});await frame();
+                assert(!document.querySelector('.collab-editing'),'other document framed');
+                plugin.updateCursors({tick:10,cursors:[],editing:[{...activity,editing:{...editing,blockId:'20261030165150-missing'}}]});await frame();
+                assert(!document.querySelector('.collab-editing'),'missing block framed');
+                plugin.updateCursors({tick:10,cursors:[],editing:[activity]});await frame();
+                plugin.presenceReceivedAt=Date.now()-PRESENCE_TIMEOUT;plugin.renderEditing();
+                assert(!document.querySelector('.collab-editing'),'expired activity framed');
+                await plugin.refreshInBackground();
+                plugin.updateCursors({tick:10,cursors:[],editing:[]});
+                assert(saved===editing.documentId && block.outerHTML===before,'rendering modified activity or note');
+            });
+            await test('编辑状态只读焦点，切块与离开编辑区清空，发送失败可重试', async () => {
+                const sent=[], realUpdate=plugin.kernel.rpc.call;
+                let fail=true;
+                plugin.kernel.rpc.call={editingUpdate:async(...args)=>{if(fail)throw Error('offline');sent.push(args);}};
+                try {
+                    select(block,10);plugin.lastEditingSignature='null';await plugin.sendEditing();
+                    fail=false;await plugin.sendEditing();await plugin.sendEditing();
+                    assert(sent.length===1 && sent[0][3].blockId===block.dataset.nodeId,'failed activity was not retried or deduplicated');
+                    plugin.editingSentAt=Date.now()-10001;await plugin.sendEditing();
+                    assert(sent.length===2,'unchanged activity not renewed');
+                    const nested=document.querySelector('[data-node-id="20261030165150-para002"]');select(nested,2);
+                    await plugin.sendEditing();assert(sent.at(-1)[3].blockId===nested.dataset.nodeId,'block switch not reported');
+                    const outside=document.createElement('input');document.body.append(outside);outside.focus();
+                    assert(captureEditing()===null,'stale editor selection reported while typing outside');
+                    await plugin.sendEditing();assert(sent.at(-1)[3]===null,'leaving editor did not clear');outside.remove();
+                } finally {plugin.kernel.rpc.call=realUpdate;}
+            });
             for(const disconnected of [false,true]) {
                 offline=disconnected;await plugin.refreshInBackground();await plugin.loadCursors();
                 await expose(block,10);select(block,10);

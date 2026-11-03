@@ -34,15 +34,27 @@ function normalizeSelection(value) {
     return { documentId: value.documentId, anchor: { blockId: value.anchor.blockId, offset: value.anchor.offset }, focus: { blockId: value.focus.blockId, offset: value.focus.offset } };
 }
 
+function normalizeEditing(value) {
+    if (value === null) return null;
+    if (!value || ![value.documentId, value.blockId].every((id) => typeof id === 'string' && BLOCK_ID.test(id))) throw new Error("Invalid editing activity");
+    return { documentId: value.documentId, blockId: value.blockId };
+}
+
 function cursorSnapshot() {
     return { tick, cursors: [...sessions.values()].filter((client) => client.cursor && Date.now() - client.lastSeen < SESSION_TIMEOUT)
         .map(({ name, hue, cursor }) => ({ name, hue, cursor })),
         selections: [...sessions.values()].filter((client) => client.selection && Date.now() - client.lastSeen < SESSION_TIMEOUT)
-            .map(({ name, hue, selection }) => ({ name, hue, selection })) };
+            .map(({ name, hue, selection }) => ({ name, hue, selection })),
+        editing: [...sessions.values()].filter((client) => client.editing && Date.now() - client.editingSeen < 30000 && Date.now() - client.lastSeen < SESSION_TIMEOUT)
+            .map(({ name, hue, editing }) => ({ name, hue, editing })) };
 }
 
 async function flushCursors() {
     for (const client of sessions.values()) {
+        if (client.editing && (Date.now() - client.editingSeen >= 30000 || Date.now() - client.lastSeen >= SESSION_TIMEOUT)) {
+            client.editing = null;
+            cursorDirty = true;
+        }
         if (client.cursor && Date.now() - client.lastSeen >= SESSION_TIMEOUT) {
             client.cursor = null;
             cursorDirty = true;
@@ -180,6 +192,20 @@ plugin.lifecycle.onload = async () => {
         client.selection = selection;
         return true;
     }, "Share text selection anchors.");
+    await rpc.bind("editingUpdate", async (id, generation, sequence, value) => {
+        validateSession(id);
+        validateGeneration(generation);
+        if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid editing sequence");
+        const editing = normalizeEditing(value);
+        const client = sessions.get(id);
+        if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
+        if (sequence <= (client.editingSequence || 0)) return false;
+        client.editingSequence = sequence;
+        if (JSON.stringify(client.editing ?? null) !== JSON.stringify(editing)) cursorDirty = true;
+        client.editing = editing;
+        client.editingSeen = Date.now();
+        return true;
+    }, "Share a focused block; never reserve it or restrict editing.");
     await rpc.bind("getStatus", async () => {
         await expireSessions();
         return { name: plugin.name, version: plugin.version, platform: plugin.platform, onlineCount: sessions.size };
@@ -209,6 +235,8 @@ plugin.lifecycle.onload = async () => {
             client.cursorSequence = 0;
             client.selection = null;
             client.selectionSequence = 0;
+            client.editing = null;
+            client.editingSequence = 0;
             cursorDirty = true;
         }
         client.generation = generation;
@@ -216,6 +244,7 @@ plugin.lifecycle.onload = async () => {
             client.documentId = state.documentId;
             if (client.cursor?.surface === "document" && client.cursor.documentId !== client.documentId) { client.cursor = null; cursorDirty = true; }
             if (client.selection && client.selection.documentId !== client.documentId) { client.selection = null; cursorDirty = true; }
+            if (client.editing && client.editing.documentId !== client.documentId) { client.editing = null; cursorDirty = true; }
             changed = true;
         }
         client.lastSeen = Date.now();
@@ -269,5 +298,5 @@ plugin.lifecycle.onunload = async () => {
     clearInterval(sweepTimer);
     clearInterval(cursorTimer);
     sessions.clear();
-    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "setCursorTick"].map((name) => rpc.unbind(name)));
+    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "setCursorTick"].map((name) => rpc.unbind(name)));
 };

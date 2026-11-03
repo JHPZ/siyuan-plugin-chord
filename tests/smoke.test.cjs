@@ -438,6 +438,44 @@ test("text selections share the cursor channel without claiming locks; validate,
     assert.equal((await snapshot()).selections.length,0);
 });
 
+test('editing activity is nonexclusive, validated, ordered and cleared independently of presence', async () => {
+    const kernel=await createKernel(), heartbeat=kernel.methods.get('presenceHeartbeat'), update=kernel.methods.get('editingUpdate');
+    const snapshot=kernel.methods.get('cursorSnapshot'), flushActivity=[...kernel.timers.values()].find(timer=>timer.delay===100).callback;
+    const editing={documentId:'20261030165150-doc0001',blockId:'20261030165150-block01'};
+    for(const id of ['editing-user-one','editing-user-two']) {
+        await heartbeat(id,{generation:1,documentId:editing.documentId});
+        assert.equal(await update(id,1,2,{...editing,secret:'never broadcast'}),true);
+    }
+    await flushActivity();
+    assert.equal((await snapshot()).editing.length,2,'both participants can edit the same block');
+    assert.ok(!JSON.stringify(await snapshot()).includes('secret'));
+    assert.ok(!JSON.stringify(await snapshot()).includes('editing-user'));
+    assert.equal(await update('editing-user-one',1,1,null),false);
+    for(const value of [undefined,{}, {...editing,blockId:'bad'}, {...editing,documentId:123}]) {
+        await assert.rejects(update('editing-user-one',1,3,value),/Invalid editing activity/);
+    }
+    await assert.rejects(update('editing-user-one',1,0,editing),/sequence/);
+    const before=kernel.broadcasts.length;
+    kernel.advance(10000);await update('editing-user-one',1,3,editing);await flushActivity();
+    assert.equal(kernel.broadcasts.length,before,'renewal does not broadcast unchanged activity');
+    kernel.advance(20000);await heartbeat('editing-user-two',{generation:1});await flushActivity();
+    assert.equal((await snapshot()).editing.length,1,'heartbeat alone must not preserve stale editing');
+    await kernel.methods.get('presenceRename')('editing-user-one','Alice',1);
+    assert.equal((await snapshot()).editing[0].name,'Alice');
+    await heartbeat('editing-user-one',{generation:2});
+    assert.equal((await snapshot()).editing.length,0);
+    await assert.rejects(update('editing-user-one',1,4,editing),/superseded/);
+    await update('editing-user-one',2,1,editing);
+    await heartbeat('editing-user-one',{generation:2,documentId:'20261030165150-doc0002'});
+    assert.equal((await snapshot()).editing.length,0);
+    await update('editing-user-one',2,2,editing);await update('editing-user-one',2,3,null);
+    assert.equal((await snapshot()).editing.length,0);
+    await update('editing-user-one',2,4,editing);await kernel.methods.get('presenceLeave')('editing-user-one',2);
+    assert.equal((await snapshot()).editing.length,0);
+    await kernel.plugin.lifecycle.onunload();
+    assert.equal(kernel.methods.size,0);
+});
+
 test("settings form validates and saves the tick rate through the kernel", async () => {
     const kernel = await createKernel();
     const frontend = await createFrontend(kernel);

@@ -15,5 +15,6 @@
   "save": "Save",
   "cancel": "Cancel",
   "connecting": "Connecting",
-  "viewers": "${count} viewers. Show viewer list"
+  "viewers": "${count} viewers. Show viewer list",
+  "editingNames": "${names} editing"
 }

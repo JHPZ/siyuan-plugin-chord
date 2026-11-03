@@ -156,3 +156,20 @@ function resolveSelection(selection) {
     }
     return ranges;
 }
+
+function validEditing(editing) {
+    return editing && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
+}
+
+function captureEditing() {
+    if (document.hidden || !document.hasFocus?.()) return null;
+    const active = document.activeElement;
+    if (!active?.isContentEditable || !active.closest('.protyle-wysiwyg')) return null;
+    const node = document.getSelection()?.focusNode;
+    const element = node?.nodeType === 3 ? node.parentElement : node;
+    const block = element?.closest?.('.protyle-wysiwyg [data-node-id]');
+    if (!block || block.closest('.fn__none') || !active.contains(node)) return null;
+    const editing = { blockId: block.getAttribute('data-node-id'),
+        documentId: block.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') };
+    return validEditing(editing) ? editing : null;
+}

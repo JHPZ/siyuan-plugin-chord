@@ -12,6 +12,7 @@ Chord displays live presence, pointers and text selections in SiYuan. SiYuan han
 
 - See who's online and which document they're reading.
 - See other people's pointers and selected text.
+- See a border and names on focused editing blocks, including multiple people in the same block.
 - Edit directly in SiYuan without requesting block permissions.
 
 More collaboration features may come later. Ideas are welcome.

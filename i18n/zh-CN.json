@@ -15,5 +15,6 @@
   "save": "保存",
   "cancel": "取消",
   "connecting": "连接中",
-  "viewers": "${count} 人正在查看，点击查看名单"
+  "viewers": "${count} 人正在查看，点击查看名单",
+  "editingNames": "${names} 正在编辑"
 }
