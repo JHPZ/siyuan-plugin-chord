@@ -61,31 +61,111 @@ function currentPage(plugin, includeDialog = true) {
     return { kind: 'workspace', title: title || plugin.i18n.pageWorkspace };
 }
 
-function uiAnchor(element) {
-    const root = element.closest('.config__tab-container, .b3-dialog__container, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
-    const path = [];
-    let node = element;
-    while (node && node !== root && path.length < 12) {
-        const parent = node.parentElement;
-        if (!parent) break;
-        path.unshift([...parent.children].indexOf(node));
-        node = parent;
-    }
-    const kind = root.classList.contains('config__tab-container') ? 'settings' : root.classList.contains('b3-dialog__container') ? 'dialog' : root === document.body ? 'body' : root.classList.contains('toolbar') ? 'toolbar' : 'layout';
-    return { kind, path, tag: element.tagName.toLowerCase() };
+function tabPage(head) {
+    let tab, lazy={};
+    try { tab=getAllTabs().find(item=>item.headElement===head); } catch {}
+    try { lazy=JSON.parse(head.getAttribute('data-initdata') || '{}'); } catch {}
+    const title=(tab?.title || textLabel(head.querySelector('.item__text'))).slice(0,160);
+    const id=tab?.model?.editor?.protyle?.block?.rootID || lazy.rootId;
+    if(DOCUMENT_ID.test(id || ''))return {kind:'document',id,title};
+    const path=tab?.model?.path || lazy.path;
+    if(typeof path==='string' && validPage({kind:'asset',path,title}))return {kind:'asset',path,title};
+    const custom=tab?.model?.type || lazy.customModelType;
+    const page={kind:'custom',id:custom,icon:tab?.icon || 'iconPlugin',title};
+    return validPage(page) ? page : {kind:'workspace',title};
 }
 
-function resolveUIAnchor(anchor) {
-    const selectors = { settings:'.config__tab-container:not(.fn__none)', dialog:'.b3-dialog__container', layout:'.layout__wnd--active, [data-type="wnd"]', toolbar:'.toolbar', body:'body' };
-    const roots=[...document.querySelectorAll(selectors[anchor.kind])];
-    if(anchor.kind==='dialog')roots.reverse();
-    for (const root of roots) {
-        if (!visibleElement(root)) continue;
-        let element = root;
-        for (const index of anchor.path) element = element?.children[index];
-        if (element?.tagName.toLowerCase() === anchor.tag && visibleElement(element)) return element;
+function uiClasses(element) {
+    return [...element.classList].filter(name=>!/(?:--(?:focus|active|selected|hover)$|^fn__none$|^ariaLabel$)/.test(name)).sort().join(' ');
+}
+
+function uiFingerprint(element) {
+    const result={tag:element.tagName.toLowerCase(),classes:uiClasses(element)};
+    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-type','data-name','id','data-id']) {
+        const value=element.getAttribute(attribute);
+        if(value && value.length<=512){result.attribute=attribute;result.value=value;break;}
     }
-    return null;
+    result.label=element.getAttribute('aria-label') || element.getAttribute('title') ||
+        (!element.children.length && !element.matches('input,textarea,[contenteditable]') ? textLabel(element):'');
+    result.label=result.label.slice(0,512);
+    return result;
+}
+
+function uiAnchor(hit, plugin) {
+    let element=hit.closest('button,input,select,textarea,[role="button"],.block__icon,.b3-list-item') || hit;
+    const make=(kind,fields={})=>({element,ui:{version:2,kind,path:[],...uiFingerprint(element),...fields}});
+    const head=hit.closest('[data-type="tab-header"]');
+    if(head) {
+        const parts={label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'};
+        const part=Object.keys(parts).find(key=>hit.closest(parts[key]));
+        element=part ? hit.closest(parts[part]):head;
+        return make('tab',{page:tabPage(head),part:part || 'tab'});
+    }
+    const tabControl=hit.closest('.item--readonly [data-type]');
+    if(tabControl){element=tabControl;return make('tab-control',{id:element.getAttribute('data-type')});}
+    const dock=hit.closest('.dock__item[data-type]');
+    if(dock){element=dock;return make('dock',{id:dock.getAttribute('data-type')});}
+    const entry=hit.closest('[data-statusbar-entry], [data-topbar-entry]');
+    if(entry){element=entry;return make('status',{id:entry.getAttribute('data-statusbar-entry') || entry.getAttribute('data-topbar-entry'),attribute:entry.hasAttribute('data-statusbar-entry') ? 'data-statusbar-entry':'data-topbar-entry'});}
+    const setting=hit.closest('.config__side [data-name]');
+    if(setting){element=setting;return make('settings-nav',{id:setting.getAttribute('data-name')});}
+    const identified=hit.closest('[id]');
+    if(identified && !identified.matches('body,.protyle,[data-type="wnd"],.b3-dialog__container,#status,.dock') && !identified.contains(document.querySelector('.config__panel'))) {
+        element=identified;
+        const page=element.closest('.protyle') ? currentPage(plugin):undefined;
+        return make('id',{id:identified.id,...(page ? {page}:{})});
+    }
+    const root=element.closest('.config__tab-container, .b3-dialog__container, .dockPanel, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
+    const page=plugin ? currentPage(plugin):{kind:'workspace',title:''};
+    if(root.classList.contains('config__tab-container'))return make('settings',{page:{...page,kind:'settings',section:root.getAttribute('data-name') || page.section}});
+    if(root.classList.contains('b3-dialog__container'))return make('dialog',{page,key:root.closest('.b3-dialog')?.parentElement?.getAttribute('data-key') || ''});
+    if(root.classList.contains('dockPanel')) {
+        const dockPageValue=dockPage(element);
+        if(dockPageValue)return make('panel',{id:dockPageValue.id});
+    }
+    return make(root===document.body ? 'body':root.classList.contains('toolbar') ? 'toolbar':'layout',{page});
+}
+
+function resolveUIAnchor(anchor, plugin) {
+    // Old child-index anchors cannot identify a control after either window changes layout.
+    if(anchor.version!==2)return null;
+    const visible=items=>[...items].filter(visibleElement);
+    if(anchor.kind==='id') {
+        const element=document.getElementById(anchor.id);
+        if(anchor.page && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
+        return visibleElement(element) ? element:null;
+    }
+    if(anchor.kind==='dock')return visible(document.querySelectorAll('.dock__item[data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
+    if(anchor.kind==='status')return visible(document.querySelectorAll('['+anchor.attribute+']')).find(item=>item.getAttribute(anchor.attribute)===anchor.id) || null;
+    if(anchor.kind==='settings-nav')return visible(document.querySelectorAll('.config__side [data-name]')).find(item=>item.getAttribute('data-name')===anchor.id) || null;
+    if(anchor.kind==='tab-control')return visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
+    if(anchor.kind==='tab') {
+        const heads=visible(document.querySelectorAll('[data-type="tab-header"]')).filter(head=>{
+            const page=tabPage(head);
+            return pageKey(page)===pageKey(anchor.page) && (page.kind!=='workspace' || page.title===anchor.page.title);
+        });
+        if(!heads.length)return null;
+        const head=heads.find(item=>item.closest('.layout__wnd--active')) || heads[0];
+        return anchor.part==='tab' ? head:head.querySelector({label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'}[anchor.part]);
+    }
+    let roots=[];
+    if(anchor.kind==='settings') {
+        roots=visible(document.querySelectorAll('.config__tab-container')).filter(root=>(root.getAttribute('data-name') || document.querySelector('.config__side .b3-list-item--focus')?.getAttribute('data-name'))===anchor.page.section);
+    } else if(anchor.kind==='dialog') {
+        roots=visible(document.querySelectorAll('.b3-dialog__container')).filter(root=>{
+            if(anchor.key)return root.closest('.b3-dialog')?.parentElement?.getAttribute('data-key')===anchor.key;
+            const form={participants:'.collab-people','chord-settings':'.collab-tick-form','chord-name':'.collab-name-form'}[anchor.page?.kind];
+            return form ? !!root.querySelector(form):textLabel(root.querySelector('.b3-dialog__header'))===anchor.page?.title;
+        });
+    } else if(anchor.kind==='panel') {
+        try { const root=getModelByDockType(anchor.id)?.parent?.panelElement;if(visibleElement(root))roots=[root]; } catch {}
+    } else {
+        if(anchor.kind!=='toolbar' && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
+        roots=visible(document.querySelectorAll({layout:'.layout__wnd--active',toolbar:'.toolbar',body:'body'}[anchor.kind]));
+    }
+    const candidates=roots.flatMap(root=>[root,...root.querySelectorAll(anchor.tag)]).filter(element=>element.tagName.toLowerCase()===anchor.tag && visibleElement(element) &&
+        uiClasses(element)===anchor.classes && (!anchor.attribute || element.getAttribute(anchor.attribute)===anchor.value) && uiFingerprint(element).label===anchor.label);
+    return candidates.length===1 ? candidates[0]:null;
 }
 
 function captureShortcut(event) {
@@ -103,7 +183,15 @@ async function openPage(plugin, page) {
     if(page.kind!=='dialog') {
         for(const dialog of [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).reverse()) {
             dialog.querySelector('.b3-dialog__scrim')?.click();
-            if(dialog.isConnected)throw Error('Close the current dialog before following');
+            if(dialog.isConnected) {
+                if(!dialog.closest('[data-dialog-closing="true"]'))throw Error('Close the current dialog before following');
+                await new Promise((resolve,reject)=>{
+                    const observer=new MutationObserver(()=>{if(!dialog.isConnected){observer.disconnect();clearTimeout(timer);resolve();}});
+                    const timer=setTimeout(()=>{observer.disconnect();reject(Error('Dialog did not close'));},1500);
+                    observer.observe(document.body,{childList:true,subtree:true});
+                    if(!dialog.isConnected){observer.disconnect();clearTimeout(timer);resolve();}
+                });
+            }
         }
     }
     if(page.kind==='participants')plugin.openPeople();
@@ -148,19 +236,19 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page};
-    const rect=hit.getBoundingClientRect();
-    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:uiAnchor(hit),
+    if(hit.closest('.protyle-content, .protyle-wysiwyg'))return null;
+    const target=uiAnchor(hit,plugin), rect=target.element.getBoundingClientRect();
+    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
+    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,
         x:rect.width ? Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)) : 0,
         y:rect.height ? Math.max(0,Math.min(1,(point.y-rect.top)/rect.height)) : 0};
 }
 
 function resolveCursor(cursor, plugin) {
-    if (cursor.surface!=='ui') {
-        const point=resolveDocumentCursor(cursor);
-        if (point) return point;
-    } else if (!plugin || pageKey(currentPage(plugin))===pageKey(cursor.page)) {
-        const element=resolveUIAnchor(cursor.ui), rect=element?.getBoundingClientRect();
-        if (rect) return {x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
-    }
-    return cursor.screen ? {x:cursor.screen.x*window.innerWidth,y:cursor.screen.y*window.innerHeight} : null;
+    if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
+    const element=resolveUIAnchor(cursor.ui,plugin),rect=element?.getBoundingClientRect();
+    if(!rect?.width || !rect.height)return null;
+    const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
+    const hit=document.elementFromPoint(point.x,point.y);
+    return hit && element.contains(hit) ? point:null;
 }

@@ -161,7 +161,10 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         setTimeout(callback, delay) { const key = {}; timers.set(key, { callback, delay }); return key; },
         clearTimeout(key) { timers.delete(key); },
         require(name) {
-            assert.equal(name, "siyuan"); return { Plugin, Menu, Setting, showMessage: (...args) => messages.push(args), openTab: async (args) => {
+            assert.equal(name, "siyuan"); return { Plugin, Menu, Setting, Dialog:class {
+                constructor(options){this.options=options;this.element=element('div');const content=element('div');content.className='b3-dialog__content';this.element.append(content);document.body.append(this.element);}
+                destroy(){this.element.remove();this.options.destroyCallback?.();}
+            }, showMessage: (...args) => messages.push(args), openTab: async (args) => {
             opened.push(args);
             await options.beforeOpen?.();
             if (options.openFails) throw new Error("Document unavailable");
@@ -492,6 +495,13 @@ test('UI position and page protocol strips private fields and rejects executable
     const cursor={surface:'ui',documentId:null,blockId:null,page,ui:{kind:'settings',path:[0,2],tag:'button'},screen:{x:.2,y:.3},x:.4,y:.5};
     await update('page-test-user',1,1,cursor);
     assert.equal((await snapshot()).cursors[0].cursor.page.secret,undefined);
+    const ui={version:2,kind:'tab',path:[],tag:'span',part:'label',page:{kind:'document',id:'20261030165150-doc0001',title:'文档',secret:'private'},secret:'private'};
+    await update('page-test-user',1,2,{...cursor,ui});
+    const cleaned=(await snapshot()).cursors[0].cursor.ui;
+    assert.equal(cleaned.page.id,ui.page.id);assert.equal(cleaned.page.secret,undefined);assert.equal(cleaned.secret,undefined);
+    for(const invalid of [{...ui,part:'script'},{...ui,page:{kind:'document',id:'invalid',title:''}},{...ui,attribute:'onclick'},{...ui,kind:'status',id:'counter',attribute:'data-type'}]) {
+        await assert.rejects(update('page-test-user',1,3,{...cursor,ui:invalid}),/Invalid UI cursor/);
+    }
     for(const bad of [{...page,section:'x"] script'}, {...page,kind:'command',command:'syncNow'}, {...page,title:'x'.repeat(161)}, ...['assets/../conf','assets/%2e%2e/conf','assets/..\\conf','assets/%00file','assets/%zz'].map(path=>({kind:'asset',path,title:''}))]){
         await assert.rejects(heartbeat('page-test-user',{generation:1,page:bad}),/Invalid page/);
     }
@@ -817,7 +827,7 @@ test("document events update prefix viewer counts, safe menus and halos, then cl
     assert.equal(count.tagName, "BUTTON");
     assert.equal(count.type, "button");
     assert.equal(count.textContent, "1");
-    assert.equal(count.getAttribute("aria-haspopup"), "menu");
+    assert.equal(count.getAttribute("aria-haspopup"), "dialog");
     assert.ok(count.getAttribute("aria-label").includes("1"));
     assert.equal(rowA.children[0].className, "b3-list-item__toggle");
     assert.equal(rowA.children[1], count);
@@ -875,10 +885,12 @@ test("two frontends receive broadcasts and clean up on unload", async () => {
     const second = await createFrontend(kernel);
     assert.notEqual(first.plugin.sessionId, second.plugin.sessionId);
     assert.equal(first.plugin.onlineCount, 2);
+    assert.equal(first.button.textContent, '2 人在线');
     assert.equal(second.plugin.onlineCount, 2);
     assert.match(first.attrs.get("aria-label"), /2/);
     await second.plugin.onunload();
     assert.equal(first.plugin.onlineCount, 1);
+    assert.equal(first.button.textContent, '1 人在线');
     assert.equal(second.timers.size, 0);
     assert.equal(second.handlers.size, 0);
     assert.equal(second.events.size, 0);

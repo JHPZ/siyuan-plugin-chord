@@ -62,6 +62,15 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (this.layoutStarted || this.stopped) return;
         this.layoutStarted = true;
         this.topBar = this.addTopBar({ icon: "iconEmoji", title: this.i18n.pluginName, position: "right", callback: () => this.openPeople() });
+        this.topBar.classList?.add('collab-online-count');
+        this.topBar.setAttribute('role','button');
+        this.topBar.setAttribute('tabindex','0');
+        this.topBar.setAttribute('aria-haspopup','dialog');
+        this.topBar.setAttribute('aria-expanded','false');
+        this.topBar.addEventListener?.('keydown',event=>{
+            if(event.key==='Enter' || event.key===' '){event.preventDefault();this.openPeople();}
+        });
+        this.renderOnlineCount();
         this.observeLayout();
         // 思源先恢复共享布局；本窗口的记录只能在恢复自己的文档后更新。
         try {
@@ -98,6 +107,12 @@ module.exports = class CollaborationPlugin extends Plugin {
         return this.i18n.onlineCount.replace("${count}", String(count));
     }
 
+    renderOnlineCount() {
+        if(!this.topBar)return;
+        this.topBar.textContent=this.i18n.onlineBadge.replace('${count}',String(this.onlineCount ?? '—'));
+        this.topBar.setAttribute('aria-label',this.onlineCount===null ? this.i18n.kernelFailed : `${this.i18n.pluginName} · ${this.clientName} · ${this.onlineText(this.onlineCount)}`);
+    }
+
     rememberName(name) {
         this.clientName = name;
         try { sessionStorage.setItem(`${this.name}:display-name`, name); } catch {}
@@ -127,7 +142,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.peerId = presence.self.peerId;
             this.rememberName(presence.self.name);
         }
-        this.topBar?.setAttribute("aria-label", `${this.i18n.pluginName} · ${this.clientName} · ${this.onlineText(presence.count)}`);
+        this.renderOnlineCount();
         this.scheduleTreeRender();
         this.renderPeople();
         this.scheduleCursorRender(false);
@@ -160,7 +175,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.onlineCount = null;
                 this.clients = [];
                 this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
-                this.topBar?.setAttribute("aria-label", this.i18n.kernelFailed);
+                this.renderOnlineCount();
                 this.scheduleTreeRender();
                 this.remoteCursors = [];
                 this.remoteSelections = [];
@@ -476,7 +491,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     this.cursorMarkers.set(client.name, marker);
                 }
                 const label=marker.querySelector('span');
-                label.textContent=client.name+(client.cursor.page && pageKey(currentPage(this))!==pageKey(client.cursor.page) ? ' · '+client.cursor.page.title : '');
+                label.textContent=client.name;
                 marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                 marker.style.transitionDuration = animate ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
                 marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
@@ -579,7 +594,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             group.textContent = String(viewers.length);
             const description = this.i18n.viewers.replace("${count}", String(viewers.length));
             group.setAttribute("aria-label", description);
-            group.setAttribute("aria-haspopup", "menu");
+            group.setAttribute("aria-haspopup", "dialog");
             group.title = description;
             for (const type of ["pointerdown", "mousedown", "dblclick", "keydown"]) {
                 group.addEventListener(type, (event) => event.stopPropagation());
@@ -675,7 +690,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.peopleDocument = documentId;
         if (!this.peoplePanel) {
             const panel=document.createElement('section');panel.className='collab-people';
-            panel.setAttribute('role','dialog');panel.setAttribute('aria-label',this.i18n.peopleTitle);
+            const dialog=new Dialog({title:this.i18n.peopleTitle,content:'<div class="b3-dialog__content"></div>',width:'min(440px, calc(100vw - 32px))',destroyCallback:()=>{
+                if(this.peopleDialog===dialog){this.peopleDialog=null;this.closePeople();}
+            }});
+            this.peopleDialog=dialog;
             const header=document.createElement('div');header.className='collab-people__header';
             const title=document.createElement('strong');
             const close=document.createElement('button');close.type='button';close.className='b3-button b3-button--outline';close.textContent=this.i18n.close;
@@ -686,8 +704,9 @@ module.exports = class CollaborationPlugin extends Plugin {
                 const button=document.createElement('button');button.type='button';button.className='b3-button b3-button--outline';button.textContent=label;
                 button.addEventListener('click',()=>{this.closePeople();action();});actions.append(button);
             }
-            panel.append(header,list,actions);document.body.append(panel);
+            panel.append(header,list,actions);dialog.element.querySelector('.b3-dialog__content').append(panel);
             this.peoplePanel=panel;this.peopleRows=new Map();
+            this.topBar?.setAttribute('aria-expanded','true');
             panel.addEventListener('keydown',(event)=>{if(event.key==='Escape'){this.closePeople();this.topBar?.focus?.();}});
             close.focus();
         }
@@ -696,13 +715,15 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     closePeople() {
+        const dialog=this.peopleDialog;this.peopleDialog=null;dialog?.destroy();
         this.peoplePanel?.remove();this.peoplePanel=null;this.peopleRows?.clear();this.peopleEmpty=null;
+        this.topBar?.setAttribute('aria-expanded','false');
         this.scheduleDocumentReport();
     }
 
     renderPeople() {
         if (!this.peoplePanel) return;
-        this.peoplePanel.querySelector('strong').textContent=this.i18n.peopleTitle+' · '+(this.onlineCount ?? '—');
+        this.peoplePanel.querySelector('strong').textContent=this.i18n.onlineBadge.replace('${count}',String(this.onlineCount ?? '—'));
         const list=this.peoplePanel.querySelector('.collab-people__list'), visible=new Set();
         for(const client of this.clients) {
             if(this.peopleDocument && client.documentId!==this.peopleDocument)continue;
@@ -753,7 +774,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
         for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
-        this.peoplePanel?.remove();
+        this.closePeople();
         for(const notice of this.shortcutNotices.values())clearTimeout(notice.timer);
         this.shortcutNotices.clear();
         this.cursorLayer?.remove();

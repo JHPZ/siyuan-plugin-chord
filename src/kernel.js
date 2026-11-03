@@ -13,7 +13,7 @@ const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 function normalizeCursor(value) {
     if (value?.surface === 'ui') {
         if (value.documentId !== null || value.blockId !== null || !validUIAnchor(value.ui) || ![value.x,value.y,value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid UI cursor');
-        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:{kind:value.ui.kind,path:[...value.ui.path],tag:value.ui.tag},screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
+        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:cleanUIAnchor(value.ui),screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
     }
     if (value === null) return null;
     if (!value || !["document", "tree"].includes(value.surface) || typeof value.blockId !== "string" || !BLOCK_ID.test(value.blockId) ||

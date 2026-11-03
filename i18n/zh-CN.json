@@ -1,5 +1,6 @@
 {
   "pluginName": "和弦",
+  "onlineBadge": "${count} 人在线",
   "checkOnline": "在线人员",
   "cursorSettings": "协作显示设置",
   "cursorTick": "同步频率",

@@ -21,6 +21,6 @@ Oh, and if Chord helps you, feel free to buy me a beer 🍻!
 
 Licensed under [MIT](LICENSE).
 
-Click the online indicator to see participants and their current pages. **Follow** opens the selected page once. Pointers also appear in settings, dialogs and sidebars. Choose 3, 10 or 30 updates per second; unchanged activity sends no position packets, while a 20-second online heartbeat remains. Remote shortcut notices show combinations only and never execute them or share clipboard content.
+The top bar displays the online count; click it to open the native participant dialog and see current pages. **Follow** opens the selected page once. Pointers also appear in settings, dialogs and sidebars. Choose 3, 10 or 30 updates per second; unchanged activity sends no position packets, while a 20-second online heartbeat remains. Remote shortcut notices show combinations only and never execute them or share clipboard content.
 
 Action-specific dialogs without a safe public opener fall back to their page. Cross-origin embeds expose only an entry position; operating-system windows are outside the plugin surface.

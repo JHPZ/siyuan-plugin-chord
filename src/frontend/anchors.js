@@ -1,4 +1,4 @@
-const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getModelByDockType, globalCommand } = require("siyuan");
+const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getAllTabs, getModelByDockType, globalCommand } = require("siyuan");
 const PRESENCE_TIMEOUT = 90000;
 const DOCUMENT_ID = /^\d{14}-[a-z0-9]{7}$/;
 const TREE_ROW = '.sy__file li[data-type="navigation-file"][data-node-id]';

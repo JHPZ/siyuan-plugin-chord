@@ -37,8 +37,24 @@ function cleanPage(page) {
     return result;
 }
 function validUIAnchor(value) {
-    return value && ['settings','dialog','layout','toolbar','body'].includes(value.kind) && Array.isArray(value.path) && value.path.length<=12 &&
-        value.path.every((index)=>Number.isSafeInteger(index) && index>=0 && index<=10000) && typeof value.tag==='string' && /^[a-z][a-z0-9-]{0,39}$/.test(value.tag);
+    if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
+    if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
+    if(!['id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
+    for(const field of ['id','key','value','label','classes'])if(value[field]!==undefined && (typeof value[field]!=='string' || value[field].length>512))return false;
+    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.page!==undefined && !validPage(value.page))return false;
+    if(value.kind==='status' && !['data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.kind==='tab')return validPage(value.page) && ['tab','label','icon','close'].includes(value.part);
+    if(['id','dock','tab-control','status','settings-nav','panel'].includes(value.kind))return typeof value.id==='string' && value.id.length>0;
+    return ['settings','layout','body'].includes(value.kind) ? validPage(value.page):true;
+}
+
+function cleanUIAnchor(value) {
+    if(!validUIAnchor(value))throw Error('Invalid UI anchor');
+    const result={kind:value.kind,path:[...value.path],tag:value.tag};
+    for(const key of ['version','id','key','part','attribute','value','label','classes'])if(value[key]!==undefined)result[key]=value[key];
+    if(value.page!==undefined)result.page=cleanPage(value.page);
+    return result;
 }
 function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
@@ -59,7 +75,7 @@ const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 function normalizeCursor(value) {
     if (value?.surface === 'ui') {
         if (value.documentId !== null || value.blockId !== null || !validUIAnchor(value.ui) || ![value.x,value.y,value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid UI cursor');
-        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:{kind:value.ui.kind,path:[...value.ui.path],tag:value.ui.tag},screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
+        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:cleanUIAnchor(value.ui),screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
     }
     if (value === null) return null;
     if (!value || !["document", "tree"].includes(value.surface) || typeof value.blockId !== "string" || !BLOCK_ID.test(value.blockId) ||

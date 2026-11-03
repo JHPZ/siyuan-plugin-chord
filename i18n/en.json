@@ -1,5 +1,6 @@
 {
   "pluginName": "Chord",
+  "onlineBadge": "${count} online",
   "checkOnline": "Participants",
   "cursorSettings": "Collaboration display settings",
   "cursorTick": "Update rate",

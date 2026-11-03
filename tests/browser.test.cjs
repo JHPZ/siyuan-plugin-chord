@@ -36,6 +36,7 @@ class Menu {
     open(position) { this.position=position; }
 }
 const results = [];
+const settleDialog = () => new Promise(resolve=>setTimeout(resolve,60));
 const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 const assert = (value, message) => { if (!value) throw new Error(message); };
 const near = (a,b) => Math.abs(a-b) < 1;
@@ -136,7 +137,7 @@ async function test(name, run) {
     await test('未加载的块和其他文档不会画假光标', async () => {
         assert(resolveDocumentCursor({...window.savedAnchor,blockId:'20261030165150-missing'}) === null,'missing block precisely anchored');
         assert(resolveDocumentCursor({...window.savedAnchor,documentId:'20261030165150-other01'}) === null,'wrong document precisely anchored');
-        assert(resolveCursor({...window.savedAnchor,blockId:'20261030165150-missing'})!==null,'cross-page screen position missing');
+        assert(resolveCursor({...window.savedAnchor,blockId:'20261030165150-missing'})===null,'missing block fell back to screen position');
     });
     await test('视口外或弹窗遮挡时隐藏', async () => {
         await expose(block,150);
@@ -198,6 +199,66 @@ async function test(name, run) {
         document.getSelection().collapseToStart();await sendSelection.call(sender);
         assert(sent.length===2 && sent[1][3]===null,'selection not cleared');
     });
+    await test('正文不同文档、隐藏、遮挡时不回退到窗口位置',async()=>{
+        const point=await expose(block,30),anchor=captureCursor(point);
+        assert(anchor?.surface==='document','editor cursor missing');
+        const root=block.closest('.protyle').querySelector('.protyle-background'),id=root.dataset.nodeId;
+        root.dataset.nodeId='20261030165150-other01';
+        assert(resolveCursor(anchor)===null,'other document displayed cursor');root.dataset.nodeId=id;
+        block.classList.add('fn__none');assert(resolveCursor(anchor)===null,'hidden block displayed cursor');block.classList.remove('fn__none');
+        const cover=document.createElement('div');cover.className='occluder';document.body.append(cover);
+        assert(resolveCursor(anchor)===null,'covered editor displayed cursor');cover.remove();
+    });
+    await test('侧栏、状态栏和顶栏按功能定位，布局改变后命中同一控件',async()=>{
+        const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:180px;background:white;z-index:100';
+        fixture.innerHTML='<div><span class="dock__item" data-type="outline" style="display:inline-block;width:60px;height:40px"><svg width="24" height="24"><rect width="24" height="24"/></svg></span><span class="dock__item" data-type="file" style="display:inline-block;width:50px;height:40px">文档</span></div><div data-statusbar-entry="counter" style="width:140px">字符 12</div><button data-topbar-entry="barSync">同步</button>';
+        document.body.append(fixture);
+        try {
+            for(const selector of ['.dock__item[data-type="outline"]','[data-statusbar-entry="counter"]','[data-topbar-entry="barSync"]']) {
+                const target=fixture.querySelector(selector),r=target.getBoundingClientRect(),p={x:r.left+8,y:r.top+8};
+                const anchor=captureCursor(p);assert(anchor?.surface==='ui'&&validCursor(anchor),'shared control missing');
+                const spacer=document.createElement('div');spacer.style.cssText='display:inline-block;width:160px;height:20px';target.before(spacer);
+                if(target.matches('.dock__item')){target.parentElement.append(target);target.dataset.id='different-local-uuid';}
+                else {target.style.width='220px';target.textContent+=' 999';}
+                const expected=target.getBoundingClientRect(),resolved=resolveCursor(anchor);
+                assert(resolved&&near(resolved.x,expected.left+expected.width*anchor.x)&&near(resolved.y,expected.top+expected.height*anchor.y),'semantic control drift: '+selector);
+                target.remove();assert(resolveCursor(anchor)===null,'missing shared control displayed cursor');spacer.remove();
+            }
+        } finally {fixture.remove();}
+    });
+    await test('标签按文档身份和子控件定位，重排与窗口 UUID 不影响位置',async()=>{
+        const fixture=document.createElement('div');fixture.className='layout__wnd--active';fixture.style.cssText='position:fixed;left:20px;top:20px;width:700px;height:70px;background:white;z-index:100';
+        const heads=['20261030165150-doc0001','20261030165150-other01'].map((id,index)=>{
+            const head=document.createElement('div');head.dataset.type='tab-header';head.dataset.id='source-'+index;head.dataset.initdata=JSON.stringify({rootId:id});head.style.cssText='display:inline-flex;width:240px;height:40px;gap:12px;align-items:center';head.innerHTML='<span class="item__icon">图标</span><span class="item__text">同名文档</span><span class="item__close">关闭</span>';fixture.append(head);return head;
+        });document.body.append(fixture);
+        try {
+            for(const selector of ['.item__text','.item__icon','.item__close']) {
+                const element=heads[0].querySelector(selector),r=element.getBoundingClientRect(),anchor=captureCursor({x:r.left+3,y:r.top+3});
+                assert(anchor?.ui.kind==='tab'&&anchor.ui.page.id==='20261030165150-doc0001','tab identity missing');
+                fixture.prepend(heads[1]);heads[0].dataset.id='receiver-different-uuid';heads[0].style.width='310px';
+                const expected=element.getBoundingClientRect(),resolved=resolveCursor(anchor);
+                assert(resolved&&near(resolved.x,expected.left+expected.width*anchor.x)&&near(resolved.y,expected.top+expected.height*anchor.y),'wrong tab after reorder');
+                heads[0].remove();assert(resolveCursor(anchor)===null,'same title matched wrong document');fixture.append(heads[0]);
+            }
+        } finally {fixture.remove();}
+    });
+    await test('设置分类不依赖当前分类，内容按所在分类且不依赖兄弟节点顺序',async()=>{
+        const fixture=document.createElement('div');fixture.className='config__panel';fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:180px;background:white;z-index:100';
+        fixture.innerHTML='<div class="config__side"><button data-name="editor" class="b3-list-item--focus">编辑器</button><button data-name="appearance">外观</button></div><div class="config__tab-container" data-name="editor"><button class="b3-button">换行</button></div><div class="config__tab-container fn__none" data-name="appearance"><button class="b3-button">颜色</button></div>';
+        document.body.append(fixture);const plugin={i18n:{pageSettings:'设置'},currentDocument:()=>null};
+        const capture=element=>{const r=element.getBoundingClientRect();return captureCursor({x:r.left+5,y:r.top+5},plugin);};
+        try {
+            const nav=fixture.querySelector('[data-name="appearance"]'),anchor=capture(nav);
+            fixture.querySelector('[data-name="editor"]').classList.remove('b3-list-item--focus');nav.classList.add('b3-list-item--focus');
+            assert(resolveCursor(anchor,plugin),'nav did not survive category change');
+            const panel=fixture.querySelector('.config__tab-container[data-name="editor"]'),button=panel.querySelector('button'),content=capture(button);
+            assert(content?.ui.kind==='settings','settings content not scoped');
+            const sibling=document.createElement('button');sibling.textContent='新增';button.before(sibling);
+            const r=button.getBoundingClientRect(),resolved=resolveCursor(content,plugin);
+            assert(resolved&&near(resolved.x,r.left+r.width*content.x),'settings content followed child index');
+            panel.classList.add('fn__none');assert(resolveCursor(content,plugin)===null,'hidden settings section displayed cursor');
+        } finally {fixture.remove();}
+    });
     await test('完整插件在在线和断线时都放行正文编辑、拖拽与原生撤销', async () => {
         const commands=[], messages=[], subscriptions=new Map();
         const navigation={opened:[],commands:[],tab:null,allow:false};
@@ -206,7 +267,11 @@ async function test(name, run) {
             const store=new Map(),sessionStorage={getItem:key=>store.get(key),setItem:(key,value)=>store.set(key,value)};
             const require = () => ({
                 Plugin:class { addCommand(command){commands.push(command);} addTopBar(){return document.createElement('button');} },
-                Menu:class {addItem(){} open(){}}, Setting:class {addItem(){}}, showMessage:message=>messages.push(message),
+                Menu:class {addItem(){} open(){}}, Setting:class {addItem(){}},
+                Dialog:class {
+                    constructor(options){this.options=options;this.element=document.createElement('div');this.element.innerHTML='<div class="b3-dialog"><div class="b3-dialog__scrim"></div><div class="b3-dialog__container" role="dialog"><div class="b3-dialog__header"></div>'+options.content+'</div></div>';this.element.querySelector('.b3-dialog__header').textContent=options.title;document.body.append(this.element);this.element.querySelector('.b3-dialog__scrim').addEventListener('click',()=>this.destroy());}
+                    destroy(){if(!this.element.isConnected||this.element.dataset.dialogClosing)return;this.element.dataset.dialogClosing='true';setTimeout(()=>{this.element.remove();this.options.destroyCallback?.();},30);}
+                }, showMessage:message=>messages.push(message),
                 openTab:options=>{if(!navigation.allow)throw Error('Unexpected navigation');navigation.opened.push(options);},
                 openSetting:()=>{const config=document.querySelector('.config__panel');if(config)config.dataset.opened='true';},
                 getActiveTab:()=>navigation.tab,
@@ -229,7 +294,16 @@ async function test(name, run) {
         const input=cursorTextRoot(block), original=input.innerHTML;
         try {
             await plugin.onload();await plugin.onLayoutReady();
-            await test('设置和任意界面都有光标，跨页面保留窗口位置，快捷键只读显示',async()=>{
+            await test('顶栏直接显示人数，点击后打开原生人员弹窗，退出清理状态',async()=>{
+                assert(plugin.topBar.textContent==='1 人在线','online count is not visible');
+                assert(!plugin.peoplePanel,'people list opened before click');
+                plugin.openPeople();assert(plugin.peoplePanel.closest('[role="dialog"]'),'list is not in native dialog');
+                assert(plugin.topBar.getAttribute('aria-expanded')==='true','open state missing');
+                plugin.peopleDialog.destroy();await settleDialog();assert(!plugin.peoplePanel&&plugin.topBar.getAttribute('aria-expanded')==='false','native close leaked panel');
+                plugin.openPeople();plugin.peoplePanel.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+                assert(!plugin.peoplePanel,'Escape did not close dialog');await settleDialog();
+            });
+            await test('设置控件精确定位，目标缺失隐藏，快捷键只读显示',async()=>{
                 const config=document.createElement('div');config.className='config__panel';
                 config.style.cssText='position:fixed;left:20px;top:20px;width:500px;height:250px;background:white;z-index:100';
                 config.innerHTML='<div class="config__side"><button class="b3-list-item--focus" data-name="editor">编辑器</button><button data-name="appearance">外观</button></div><div class="config__tab-container"><button id="surface-action">示例按钮</button><input type="password"></div>';
@@ -244,7 +318,7 @@ async function test(name, run) {
                     plugin.clients.push({peerId:'peer-bob',name:'Bob',hue:210,documentId:null,page:{kind:'settings',section:'appearance',title:'设置 · 外观'}});
                     plugin.openPeople();
                     const row=plugin.peopleRows.get('peer-bob');assert(row?.querySelector('span').textContent==='设置 · 外观','participant page missing');
-                    row.querySelector('button').click();await frame();
+                    row.querySelector('button').click();await settleDialog();
                     assert(clicked===1&&config.dataset.opened==='true','follow did not open settings section exactly once');
                     assert(!plugin.peoplePanel,'follow did not close list');
                     plugin.clients.push({name:'Bob',hue:210,documentId:null});
@@ -256,16 +330,17 @@ async function test(name, run) {
                     const password=config.querySelector('input');let captured='not called';password.addEventListener('keydown',e=>captured=captureShortcut(e));
                     password.dispatchEvent(new KeyboardEvent('keydown',{key:'c',ctrlKey:true,bubbles:true}));assert(captured===null,'password shortcut shared');
                     config.remove();
-                    const fallback=resolveCursor(anchor,plugin);assert(near(fallback.x,point.x)&&near(fallback.y,point.y),'cross-page viewport position lost');
-                } finally {plugin.closePeople();config.remove();plugin.pendingShortcut=null;}
+                    assert(resolveCursor(anchor,plugin)===null,'missing settings control fell back to viewport');
+                } finally {plugin.closePeople();await settleDialog();config.remove();plugin.pendingShortcut=null;}
             });
             await test('侧栏、搜索和文档只打开一次，弹窗保留原生关闭保护',async()=>{
+                await settleDialog();
                 const dock=document.createElement('button');dock.className='dock__item';dock.dataset.type='outline';dock.setAttribute('aria-label','大纲');
                 document.body.append(dock);let clicks=0;dock.addEventListener('click',()=>{clicks++;dock.classList.add('dock__item--active');});
                 navigation.allow=true;
                 const follow=async page=>{
                     plugin.clients=[{name:'A',hue:120,documentId:null},{peerId:'bob',name:'Bob',hue:210,documentId:null,page}];
-                    plugin.openPeople();plugin.peopleRows.get('bob').querySelector('button').click();await frame();
+                    plugin.openPeople();plugin.peopleRows.get('bob').querySelector('button').click();await settleDialog();
                 };
                 try {
                     for(const [model,kind] of [[{editor:{protyle:{block:{rootID:'20261030165150-doc0001'}}}},'document'],[{path:'assets/example.pdf'},'asset'],[{type:'example-plugin-tab'},'custom']]) {
@@ -290,7 +365,7 @@ async function test(name, run) {
                     await follow({kind:'command',command:'globalSearch',title:'搜索'});
                     assert(navigation.commands.at(-1)==='globalSearch','search route not opened');
                     await follow({kind:'participants',title:'在线人员'});assert(plugin.peoplePanel,'following participant page closed itself');
-                    plugin.closePeople();
+                    plugin.closePeople();await settleDialog();
                 } finally {dock.remove();navigation.allow=false;plugin.surfaceTarget=null;plugin.closePeople();document.querySelector('[data-key="dialog-globalsearch"]')?.remove();}
             });
             await test('弹窗停止冒泡仍能观察快捷键，同源嵌入跟踪坐标并完整清理',async()=>{
@@ -305,7 +380,7 @@ async function test(name, run) {
                     const rect=embedded.getBoundingClientRect();assert(plugin.pointer&&near(plugin.pointer.x,rect.left+20*rect.width/embedded.clientWidth)&&near(plugin.pointer.y,rect.top+30*rect.height/embedded.clientHeight),'iframe pointer not translated; bindings='+plugin.frameListeners.size);
                     embedded.contentDocument.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'v',ctrlKey:true,bubbles:true}));
                     assert(plugin.pendingShortcut==='Ctrl+V','iframe shortcut missing');plugin.pendingShortcut=null;
-                    plugin.openPeople();button.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));assert(!plugin.peoplePanel,'outside click did not dismiss list');
+                    plugin.openPeople();plugin.peopleDialog.element.querySelector('.b3-dialog__scrim').click();await settleDialog();assert(!plugin.peoplePanel,'native scrim did not dismiss list');
                 } finally {embedded.remove();button.remove();plugin.bindFrames();plugin.pendingShortcut=null;}
                 assert(plugin.frameListeners.size===0,'iframe listeners leaked');
             });

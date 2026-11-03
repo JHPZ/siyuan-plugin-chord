@@ -37,14 +37,30 @@ function cleanPage(page) {
     return result;
 }
 function validUIAnchor(value) {
-    return value && ['settings','dialog','layout','toolbar','body'].includes(value.kind) && Array.isArray(value.path) && value.path.length<=12 &&
-        value.path.every((index)=>Number.isSafeInteger(index) && index>=0 && index<=10000) && typeof value.tag==='string' && /^[a-z][a-z0-9-]{0,39}$/.test(value.tag);
+    if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
+    if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
+    if(!['id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
+    for(const field of ['id','key','value','label','classes'])if(value[field]!==undefined && (typeof value[field]!=='string' || value[field].length>512))return false;
+    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.page!==undefined && !validPage(value.page))return false;
+    if(value.kind==='status' && !['data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.kind==='tab')return validPage(value.page) && ['tab','label','icon','close'].includes(value.part);
+    if(['id','dock','tab-control','status','settings-nav','panel'].includes(value.kind))return typeof value.id==='string' && value.id.length>0;
+    return ['settings','layout','body'].includes(value.kind) ? validPage(value.page):true;
+}
+
+function cleanUIAnchor(value) {
+    if(!validUIAnchor(value))throw Error('Invalid UI anchor');
+    const result={kind:value.kind,path:[...value.path],tag:value.tag};
+    for(const key of ['version','id','key','part','attribute','value','label','classes'])if(value[key]!==undefined)result[key]=value[key];
+    if(value.page!==undefined)result.page=cleanPage(value.page);
+    return result;
 }
 function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
 }
 
-const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getModelByDockType, globalCommand } = require("siyuan");
+const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getAllTabs, getModelByDockType, globalCommand } = require("siyuan");
 const PRESENCE_TIMEOUT = 90000;
 const DOCUMENT_ID = /^\d{14}-[a-z0-9]{7}$/;
 const TREE_ROW = '.sy__file li[data-type="navigation-file"][data-node-id]';
@@ -286,31 +302,111 @@ function currentPage(plugin, includeDialog = true) {
     return { kind: 'workspace', title: title || plugin.i18n.pageWorkspace };
 }
 
-function uiAnchor(element) {
-    const root = element.closest('.config__tab-container, .b3-dialog__container, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
-    const path = [];
-    let node = element;
-    while (node && node !== root && path.length < 12) {
-        const parent = node.parentElement;
-        if (!parent) break;
-        path.unshift([...parent.children].indexOf(node));
-        node = parent;
-    }
-    const kind = root.classList.contains('config__tab-container') ? 'settings' : root.classList.contains('b3-dialog__container') ? 'dialog' : root === document.body ? 'body' : root.classList.contains('toolbar') ? 'toolbar' : 'layout';
-    return { kind, path, tag: element.tagName.toLowerCase() };
+function tabPage(head) {
+    let tab, lazy={};
+    try { tab=getAllTabs().find(item=>item.headElement===head); } catch {}
+    try { lazy=JSON.parse(head.getAttribute('data-initdata') || '{}'); } catch {}
+    const title=(tab?.title || textLabel(head.querySelector('.item__text'))).slice(0,160);
+    const id=tab?.model?.editor?.protyle?.block?.rootID || lazy.rootId;
+    if(DOCUMENT_ID.test(id || ''))return {kind:'document',id,title};
+    const path=tab?.model?.path || lazy.path;
+    if(typeof path==='string' && validPage({kind:'asset',path,title}))return {kind:'asset',path,title};
+    const custom=tab?.model?.type || lazy.customModelType;
+    const page={kind:'custom',id:custom,icon:tab?.icon || 'iconPlugin',title};
+    return validPage(page) ? page : {kind:'workspace',title};
 }
 
-function resolveUIAnchor(anchor) {
-    const selectors = { settings:'.config__tab-container:not(.fn__none)', dialog:'.b3-dialog__container', layout:'.layout__wnd--active, [data-type="wnd"]', toolbar:'.toolbar', body:'body' };
-    const roots=[...document.querySelectorAll(selectors[anchor.kind])];
-    if(anchor.kind==='dialog')roots.reverse();
-    for (const root of roots) {
-        if (!visibleElement(root)) continue;
-        let element = root;
-        for (const index of anchor.path) element = element?.children[index];
-        if (element?.tagName.toLowerCase() === anchor.tag && visibleElement(element)) return element;
+function uiClasses(element) {
+    return [...element.classList].filter(name=>!/(?:--(?:focus|active|selected|hover)$|^fn__none$|^ariaLabel$)/.test(name)).sort().join(' ');
+}
+
+function uiFingerprint(element) {
+    const result={tag:element.tagName.toLowerCase(),classes:uiClasses(element)};
+    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-type','data-name','id','data-id']) {
+        const value=element.getAttribute(attribute);
+        if(value && value.length<=512){result.attribute=attribute;result.value=value;break;}
     }
-    return null;
+    result.label=element.getAttribute('aria-label') || element.getAttribute('title') ||
+        (!element.children.length && !element.matches('input,textarea,[contenteditable]') ? textLabel(element):'');
+    result.label=result.label.slice(0,512);
+    return result;
+}
+
+function uiAnchor(hit, plugin) {
+    let element=hit.closest('button,input,select,textarea,[role="button"],.block__icon,.b3-list-item') || hit;
+    const make=(kind,fields={})=>({element,ui:{version:2,kind,path:[],...uiFingerprint(element),...fields}});
+    const head=hit.closest('[data-type="tab-header"]');
+    if(head) {
+        const parts={label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'};
+        const part=Object.keys(parts).find(key=>hit.closest(parts[key]));
+        element=part ? hit.closest(parts[part]):head;
+        return make('tab',{page:tabPage(head),part:part || 'tab'});
+    }
+    const tabControl=hit.closest('.item--readonly [data-type]');
+    if(tabControl){element=tabControl;return make('tab-control',{id:element.getAttribute('data-type')});}
+    const dock=hit.closest('.dock__item[data-type]');
+    if(dock){element=dock;return make('dock',{id:dock.getAttribute('data-type')});}
+    const entry=hit.closest('[data-statusbar-entry], [data-topbar-entry]');
+    if(entry){element=entry;return make('status',{id:entry.getAttribute('data-statusbar-entry') || entry.getAttribute('data-topbar-entry'),attribute:entry.hasAttribute('data-statusbar-entry') ? 'data-statusbar-entry':'data-topbar-entry'});}
+    const setting=hit.closest('.config__side [data-name]');
+    if(setting){element=setting;return make('settings-nav',{id:setting.getAttribute('data-name')});}
+    const identified=hit.closest('[id]');
+    if(identified && !identified.matches('body,.protyle,[data-type="wnd"],.b3-dialog__container,#status,.dock') && !identified.contains(document.querySelector('.config__panel'))) {
+        element=identified;
+        const page=element.closest('.protyle') ? currentPage(plugin):undefined;
+        return make('id',{id:identified.id,...(page ? {page}:{})});
+    }
+    const root=element.closest('.config__tab-container, .b3-dialog__container, .dockPanel, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
+    const page=plugin ? currentPage(plugin):{kind:'workspace',title:''};
+    if(root.classList.contains('config__tab-container'))return make('settings',{page:{...page,kind:'settings',section:root.getAttribute('data-name') || page.section}});
+    if(root.classList.contains('b3-dialog__container'))return make('dialog',{page,key:root.closest('.b3-dialog')?.parentElement?.getAttribute('data-key') || ''});
+    if(root.classList.contains('dockPanel')) {
+        const dockPageValue=dockPage(element);
+        if(dockPageValue)return make('panel',{id:dockPageValue.id});
+    }
+    return make(root===document.body ? 'body':root.classList.contains('toolbar') ? 'toolbar':'layout',{page});
+}
+
+function resolveUIAnchor(anchor, plugin) {
+    // Old child-index anchors cannot identify a control after either window changes layout.
+    if(anchor.version!==2)return null;
+    const visible=items=>[...items].filter(visibleElement);
+    if(anchor.kind==='id') {
+        const element=document.getElementById(anchor.id);
+        if(anchor.page && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
+        return visibleElement(element) ? element:null;
+    }
+    if(anchor.kind==='dock')return visible(document.querySelectorAll('.dock__item[data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
+    if(anchor.kind==='status')return visible(document.querySelectorAll('['+anchor.attribute+']')).find(item=>item.getAttribute(anchor.attribute)===anchor.id) || null;
+    if(anchor.kind==='settings-nav')return visible(document.querySelectorAll('.config__side [data-name]')).find(item=>item.getAttribute('data-name')===anchor.id) || null;
+    if(anchor.kind==='tab-control')return visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
+    if(anchor.kind==='tab') {
+        const heads=visible(document.querySelectorAll('[data-type="tab-header"]')).filter(head=>{
+            const page=tabPage(head);
+            return pageKey(page)===pageKey(anchor.page) && (page.kind!=='workspace' || page.title===anchor.page.title);
+        });
+        if(!heads.length)return null;
+        const head=heads.find(item=>item.closest('.layout__wnd--active')) || heads[0];
+        return anchor.part==='tab' ? head:head.querySelector({label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'}[anchor.part]);
+    }
+    let roots=[];
+    if(anchor.kind==='settings') {
+        roots=visible(document.querySelectorAll('.config__tab-container')).filter(root=>(root.getAttribute('data-name') || document.querySelector('.config__side .b3-list-item--focus')?.getAttribute('data-name'))===anchor.page.section);
+    } else if(anchor.kind==='dialog') {
+        roots=visible(document.querySelectorAll('.b3-dialog__container')).filter(root=>{
+            if(anchor.key)return root.closest('.b3-dialog')?.parentElement?.getAttribute('data-key')===anchor.key;
+            const form={participants:'.collab-people','chord-settings':'.collab-tick-form','chord-name':'.collab-name-form'}[anchor.page?.kind];
+            return form ? !!root.querySelector(form):textLabel(root.querySelector('.b3-dialog__header'))===anchor.page?.title;
+        });
+    } else if(anchor.kind==='panel') {
+        try { const root=getModelByDockType(anchor.id)?.parent?.panelElement;if(visibleElement(root))roots=[root]; } catch {}
+    } else {
+        if(anchor.kind!=='toolbar' && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
+        roots=visible(document.querySelectorAll({layout:'.layout__wnd--active',toolbar:'.toolbar',body:'body'}[anchor.kind]));
+    }
+    const candidates=roots.flatMap(root=>[root,...root.querySelectorAll(anchor.tag)]).filter(element=>element.tagName.toLowerCase()===anchor.tag && visibleElement(element) &&
+        uiClasses(element)===anchor.classes && (!anchor.attribute || element.getAttribute(anchor.attribute)===anchor.value) && uiFingerprint(element).label===anchor.label);
+    return candidates.length===1 ? candidates[0]:null;
 }
 
 function captureShortcut(event) {
@@ -328,7 +424,15 @@ async function openPage(plugin, page) {
     if(page.kind!=='dialog') {
         for(const dialog of [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).reverse()) {
             dialog.querySelector('.b3-dialog__scrim')?.click();
-            if(dialog.isConnected)throw Error('Close the current dialog before following');
+            if(dialog.isConnected) {
+                if(!dialog.closest('[data-dialog-closing="true"]'))throw Error('Close the current dialog before following');
+                await new Promise((resolve,reject)=>{
+                    const observer=new MutationObserver(()=>{if(!dialog.isConnected){observer.disconnect();clearTimeout(timer);resolve();}});
+                    const timer=setTimeout(()=>{observer.disconnect();reject(Error('Dialog did not close'));},1500);
+                    observer.observe(document.body,{childList:true,subtree:true});
+                    if(!dialog.isConnected){observer.disconnect();clearTimeout(timer);resolve();}
+                });
+            }
         }
     }
     if(page.kind==='participants')plugin.openPeople();
@@ -373,21 +477,21 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page};
-    const rect=hit.getBoundingClientRect();
-    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:uiAnchor(hit),
+    if(hit.closest('.protyle-content, .protyle-wysiwyg'))return null;
+    const target=uiAnchor(hit,plugin), rect=target.element.getBoundingClientRect();
+    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
+    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,
         x:rect.width ? Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)) : 0,
         y:rect.height ? Math.max(0,Math.min(1,(point.y-rect.top)/rect.height)) : 0};
 }
 
 function resolveCursor(cursor, plugin) {
-    if (cursor.surface!=='ui') {
-        const point=resolveDocumentCursor(cursor);
-        if (point) return point;
-    } else if (!plugin || pageKey(currentPage(plugin))===pageKey(cursor.page)) {
-        const element=resolveUIAnchor(cursor.ui), rect=element?.getBoundingClientRect();
-        if (rect) return {x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
-    }
-    return cursor.screen ? {x:cursor.screen.x*window.innerWidth,y:cursor.screen.y*window.innerHeight} : null;
+    if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
+    const element=resolveUIAnchor(cursor.ui,plugin),rect=element?.getBoundingClientRect();
+    if(!rect?.width || !rect.height)return null;
+    const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
+    const hit=document.elementFromPoint(point.x,point.y);
+    return hit && element.contains(hit) ? point:null;
 }
 
 module.exports = class CollaborationPlugin extends Plugin {
@@ -454,6 +558,15 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (this.layoutStarted || this.stopped) return;
         this.layoutStarted = true;
         this.topBar = this.addTopBar({ icon: "iconEmoji", title: this.i18n.pluginName, position: "right", callback: () => this.openPeople() });
+        this.topBar.classList?.add('collab-online-count');
+        this.topBar.setAttribute('role','button');
+        this.topBar.setAttribute('tabindex','0');
+        this.topBar.setAttribute('aria-haspopup','dialog');
+        this.topBar.setAttribute('aria-expanded','false');
+        this.topBar.addEventListener?.('keydown',event=>{
+            if(event.key==='Enter' || event.key===' '){event.preventDefault();this.openPeople();}
+        });
+        this.renderOnlineCount();
         this.observeLayout();
         // 思源先恢复共享布局；本窗口的记录只能在恢复自己的文档后更新。
         try {
@@ -490,6 +603,12 @@ module.exports = class CollaborationPlugin extends Plugin {
         return this.i18n.onlineCount.replace("${count}", String(count));
     }
 
+    renderOnlineCount() {
+        if(!this.topBar)return;
+        this.topBar.textContent=this.i18n.onlineBadge.replace('${count}',String(this.onlineCount ?? '—'));
+        this.topBar.setAttribute('aria-label',this.onlineCount===null ? this.i18n.kernelFailed : `${this.i18n.pluginName} · ${this.clientName} · ${this.onlineText(this.onlineCount)}`);
+    }
+
     rememberName(name) {
         this.clientName = name;
         try { sessionStorage.setItem(`${this.name}:display-name`, name); } catch {}
@@ -519,7 +638,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.peerId = presence.self.peerId;
             this.rememberName(presence.self.name);
         }
-        this.topBar?.setAttribute("aria-label", `${this.i18n.pluginName} · ${this.clientName} · ${this.onlineText(presence.count)}`);
+        this.renderOnlineCount();
         this.scheduleTreeRender();
         this.renderPeople();
         this.scheduleCursorRender(false);
@@ -552,7 +671,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.onlineCount = null;
                 this.clients = [];
                 this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
-                this.topBar?.setAttribute("aria-label", this.i18n.kernelFailed);
+                this.renderOnlineCount();
                 this.scheduleTreeRender();
                 this.remoteCursors = [];
                 this.remoteSelections = [];
@@ -868,7 +987,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     this.cursorMarkers.set(client.name, marker);
                 }
                 const label=marker.querySelector('span');
-                label.textContent=client.name+(client.cursor.page && pageKey(currentPage(this))!==pageKey(client.cursor.page) ? ' · '+client.cursor.page.title : '');
+                label.textContent=client.name;
                 marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                 marker.style.transitionDuration = animate ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
                 marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
@@ -971,7 +1090,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             group.textContent = String(viewers.length);
             const description = this.i18n.viewers.replace("${count}", String(viewers.length));
             group.setAttribute("aria-label", description);
-            group.setAttribute("aria-haspopup", "menu");
+            group.setAttribute("aria-haspopup", "dialog");
             group.title = description;
             for (const type of ["pointerdown", "mousedown", "dblclick", "keydown"]) {
                 group.addEventListener(type, (event) => event.stopPropagation());
@@ -1067,7 +1186,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.peopleDocument = documentId;
         if (!this.peoplePanel) {
             const panel=document.createElement('section');panel.className='collab-people';
-            panel.setAttribute('role','dialog');panel.setAttribute('aria-label',this.i18n.peopleTitle);
+            const dialog=new Dialog({title:this.i18n.peopleTitle,content:'<div class="b3-dialog__content"></div>',width:'min(440px, calc(100vw - 32px))',destroyCallback:()=>{
+                if(this.peopleDialog===dialog){this.peopleDialog=null;this.closePeople();}
+            }});
+            this.peopleDialog=dialog;
             const header=document.createElement('div');header.className='collab-people__header';
             const title=document.createElement('strong');
             const close=document.createElement('button');close.type='button';close.className='b3-button b3-button--outline';close.textContent=this.i18n.close;
@@ -1078,8 +1200,9 @@ module.exports = class CollaborationPlugin extends Plugin {
                 const button=document.createElement('button');button.type='button';button.className='b3-button b3-button--outline';button.textContent=label;
                 button.addEventListener('click',()=>{this.closePeople();action();});actions.append(button);
             }
-            panel.append(header,list,actions);document.body.append(panel);
+            panel.append(header,list,actions);dialog.element.querySelector('.b3-dialog__content').append(panel);
             this.peoplePanel=panel;this.peopleRows=new Map();
+            this.topBar?.setAttribute('aria-expanded','true');
             panel.addEventListener('keydown',(event)=>{if(event.key==='Escape'){this.closePeople();this.topBar?.focus?.();}});
             close.focus();
         }
@@ -1088,13 +1211,15 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     closePeople() {
+        const dialog=this.peopleDialog;this.peopleDialog=null;dialog?.destroy();
         this.peoplePanel?.remove();this.peoplePanel=null;this.peopleRows?.clear();this.peopleEmpty=null;
+        this.topBar?.setAttribute('aria-expanded','false');
         this.scheduleDocumentReport();
     }
 
     renderPeople() {
         if (!this.peoplePanel) return;
-        this.peoplePanel.querySelector('strong').textContent=this.i18n.peopleTitle+' · '+(this.onlineCount ?? '—');
+        this.peoplePanel.querySelector('strong').textContent=this.i18n.onlineBadge.replace('${count}',String(this.onlineCount ?? '—'));
         const list=this.peoplePanel.querySelector('.collab-people__list'), visible=new Set();
         for(const client of this.clients) {
             if(this.peopleDocument && client.documentId!==this.peopleDocument)continue;
@@ -1145,7 +1270,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
         for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
-        this.peoplePanel?.remove();
+        this.closePeople();
         for(const notice of this.shortcutNotices.values())clearTimeout(notice.timer);
         this.shortcutNotices.clear();
         this.cursorLayer?.remove();
