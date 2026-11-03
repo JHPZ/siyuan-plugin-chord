@@ -30,18 +30,14 @@ module.exports = class CollaborationPlugin extends Plugin {
         } catch {}
         this.handlePresence = (presence) => this.updatePresence(presence);
         this.handleCursors = (state) => this.updateCursors(state);
-        this.history = new PersonalHistory(this);
-        this.handleDocument = () => { this.history.attach(); this.scheduleDocumentReport(); };
+        this.handleDocument = () => this.scheduleDocumentReport();
         this.handleKernelState = ({ detail }) => {
             if (detail.code === 2) {
                 this.lastCursorSignature = this.lastSelectionSignature = undefined;
                 this.refreshInBackground();
                 this.loadCursors();
-                this.editing?.load(true);
             }
         };
-        this.editing = new EditLocks(this);
-        await this.editing.bind();
         await this.kernel.rpc.bind("presence-changed", this.handlePresence);
         await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
@@ -49,14 +45,12 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.eventBus.on(event, this.handleDocument);
         }
         this.addCommand({ langKey: "checkOnline", callback: () => this.checkOnline() });
-        this.addCommand({ langKey: "historyList", callback: () => this.history.open(getActiveEditor()) });
         this.initSettings();
     }
 
     async onLayoutReady() {
         if (this.layoutStarted || this.stopped) return;
         this.layoutStarted = true;
-        this.history.attach();
         this.topBar = this.addTopBar({ icon: "iconEmoji", title: this.i18n.pluginName, position: "right", callback: () => this.openMenu() });
         this.observeLayout();
         // 思源先恢复共享布局；本窗口的记录只能在恢复自己的文档后更新。
@@ -88,11 +82,6 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.heartbeatTimer = setInterval(() => this.refreshInBackground(), 20000);
         this.startTracking();
         await this.loadCursors();
-        await this.editing.start();
-    }
-
-    showEditMessage(message) {
-        if (!this.stopped) showMessage(escapeHTML(message), 3000, "info");
     }
 
     onlineText(count) {
@@ -165,7 +154,6 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     scheduleDocumentReport() {
         this.finishRestore?.();
-        this.editing?.syncSelection();
         this.scheduleCursorRender(false);
         if (this.stopped || !this.layoutReady || this.documentFrame) return;
         this.documentFrame = requestAnimationFrame(() => {
@@ -352,7 +340,6 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     scheduleCursorRender(animate) {
-        this.editing?.scheduleRender();
         if (this.stopped || !this.cursorLayer) return;
         this.animateCursorFrame = this.cursorFrame ? this.animateCursorFrame && animate : animate;
         if (this.cursorFrame) return;
@@ -475,9 +462,6 @@ module.exports = class CollaborationPlugin extends Plugin {
         menu.addItem({ icon: "iconEmoji", label: this.i18n.checkOnline, click: () => this.checkOnline() });
         menu.addItem({ icon: "iconEdit", label: `${this.i18n.renameSelf} (${escapeHTML(this.clientName || this.i18n.connecting)})`, click: () => this.openRenameDialog() });
         menu.addItem({ icon: "iconSettings", label: this.i18n.cursorSettings, click: () => this.openSetting() });
-        menu.addItem({ icon: "iconUndo", label: this.i18n.undoMine, click: () => this.history.request(getActiveEditor(), "undo") });
-        menu.addItem({ icon: "iconRedo", label: this.i18n.redoMine, click: () => this.history.request(getActiveEditor(), "redo") });
-        menu.addItem({ icon: "iconList", label: this.i18n.historyList, click: () => this.history.open(getActiveEditor()) });
         let rect = this.topBar.getBoundingClientRect();
         if (rect.width === 0) rect = document.getElementById("barMore")?.getBoundingClientRect() || rect;
         menu.open({ x: rect.right, y: rect.bottom, isLeft: true });
@@ -549,7 +533,6 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     async onunload() {
         this.stopped = true;
-        const historyStopped = this.history?.stop();
         this.finishRestore?.();
         clearTimeout(this.restoreTimer);
         clearInterval(this.heartbeatTimer);
@@ -567,14 +550,11 @@ module.exports = class CollaborationPlugin extends Plugin {
         cancelAnimationFrame(this.treeFrame);
         cancelAnimationFrame(this.documentFrame);
         this.domObserver?.disconnect();
-        const editingStopped = this.editing?.stop();
         this.renameDialog?.destroy();
         document.querySelectorAll(".sy__file .collab-presence").forEach((row) => this.clearRow(row));
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
-        const saved = await editingStopped;
-        await historyStopped;
         await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors)]);
-        if (saved) await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
+        await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
     }
 };

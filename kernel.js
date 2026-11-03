@@ -3,39 +3,12 @@ const { plugin, rpc, logger, storage } = siyuan;
 const sessions = new Map();
 let peerSequence = 0;
 const SESSION_TIMEOUT = 90000;
-const EDIT_LEASE = 15000;
-const editLocks = new Map();
-let editVersion = 0;
-let editTimer;
 let sweepTimer;
 let cursorTimer;
 let tick = 10;
 let cursorDirty = false;
 let settingsWrite = Promise.resolve();
 const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
-
-function pruneEditLocks() {
-    let changed = false;
-    for (const [blockId, lock] of editLocks) {
-        if (lock.until <= Date.now() || sessions.get(lock.id)?.generation !== lock.generation) {
-            editLocks.delete(blockId);
-            changed = true;
-        }
-    }
-    if (changed) editVersion++;
-    return changed;
-}
-
-function editSnapshot() {
-    return { version: editVersion, ttl: EDIT_LEASE, locks: [...editLocks.values()].map(({ id, documentId, blockId, ancestors }) => {
-        const client = sessions.get(id);
-        return { documentId, blockId, ancestors, peerId: client.peerId, name: client.name, hue: client.hue };
-    }) };
-}
-
-function broadcastEdits() {
-    return rpc.broadcast("edit-locks-changed", [editSnapshot()]);
-}
 
 function normalizeCursor(value) {
     if (value === null) return null;
@@ -162,49 +135,9 @@ async function expireSessions() {
     if (pruneSessions()) {
         await broadcastPresence();
     }
-    if (pruneEditLocks()) await broadcastEdits();
 }
 
 plugin.lifecycle.onload = async () => {
-    await rpc.bind("editSnapshot", async () => {
-        if (pruneEditLocks()) await broadcastEdits();
-        return editSnapshot();
-    }, "Read current cooperative block edit leases.");
-    await rpc.bind("editClaim", async (id, generation, sequence, documentId, blocks) => {
-        validateSession(id);
-        validateGeneration(generation);
-        if (!Number.isSafeInteger(sequence) || sequence < 1 || (documentId !== null && (typeof documentId !== "string" || !BLOCK_ID.test(documentId))) ||
-            !Array.isArray(blocks) || blocks.length > 200 || (blocks.length && !documentId) || blocks.some((block) =>
-                !block || typeof block.blockId !== "string" || !BLOCK_ID.test(block.blockId) || !Array.isArray(block.ancestors) || block.ancestors.length > 32 ||
-                block.ancestors.some((ancestor) => typeof ancestor !== "string" || !BLOCK_ID.test(ancestor) || ancestor === block.blockId)) ||
-            new Set(blocks.map(block => block.blockId)).size !== blocks.length) throw new Error("Invalid edit claim");
-        const client = sessions.get(id);
-        if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
-        if (sequence <= (client.editSequence || 0)) {
-            if (pruneEditLocks()) await broadcastEdits();
-            return { granted: false, stale: true, ...editSnapshot() };
-        }
-        client.editSequence = sequence;
-        // A retiring frontend stops presence heartbeats while it waits for its final save.
-        client.lastSeen = Date.now();
-        let changed = pruneEditLocks();
-        const conflict = [...editLocks.values()].find((lock) => lock.id !== id && blocks.some((block) =>
-            block.blockId === lock.blockId || block.ancestors.includes(lock.blockId) || lock.ancestors.includes(block.blockId)));
-        const granted = !conflict;
-        const desired = new Set(granted ? blocks.map((block) => block.blockId) : []);
-        if (granted) for (const [blockId, lock] of editLocks) {
-            if (lock.id === id && (!desired.has(blockId) || lock.documentId !== documentId)) { editLocks.delete(blockId); changed = true; }
-        }
-        if (granted) for (const block of blocks) {
-            if (!editLocks.has(block.blockId)) changed = true;
-            editLocks.set(block.blockId, { id, generation, documentId, blockId: block.blockId, ancestors: [...block.ancestors], until: Date.now() + EDIT_LEASE });
-        }
-        if (changed) {
-            editVersion++;
-            await broadcastEdits();
-        }
-        return { granted, ...editSnapshot() };
-    }, "Atomically replace a frontend's edit leases; deny conflicting blocks.");
     try {
         const saved = await (await storage.get("cursor-settings.json")).json();
         if (Number.isInteger(saved.tick) && saved.tick >= 1 && saved.tick <= 30) tick = saved.tick;
@@ -247,7 +180,7 @@ plugin.lifecycle.onload = async () => {
         if (JSON.stringify(client.selection ?? null) !== JSON.stringify(selection)) cursorDirty = true;
         client.selection = selection;
         return true;
-    }, "Share text selection anchors without acquiring edit leases.");
+    }, "Share text selection anchors.");
     await rpc.bind("getStatus", async () => {
         await expireSessions();
         return { name: plugin.name, version: plugin.version, platform: plugin.platform, onlineCount: sessions.size };
@@ -278,10 +211,8 @@ plugin.lifecycle.onload = async () => {
             client.selection = null;
             client.selectionSequence = 0;
             cursorDirty = true;
-            client.editSequence = 0;
         }
         client.generation = generation;
-        if (pruneEditLocks()) await broadcastEdits();
         if (state.documentId !== undefined && client.documentId !== state.documentId) {
             client.documentId = state.documentId;
             if (client.cursor?.surface === "document" && client.cursor.documentId !== client.documentId) { client.cursor = null; cursorDirty = true; }
@@ -311,7 +242,6 @@ plugin.lifecycle.onload = async () => {
             client.name = name;
             cursorDirty = true;
             await broadcastPresence();
-            if ([...editLocks.values()].some((lock) => lock.id === id)) { editVersion++; await broadcastEdits(); }
         }
         return snapshot(id);
     }, "Change this frontend's display name.");
@@ -324,7 +254,6 @@ plugin.lifecycle.onload = async () => {
         if (expired || left) {
             await broadcastPresence();
         }
-        if (pruneEditLocks()) await broadcastEdits();
         return snapshot();
     }, "Remove a frontend session.");
 };
@@ -333,9 +262,6 @@ plugin.lifecycle.onrunning = () => {
     sweepTimer = setInterval(() => {
         expireSessions().catch((error) => console.error("Presence cleanup failed:", error));
     }, 15000);
-    editTimer = setInterval(() => {
-        if (pruneEditLocks()) broadcastEdits().catch((error) => console.error("Edit lease cleanup failed:", error));
-    }, 1000);
     startCursorTimer();
     return logger.info("Collaboration document presence is running.");
 };
@@ -343,8 +269,6 @@ plugin.lifecycle.onrunning = () => {
 plugin.lifecycle.onunload = async () => {
     clearInterval(sweepTimer);
     clearInterval(cursorTimer);
-    clearInterval(editTimer);
-    editLocks.clear();
     sessions.clear();
-    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "setCursorTick", "editSnapshot", "editClaim"].map((name) => rpc.unbind(name)));
+    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "setCursorTick"].map((name) => rpc.unbind(name)));
 };

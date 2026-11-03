@@ -2,7 +2,7 @@
   "name": "siyuan-plugin-chord",
   "version": "1.0.0",
   "private": true,
-  "description": "Chord · 和弦 — 加强思源的多人编辑能力",
+  "description": "Chord · 和弦 — 思源多人在线、光标与选区同步展示",
   "author": "SSZM",
   "main": "index.js",
   "license": "MIT",

@@ -2,7 +2,7 @@
 
 # Chord · 和弦
 
-Chord helps people work on SiYuan documents together.
+Chord displays live presence, pointers and text selections in SiYuan. SiYuan handles document synchronization, editing, dragging, undo and redo.
 
 [中文](README.md)
 
@@ -12,8 +12,7 @@ Chord helps people work on SiYuan documents together.
 
 - See who's online and which document they're reading.
 - See other people's pointers and selected text.
-- When someone is editing a block, others can't edit it.
-- Undo only your own changes.
+- Edit directly in SiYuan without requesting block permissions.
 
 More collaboration features may come later. Ideas are welcome.
 

@@ -29,14 +29,6 @@ for (const file of ['index.js', 'kernel.js', 'index.css', 'plugin.json', 'packag
     assert.ok(pkg.files.includes(file), 'Missing release resource: ' + file);
 }
 for (const file of ['index.js', 'kernel.js']) new vm.Script(read(file), { filename: file });
-// Keep new features on the shared edit path instead of growing another lease implementation.
-for (const file of fs.readdirSync(path.join(root, 'src/frontend'))) {
-    const source = read('src/frontend/' + file);
-    if (file !== 'edit-coordinator.js') assert.ok(!/\.editClaim\s*\(/.test(source), file + ': leases belong to EditCoordinator');
-    if (file === 'edit-coordinator.js') assert.ok(!/\b(?:document|window)\s*\.|\b(?:getAllEditor|fetchSyncPost)\s*\(/.test(source), 'Coordinator must not depend on editor DOM or storage APIs');
-    if (file === 'edit-lock-view.js') assert.ok(!/\b(rpc|fetchSyncPost)\b/.test(source), 'Lock view must only render state');
-    if (file === 'personal-history.js') assert.ok(!/editing\.(claim|release|held|desired|leaseUntil)\b/.test(source), 'History must use runOperation');
-}
 const en = JSON.parse(read('i18n/en.json')), zh = JSON.parse(read('i18n/zh-CN.json'));
 assert.equal(en.pluginName, 'Chord');assert.equal(zh.pluginName, '和弦');
 assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
