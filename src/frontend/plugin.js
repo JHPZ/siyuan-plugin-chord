@@ -8,6 +8,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.clients = [];
         this.clientName = "";
         this.tick = 10;
+        this.shortcutSequence = 0;
+        this.shortcutNotices = new Map();
+        this.frameListeners = new Map();
+        this.handleShortcut = (value) => this.showShortcut(value);
         this.remoteCursors = [];
         this.remoteSelections = [];
         this.remoteEditing = [];
@@ -37,6 +41,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handleDocument = () => this.scheduleDocumentReport();
         this.handleKernelState = ({ detail }) => {
             if (detail.code === 2) {
+                this.presenceRevision = -1;
                 this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
                 this.refreshInBackground();
                 this.loadCursors();
@@ -44,18 +49,19 @@ module.exports = class CollaborationPlugin extends Plugin {
         };
         await this.kernel.rpc.bind("presence-changed", this.handlePresence);
         await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
+        await this.kernel.rpc.bind("shortcut-shown", this.handleShortcut);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
         for (const event of EDITOR_EVENTS) {
             this.eventBus.on(event, this.handleDocument);
         }
-        this.addCommand({ langKey: "checkOnline", callback: () => this.checkOnline() });
+        this.addCommand({ langKey: "checkOnline", callback: () => this.openPeople() });
         this.initSettings();
     }
 
     async onLayoutReady() {
         if (this.layoutStarted || this.stopped) return;
         this.layoutStarted = true;
-        this.topBar = this.addTopBar({ icon: "iconEmoji", title: this.i18n.pluginName, position: "right", callback: () => this.openMenu() });
+        this.topBar = this.addTopBar({ icon: "iconEmoji", title: this.i18n.pluginName, position: "right", callback: () => this.openPeople() });
         this.observeLayout();
         // 思源先恢复共享布局；本窗口的记录只能在恢复自己的文档后更新。
         try {
@@ -99,18 +105,23 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     updatePresence(presence) {
         if (this.stopped) return;
+        if (Number.isSafeInteger(presence?.revision) && presence.revision < (this.presenceRevision ?? -1)) return;
         const clients = presence?.clients || [];
         if (!presence || !Number.isSafeInteger(presence.count) || presence.count < 0 || !Array.isArray(clients) || clients.some((client) =>
             !client || typeof client.name !== "string" || [...client.name].length > 24 ||
             !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 ||
-            (client.documentId !== null && !DOCUMENT_ID.test(client.documentId)))) {
+            (client.documentId !== null && !DOCUMENT_ID.test(client.documentId)) || (client.page != null && !validPage(client.page)))) {
             throw new Error("Invalid presence response");
         }
         if (this.clientName && !clients.some((client) => client.name === this.clientName)) {
             this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
         }
         this.onlineCount = presence.count;
+        if(Number.isSafeInteger(presence.revision))this.presenceRevision=presence.revision;
         this.clients = clients;
+        for(const [name,notice] of this.shortcutNotices)if(!clients.some(client=>client.name===name)){
+            clearTimeout(notice.timer);notice.element.remove();this.shortcutNotices.delete(name);
+        }
         this.presenceReceivedAt = Date.now();
         if (presence.self && typeof presence.self.name === "string") {
             this.peerId = presence.self.peerId;
@@ -118,6 +129,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         }
         this.topBar?.setAttribute("aria-label", `${this.i18n.pluginName} · ${this.clientName} · ${this.onlineText(presence.count)}`);
         this.scheduleTreeRender();
+        this.renderPeople();
         this.scheduleCursorRender(false);
     }
 
@@ -136,8 +148,9 @@ module.exports = class CollaborationPlugin extends Plugin {
         }
         const documentId = this.currentDocument();
         try { sessionStorage.setItem(`${this.name}:document`, documentId || ""); } catch {}
-        const presence = await this.kernel.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, generation: this.generation });
+        const presence = await this.kernel.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation });
         this.updatePresence(presence);
+        if(this.trackingStarted)this.queueActivity();
         return presence;
     }
 
@@ -152,6 +165,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.remoteCursors = [];
                 this.remoteSelections = [];
                 this.remoteEditing = [];
+                this.renderPeople();
                 this.scheduleCursorRender(false);
             }
         });
@@ -163,10 +177,11 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (this.stopped || !this.layoutReady || this.documentFrame) return;
         this.documentFrame = requestAnimationFrame(() => {
             this.documentFrame = 0;
-            const id = this.currentDocument();
+            const id = JSON.stringify(currentPage(this));
             if (!this.stopped && id !== this.reportedDocument) {
                 this.reportedDocument = id;
                 this.refreshInBackground();
+                this.queueActivity();
             }
         });
     }
@@ -182,9 +197,10 @@ module.exports = class CollaborationPlugin extends Plugin {
     observeLayout() {
         this.domObserver = new MutationObserver((records) => {
             for (const record of records) {
-                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer")) continue;
+                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-people")) continue;
                 if (record.type === "characterData") { this.scheduleCursorRender(false); continue; }
                 if (record.type === "attributes") {
+                    this.scheduleDocumentReport();
                     if (record.target.matches(".protyle") || record.target.classList.contains("layout__wnd--active") ||
                         (record.oldValue || "").includes("layout__wnd--active")) this.scheduleDocumentReport();
                     this.scheduleCursorRender(false);
@@ -192,6 +208,8 @@ module.exports = class CollaborationPlugin extends Plugin {
                 }
                 const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.classList.contains("collab-presence-users"));
                 if (!elements.length) continue;
+                if(elements.some((element)=>element.matches('iframe') || element.querySelector('iframe')))this.bindFrames();
+                this.scheduleDocumentReport();
                 if (record.target.closest(".sy__file") || elements.some((node) => node.matches(".sy__file") || node.querySelector(".sy__file"))) this.scheduleTreeRender();
                 if ((record.target.closest(".layout-tab-container") && !record.target.closest(".protyle")) ||
                     elements.some((node) => node.matches(".protyle") || node.querySelector(".protyle"))) this.scheduleDocumentReport();
@@ -209,14 +227,14 @@ module.exports = class CollaborationPlugin extends Plugin {
             createActionElement: () => {
                 const form = document.createElement("form");
                 form.className = "collab-tick-form";
-                const input = document.createElement("input");
-                input.className = "b3-text-field";
-                input.type = "number";
-                input.min = "1";
-                input.max = "30";
-                input.step = "1";
+                const input = document.createElement("select");
+                input.className = "b3-select";
+                for (const [value,key] of [[3,'tickLow'],[10,'tickMedium'],[30,'tickHigh']]) {
+                    const option=document.createElement('option');option.value=String(value);option.textContent=this.i18n[key];input.append(option);
+                }
+
                 input.required = true;
-                input.value = String(this.tick);
+                input.value = String([3,10,30].includes(this.tick) ? this.tick : 10);
                 input.setAttribute("aria-label", this.i18n.cursorTick);
                 const save = document.createElement("button");
                 save.type = "submit";
@@ -229,7 +247,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 form.addEventListener("submit", async (event) => {
                     event.preventDefault();
                     const tick = Number(input.value);
-                    if (!Number.isInteger(tick) || tick < 1 || tick > 30) {
+                    if (![3,10,30].includes(tick)) {
                         error.textContent = this.i18n.cursorTickFailed;
                         return;
                     }
@@ -269,6 +287,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validEditing(client.editing))) throw new Error("Invalid editing response");
         if (this.tick !== state.tick) {
             this.tick = state.tick;
+            for(const select of document.querySelectorAll('.collab-tick-form select'))select.value=String([3,10,30].includes(this.tick) ? this.tick : 10);
             if (this.trackingStarted) this.startCursorTimer();
         }
         this.remoteCursors = state.cursors;
@@ -288,16 +307,19 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handlePointer = (event) => {
             if (!event.pointerType || event.pointerType === "mouse" || event.pointerType === "pen") {
                 this.pointer = { x: event.clientX, y: event.clientY };
+                if(event.target)this.surfaceTarget=event.target;
+                this.scheduleDocumentReport();
                 this.scheduleCursorRender(true);
+                this.queueActivity();
             }
         };
         this.handlePointerLeave = () => {
             this.pointer = null;
-            this.sendEditing();
+            this.queueActivity();
             this.scheduleCursorRender(true);
         };
         this.handlePointerOut = (event) => { if (!event.relatedTarget) this.handlePointerLeave(); };
-        this.handleCursorLayout = () => this.scheduleCursorRender(false);
+        this.handleCursorLayout = () => { this.scheduleCursorRender(false); this.queueActivity(); };
         this.handleVisibility = () => {
             if (document.hidden) this.handlePointerLeave();
             else { this.refreshInBackground(); this.loadCursors(); }
@@ -309,20 +331,74 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.addEventListener("visibilitychange", this.handleVisibility);
         window.addEventListener("blur", this.handlePointerLeave);
         window.addEventListener("resize", this.handleCursorLayout);
+        this.handleSelectionActivity = () => this.queueActivity();
+        this.handleSceneActivity = (event) => {
+            if (event?.target?.closest?.('.collab-people, .collab-cursor-layer')) return;
+            if(event?.target)this.surfaceTarget=event.target;
+            const control=event?.target?.closest?.('[id]');
+            if(PAGE_CONTROLS.includes(control?.id)){this.pageControl=control.id;this.controlTitle=control.getAttribute('aria-label')?.replace(/<[^>]*>/g,'').slice(0,160);}
+            else if(event?.type==='pointerdown' && !event.target.closest('.b3-dialog, .b3-menu'))this.pageControl=null;
+            if(event?.type==='pointerdown' && !this.topBar?.contains?.(event.target))this.closePeople();
+            this.dialogBase = currentPage(this, false);
+            this.scheduleDocumentReport();this.queueActivity();
+        };
+        this.handleKey = (event) => {
+            const keys=captureShortcut(event);
+            if (keys) {
+                this.pendingShortcut=keys;
+                this.queueActivity();
+            }
+        };
+        document.addEventListener('selectionchange',this.handleSelectionActivity);
+        document.addEventListener('focusin',this.handleSceneActivity,{passive:true});
+        document.addEventListener('pointerdown',this.handleSceneActivity,{passive:true});
+        document.addEventListener('click',this.handleSceneActivity,{passive:true});
+        document.addEventListener('keydown',this.handleKey,{capture:true,passive:true});
+        this.bindFrames();
         this.startCursorTimer();
+    }
+
+    bindFrames() {
+        for(const [frame,binding] of this.frameListeners)if(!frame.isConnected){binding.stop();this.frameListeners.delete(frame);}
+        for(const frame of document.querySelectorAll('iframe')) {
+            if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
+            let doc;
+            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+event.clientX*rect.width/(frame.clientWidth || rect.width),clientY:rect.top+event.clientY*rect.height/(frame.clientHeight || rect.height)});};
+            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc=null;};
+            const load=()=>{
+                stopDocument();
+                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});}catch{}
+            };
+            // shortcut: browsers hide cross-origin frame events; show the frame centre until a cooperating embed can report positions.
+            const enter=()=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2});};
+            frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
+            this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',load);frame.removeEventListener('pointerenter',enter);}});
+        }
+    }
+
+    queueActivity() {
+        if (this.stopped || !this.layoutReady) return;
+        if (this.activityFlushing) { this.activityQueued=true;return; }
+        if(this.activityTimer)return;
+        const delay=Math.max(0,1000/this.tick-(Date.now()-(this.activitySentAt || 0)));
+        this.activityTimer=setTimeout(async()=>{
+            this.activityTimer=null;this.activitySentAt=Date.now();this.activityFlushing=true;
+            const keys=this.pendingShortcut;this.pendingShortcut=null;
+            if (keys && !this.stopped) this.kernel.rpc.call.shortcut(this.sessionId,this.generation,++this.shortcutSequence,keys).catch(()=>{});
+            await Promise.allSettled([this.sendCursor(),this.sendSelection(),this.sendEditing()]);
+            this.activityFlushing=false;
+            if(this.activityQueued){this.activityQueued=false;this.queueActivity();}
+        },delay);
     }
 
     startCursorTimer() {
         clearInterval(this.cursorTimer);
-        this.cursorTimer = setInterval(() => {
-            if (Date.now() - this.presenceReceivedAt >= PRESENCE_TIMEOUT) this.scheduleCursorRender(false);
-            return Promise.allSettled([this.sendCursor(), this.sendSelection(), this.sendEditing()]);
-        }, 1000 / this.tick);
+        this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender(false);},1000);
     }
 
     async sendCursor() {
         if (this.stopped || !this.layoutReady || this.cursorSending) return;
-        const cursor = captureCursor(this.pointer);
+        const cursor = captureCursor(this.pointer, this);
         const signature = JSON.stringify(cursor);
         if (signature === this.lastCursorSignature) return;
         this.cursorSending = true;
@@ -340,7 +416,7 @@ module.exports = class CollaborationPlugin extends Plugin {
     async sendEditing() {
         if (this.stopped || !this.layoutReady || this.editingSending) return;
         const editing = captureEditing(), signature = JSON.stringify(editing);
-        if (signature === this.lastEditingSignature && (!editing || Date.now() - this.editingSentAt < 10000)) return;
+        if (signature === this.lastEditingSignature) return;
         this.editingSending = true;
         try {
             await this.kernel.rpc.call.editingUpdate(this.sessionId, this.generation, ++this.editingSequence, editing);
@@ -381,7 +457,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
             for (const client of this.remoteCursors) {
                 if (client.name === this.clientName || !this.clients.some((person) => person.name === client.name)) continue;
-                const point = resolveCursor(client.cursor);
+                const point = resolveCursor(client.cursor, this);
                 if (!point) continue;
                 visible.add(client.name);
                 let marker = this.cursorMarkers.get(client.name);
@@ -399,6 +475,8 @@ module.exports = class CollaborationPlugin extends Plugin {
                     this.cursorLayer.append(marker);
                     this.cursorMarkers.set(client.name, marker);
                 }
+                const label=marker.querySelector('span');
+                label.textContent=client.name+(client.cursor.page && pageKey(currentPage(this))!==pageKey(client.cursor.page) ? ' · '+client.cursor.page.title : '');
                 marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                 marker.style.transitionDuration = animate ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
                 marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
@@ -509,10 +587,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             group.addEventListener("click", (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                const menu = new Menu(`${this.name}-viewers`);
-                for (const client of viewers) menu.addItem({ label: escapeHTML(client.name) });
-                const rect = group.getBoundingClientRect();
-                menu.open({ x: rect.left, y: rect.bottom });
+                this.openPeople(row.getAttribute('data-node-id'));
             });
             const icon = row.querySelector(":scope > .b3-list-item__icon") || row.querySelector(":scope > .b3-list-item__text");
             if (icon) icon.before(group); else row.append(group);
@@ -524,7 +599,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     openMenu() {
         const menu = new Menu(`${this.name}-presence`);
-        menu.addItem({ icon: "iconEmoji", label: this.i18n.checkOnline, click: () => this.checkOnline() });
+        menu.addItem({ icon: "iconEmoji", label: this.i18n.checkOnline, click: () => this.openPeople() });
         menu.addItem({ icon: "iconEdit", label: `${this.i18n.renameSelf} (${escapeHTML(this.clientName || this.i18n.connecting)})`, click: () => this.openRenameDialog() });
         menu.addItem({ icon: "iconSettings", label: this.i18n.cursorSettings, click: () => this.openSetting() });
         let rect = this.topBar.getBoundingClientRect();
@@ -596,6 +671,79 @@ module.exports = class CollaborationPlugin extends Plugin {
         }
     }
 
+    openPeople(documentId = null) {
+        this.peopleDocument = documentId;
+        if (!this.peoplePanel) {
+            const panel=document.createElement('section');panel.className='collab-people';
+            panel.setAttribute('role','dialog');panel.setAttribute('aria-label',this.i18n.peopleTitle);
+            const header=document.createElement('div');header.className='collab-people__header';
+            const title=document.createElement('strong');
+            const close=document.createElement('button');close.type='button';close.className='b3-button b3-button--outline';close.textContent=this.i18n.close;
+            close.addEventListener('click',()=>this.closePeople());header.append(title,close);
+            const list=document.createElement('div');list.className='collab-people__list';
+            const actions=document.createElement('div');actions.className='collab-people__actions';
+            for(const [label,action] of [[this.i18n.renameSelf,()=>this.openRenameDialog()],[this.i18n.cursorSettings,()=>this.openSetting()]]) {
+                const button=document.createElement('button');button.type='button';button.className='b3-button b3-button--outline';button.textContent=label;
+                button.addEventListener('click',()=>{this.closePeople();action();});actions.append(button);
+            }
+            panel.append(header,list,actions);document.body.append(panel);
+            this.peoplePanel=panel;this.peopleRows=new Map();
+            panel.addEventListener('keydown',(event)=>{if(event.key==='Escape'){this.closePeople();this.topBar?.focus?.();}});
+            close.focus();
+        }
+        this.renderPeople();
+        this.refreshInBackground();
+    }
+
+    closePeople() {
+        this.peoplePanel?.remove();this.peoplePanel=null;this.peopleRows?.clear();this.peopleEmpty=null;
+        this.scheduleDocumentReport();
+    }
+
+    renderPeople() {
+        if (!this.peoplePanel) return;
+        this.peoplePanel.querySelector('strong').textContent=this.i18n.peopleTitle+' · '+(this.onlineCount ?? '—');
+        const list=this.peoplePanel.querySelector('.collab-people__list'), visible=new Set();
+        for(const client of this.clients) {
+            if(this.peopleDocument && client.documentId!==this.peopleDocument)continue;
+            const key=client.peerId || client.name;visible.add(key);
+            let row=this.peopleRows.get(key);
+            if(!row) {
+                row=document.createElement('div');row.className='collab-person';
+                const details=document.createElement('div');details.className='collab-person__details';
+                details.append(document.createElement('strong'),document.createElement('span'));
+                const follow=document.createElement('button');follow.type='button';follow.className='b3-button b3-button--outline';follow.textContent=this.i18n.follow;
+                follow.addEventListener('click',async()=>{
+                    const target=this.clients.find((person)=>(person.peerId || person.name)===key);
+                    if(!target)return;
+                    const page=target.page || (target.documentId ? {kind:'document',id:target.documentId,title:this.i18n.pageDocument}:null);
+                    if(!page)return;
+                    follow.disabled=true;
+                    try{this.closePeople();await openPage(this,page);this.scheduleDocumentReport();}
+                    catch{showMessage(this.i18n.followFailed,5000,'error');follow.disabled=false;}
+                });
+                row.append(details,follow);list.append(row);this.peopleRows.set(key,row);
+            }
+            row.style.setProperty('--collab-person-hue',String(client.hue));
+            const own=client.name===this.clientName;
+            row.querySelector('strong').textContent=client.name+(own ? ' · '+this.i18n.self : '');
+            const page=row.querySelector('span');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
+            row.querySelector('button').disabled=own || (!client.page && !client.documentId);
+        }
+        for(const [key,row] of this.peopleRows)if(!visible.has(key)){row.remove();this.peopleRows.delete(key);}
+        if(!visible.size && !this.peopleEmpty){this.peopleEmpty=document.createElement('p');this.peopleEmpty.className='collab-people__empty';list.append(this.peopleEmpty);}
+        if(this.peopleEmpty){this.peopleEmpty.textContent=this.onlineCount===null ? this.i18n.kernelFailed : this.i18n.peopleEmpty;if(visible.size){this.peopleEmpty.remove();this.peopleEmpty=null;}}
+    }
+
+    showShortcut(value) {
+        if(this.stopped || !this.cursorLayer || !value || !validShortcut(value.keys) || typeof value.name!=='string' || value.name.length>48 || value.name===this.clientName || !this.clients.some((client)=>client.name===value.name))return;
+        let notice=this.shortcutNotices.get(value.name);
+        if(!notice){const element=document.createElement('div');element.className='collab-shortcut';this.cursorLayer.append(element);notice={element};this.shortcutNotices.set(value.name,notice);}
+        notice.element.textContent=value.name+'  '+value.keys;
+        notice.element.style.bottom=(24+[...this.shortcutNotices.keys()].indexOf(value.name)*40)+'px';
+        clearTimeout(notice.timer);notice.timer=setTimeout(()=>{notice.element.remove();this.shortcutNotices.delete(value.name);},1800);
+    }
+
     async onunload() {
         this.stopped = true;
         this.finishRestore?.();
@@ -603,10 +751,20 @@ module.exports = class CollaborationPlugin extends Plugin {
         clearInterval(this.heartbeatTimer);
         clearInterval(this.cursorTimer);
         cancelAnimationFrame(this.cursorFrame);
+        clearTimeout(this.activityTimer);
+        for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
+        this.peoplePanel?.remove();
+        for(const notice of this.shortcutNotices.values())clearTimeout(notice.timer);
+        this.shortcutNotices.clear();
         this.cursorLayer?.remove();
         this.cursorMarkers.clear();
         this.editingMarkers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
+        document.removeEventListener('selectionchange',this.handleSelectionActivity);
+        document.removeEventListener('focusin',this.handleSceneActivity);
+        document.removeEventListener('pointerdown',this.handleSceneActivity);
+        document.removeEventListener('click',this.handleSceneActivity);
+        document.removeEventListener('keydown',this.handleKey,true);
         document.removeEventListener("pointermove", this.handlePointer);
         document.removeEventListener("pointerout", this.handlePointerOut);
         document.removeEventListener("scroll", this.handleCursorLayout, true);
@@ -620,7 +778,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.querySelectorAll(".sy__file .collab-presence").forEach((row) => this.clearRow(row));
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
-        await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors)]);
+        await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut)]);
         await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
     }
 };

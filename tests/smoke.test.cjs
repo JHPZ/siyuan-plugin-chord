@@ -85,7 +85,11 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
             before(child) { child.parentElement = node.parentElement; node.parentElement.children.splice(node.parentElement.children.indexOf(node), 0, child); },
             after(child) { child.parentElement = node.parentElement; node.parentElement.children.splice(node.parentElement.children.indexOf(node) + 1, 0, child); },
             remove() { if (node.parentElement) node.parentElement.children.splice(node.parentElement.children.indexOf(node), 1); },
-            querySelector(selector) { const className = selector.split('.').at(-1); return node.children.find((child) => child.classList.contains(className)) || null; },
+            querySelector(selector) {
+                const matches=child=>selector.includes('.') ? child.classList.contains(selector.split('.').at(-1)) : child.tagName===selector.toUpperCase();
+                for(const child of node.children){if(matches(child))return child;const found=child.querySelector(selector);if(found)return found;}
+                return null;
+            },
             listeners: new Map(),
             addEventListener(name, callback) { node.listeners.set(name, callback); }, focus() {}, select() {},
             closest() { return null; },
@@ -102,6 +106,8 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         elementFromPoint: options.hitTest || (() => null),
         querySelector: () => null,
         querySelectorAll(selector) {
+            if(selector==='iframe' || selector.startsWith('.dock__item') || selector==='.collab-tick-form select')return [];
+            if(selector.startsWith('.config') || selector.startsWith('.b3-dialog'))return [];
             if (selector.startsWith(".protyle")) return document.activeDocument ? [{ closest: () => null, querySelector: () => null, getAttribute: () => document.activeDocument }] : [];
             if (selector === ".sy__file .collab-presence") return rows.filter((row) => row.classList.contains("collab-presence"));
             return rows;
@@ -144,7 +150,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         Date: class extends Date { static now() { return options.now ? options.now() : Date.now(); } },
         console: { error() {} },
         document,
-        window: { addEventListener: (name, callback) => listen(windowListeners, name, callback), removeEventListener: (name, callback) => unlisten(windowListeners, name, callback) },
+        window: { innerWidth:1280,innerHeight:720,addEventListener: (name, callback) => listen(windowListeners, name, callback), removeEventListener: (name, callback) => unlisten(windowListeners, name, callback) },
         sessionStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
         MutationObserver: class { observe() {} disconnect() {} },
         queueMicrotask,
@@ -383,8 +389,7 @@ test("tick settings persist, broadcast live and preserve the old rate on write f
     await setTick(20);
     assert.equal(first.plugin.tick, 20);
     assert.equal(second.plugin.tick, 20);
-    assert.ok([...first.timers.values()].some((timer) => timer.delay === 50));
-    assert.equal([...first.timers.values()].filter((timer) => timer.delay < 1000).length, 1);
+    assert.equal([...first.timers.values()].filter((timer) => timer.delay < 1000).length, 0, 'idle frontend does not poll positions');
     const restarted = await createKernel({ storage: kernel.storage });
     assert.equal((await restarted.methods.get("cursorSnapshot")()).tick, 20);
     const broken = await createKernel({ writeFails: true });
@@ -459,7 +464,8 @@ test('editing activity is nonexclusive, validated, ordered and cleared independe
     kernel.advance(10000);await update('editing-user-one',1,3,editing);await flushActivity();
     assert.equal(kernel.broadcasts.length,before,'renewal does not broadcast unchanged activity');
     kernel.advance(20000);await heartbeat('editing-user-two',{generation:1});await flushActivity();
-    assert.equal((await snapshot()).editing.length,1,'heartbeat alone must not preserve stale editing');
+    assert.equal((await snapshot()).editing.length,2,'existing heartbeat keeps idle editing without extra activity packets');
+    await update('editing-user-two',1,3,null);
     await kernel.methods.get('presenceRename')('editing-user-one','Alice',1);
     assert.equal((await snapshot()).editing[0].name,'Alice');
     await heartbeat('editing-user-one',{generation:2});
@@ -476,6 +482,91 @@ test('editing activity is nonexclusive, validated, ordered and cleared independe
     assert.equal(kernel.methods.size,0);
 });
 
+test('UI position and page protocol strips private fields and rejects executable or malformed routes',async()=>{
+    const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),snapshot=kernel.methods.get('cursorSnapshot'),update=kernel.methods.get('cursorUpdate');
+    const page={kind:'settings',section:'editor',title:'设置 · 编辑器',secret:'password'};
+    await heartbeat('page-test-user',{generation:1,page});
+    const client=(await heartbeat('page-test-user',{generation:1})).clients[0];
+    assert.equal(client.page.title,page.title);assert.equal(client.page.secret,undefined);
+    assert.match(client.peerId,/^peer-/);
+    const cursor={surface:'ui',documentId:null,blockId:null,page,ui:{kind:'settings',path:[0,2],tag:'button'},screen:{x:.2,y:.3},x:.4,y:.5};
+    await update('page-test-user',1,1,cursor);
+    assert.equal((await snapshot()).cursors[0].cursor.page.secret,undefined);
+    for(const bad of [{...page,section:'x"] script'}, {...page,kind:'command',command:'syncNow'}, {...page,title:'x'.repeat(161)}, ...['assets/../conf','assets/%2e%2e/conf','assets/..\\conf','assets/%00file','assets/%zz'].map(path=>({kind:'asset',path,title:''}))]){
+        await assert.rejects(heartbeat('page-test-user',{generation:1,page:bad}),/Invalid page/);
+    }
+    for(const bad of [{...cursor,ui:{...cursor.ui,path:[-1]}},{...cursor,screen:{x:NaN,y:0}},{...cursor,ui:{...cursor.ui,tag:'button"]'}}])await assert.rejects(update('page-test-user',1,2,bad),/Invalid UI cursor/);
+    await kernel.plugin.lifecycle.onunload();
+});
+
+test('late heartbeat results cannot replace a newer participant page',async()=>{
+    const frontend=await createFrontend(await createKernel()),plugin=frontend.plugin;
+    const revision=plugin.presenceRevision;
+    const client={name:'A',hue:120,documentId:null,page:{kind:'settings',section:'appearance',title:'设置 · 外观'}};
+    plugin.updatePresence({count:1,clients:[client],revision:revision+2});
+    plugin.updatePresence({count:0,clients:[],revision:revision+1});
+    assert.equal(plugin.clients[0].page.section,'appearance');assert.equal(plugin.onlineCount,1);
+    await plugin.onunload();
+});
+
+test('shortcut notices are validated, ordered, throttled and never execute a command',async()=>{
+    const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),send=kernel.methods.get('shortcut');
+    await heartbeat('shortcut-user',{generation:1});
+    assert.equal(await send('shortcut-user',1,1,'Ctrl+C'),true);
+    assert.equal(await send('shortcut-user',1,1,'Ctrl+C'),false);
+    assert.equal(await send('shortcut-user',1,2,'Ctrl+V'),false);
+    kernel.advance(100);assert.equal(await send('shortcut-user',1,3,'Ctrl+Shift+Z'),true);
+    for(const value of ['typed text','Ctrl+<script>','Ctrl+密码',null])await assert.rejects(send('shortcut-user',1,4,value),/Invalid shortcut/);
+    const notices=kernel.broadcasts.filter(message=>message.name==='shortcut-shown');
+    assert.deepEqual(notices.map(message=>message.args[0].keys),['Ctrl+C','Ctrl+Shift+Z']);
+    assert.ok(!JSON.stringify(notices).includes('shortcut-user'));
+    await heartbeat('shortcut-user',{generation:2});
+    await assert.rejects(send('shortcut-user',1,4,'Ctrl+C'),/superseded/);
+    assert.equal(await send('shortcut-user',2,1,'Ctrl+C'),true);
+});
+
+test('pointer bursts coalesce and idle timers send zero position updates',async()=>{
+    let now=10000;
+    const kernel=await createKernel(),frontend=await createFrontend(kernel,'zh-CN',{now:()=>now});
+    const row=frontend.addRow('20261030165150-skkm1a3');
+    row.closest=selector=>selector.startsWith('.sy__file') ? row : null;
+    row.getBoundingClientRect=()=>({left:0,top:0,width:400,height:40});
+    frontend.document.elementFromPoint=()=>row;
+    for(let i=0;i<100;i++)frontend.listeners.get('pointermove')({pointerType:'mouse',clientX:i,clientY:20});
+    assert.equal([...frontend.timers.values()].filter(timer=>timer.delay<1000).length,1);
+    const scheduled=frontend.plugin.activityTimer,callback=frontend.timers.get(scheduled).callback;
+    frontend.timers.delete(scheduled);await callback();
+    assert.equal(frontend.plugin.cursorSequence,1);
+    for(let i=0;i<100;i++)await [...frontend.timers.values()].find(timer=>timer.delay===1000).callback();
+    assert.equal(frontend.plugin.cursorSequence,1,'idle display sweeper cannot send');
+    now+=100;frontend.listeners.get('pointermove')({pointerType:'mouse',clientX:200,clientY:20});
+    const trailing=frontend.plugin.activityTimer,run=frontend.timers.get(trailing).callback;frontend.timers.delete(trailing);await run();
+    assert.equal(frontend.plugin.cursorSequence,2);
+    await frontend.plugin.onunload();assert.equal(frontend.timers.size,0);
+});
+
+test('activity throttles at every preset and preserves the last movement during a slow send',async()=>{
+    for(const tick of [3,10,30]) {
+        let now=10000,release;
+        const frontend=await createFrontend(await createKernel(),'zh-CN',{now:()=>now}),plugin=frontend.plugin;
+        plugin.tick=tick;plugin.activitySentAt=now;
+        const sent=[];
+        plugin.sendCursor=async()=>{sent.push(plugin.pointer.x);if(sent.length===1)await new Promise(resolve=>release=resolve);};
+        plugin.pointer={x:1};plugin.queueActivity();
+        const first=plugin.activityTimer;
+        assert.ok(Math.abs(frontend.timers.get(first).delay-1000/tick)<0.01);
+        const run=frontend.timers.get(first).callback;
+        frontend.timers.delete(first);now+=1000/tick;
+        const sending=run();
+        plugin.pointer={x:99};plugin.queueActivity();
+        release();await sending;
+        const trailing=plugin.activityTimer,callback=frontend.timers.get(trailing).callback;
+        frontend.timers.delete(trailing);now+=1000/tick;await callback();
+        assert.deepEqual(sent,[1,99]);
+        await plugin.onunload();assert.equal(frontend.timers.size,0);
+    }
+});
+
 test("settings form validates and saves the tick rate through the kernel", async () => {
     const kernel = await createKernel();
     const frontend = await createFrontend(kernel);
@@ -483,13 +574,14 @@ test("settings form validates and saves the tick rate through the kernel", async
     const form = frontend.plugin.setting.items[0].createActionElement();
     const [input, save, error] = form.children;
     assert.equal(input.value, "10");
+    assert.deepEqual(input.children.map(option=>option.value),['3','10','30']);
     const submit = form.listeners.get("submit");
     input.value = "2.5";
     await submit({ preventDefault() {} });
     assert.equal(error.textContent, frontend.plugin.i18n.cursorTickFailed);
-    input.value = "15";
+    input.value = "30";
     await submit({ preventDefault() {} });
-    assert.equal(frontend.plugin.tick, 15);
+    assert.equal(frontend.plugin.tick, 30);
     assert.equal(save.disabled, false);
     assert.equal(frontend.messages.at(-1)[0], frontend.plugin.i18n.cursorTickSaved);
 });
@@ -750,9 +842,8 @@ test("document events update prefix viewer counts, safe menus and halos, then cl
     let stopped = false, prevented = false;
     count.listeners.get("click")({ stopPropagation() { stopped = true; }, preventDefault() { prevented = true; } });
     assert.ok(stopped && prevented);
-    assert.equal(first.menus.at(-1).items.length, 2);
-    assert.equal(first.menus.at(-1).items[0].label, "&lt;img src=x&gt;");
-    assert.equal(first.menus.at(-1).items[1].label, second.plugin.clientName);
+    assert.equal(first.plugin.peopleRows.size,2);
+    assert.equal([...first.plugin.peopleRows.values()][0].querySelector('strong').textContent,'<img src=x> · '+first.plugin.i18n.self);
     first.plugin.openMenu();
     assert.ok(first.menus.at(-1).items[1].label.includes("&lt;img src=x&gt;"));
     assert.ok(!first.menus.at(-1).items[1].label.includes("<img"));
@@ -803,7 +894,7 @@ test('presence never registers editing guards or lock RPCs, even when disconnect
     assert.equal(kernel.methods.has('editSnapshot'), false);
     assert.equal(frontend.plugin.editing, undefined);
     assert.equal(frontend.plugin.history, undefined);
-    const events = ['keydown', 'beforeinput', 'input', 'paste', 'cut', 'drop', 'dragstart', 'compositionstart', 'contextmenu'];
+    const events = ['beforeinput', 'input', 'paste', 'cut', 'drop', 'dragstart', 'compositionstart', 'contextmenu'];
     const check = () => {
         for (const event of events) {
             assert.equal(frontend.listeners.has(event), false, event);
@@ -841,13 +932,10 @@ for (const locale of ["en", "zh-CN"]) {
         const frontend = await createFrontend(kernel, locale);
         assert.equal(frontend.messages.length, 0);
         frontend.button.options.callback();
-        assert.equal(frontend.menus[0].items[0].label, frontend.plugin.i18n.checkOnline);
-        await frontend.menus[0].items[0].click();
+        assert.equal(frontend.plugin.peopleRows.size,1);
         await frontend.commands[0].callback();
-        assert.deepEqual(frontend.messages, [
-            [frontend.plugin.onlineText(1), 5000, "info"],
-            [frontend.plugin.onlineText(1), 5000, "info"],
-        ]);
+        assert.equal(frontend.plugin.peopleRows.size,1);
+        assert.deepEqual(frontend.messages, []);
     });
     test(`disconnect shows an error and kernel restart reconnects (${locale})`, async () => {
         const kernel = await createKernel();

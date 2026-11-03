@@ -1,4 +1,4 @@
-const { Plugin, Menu, Dialog, Setting, showMessage, openTab } = require("siyuan");
+const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getModelByDockType, globalCommand } = require("siyuan");
 const PRESENCE_TIMEOUT = 90000;
 const DOCUMENT_ID = /^\d{14}-[a-z0-9]{7}$/;
 const TREE_ROW = '.sy__file li[data-type="navigation-file"][data-node-id]';
@@ -30,7 +30,7 @@ function cursorTextRoot(block) {
     return block.querySelector('[contenteditable="true"]') || block;
 }
 
-function captureCursor(point) {
+function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = document.elementFromPoint(point.x, point.y);
     if (!hit) return null;
@@ -66,7 +66,7 @@ function captureCursor(point) {
     return cursor;
 }
 
-function resolveCursor(cursor) {
+function resolveDocumentCursor(cursor) {
     let blocks;
     if (cursor.surface === "tree") {
         blocks = document.querySelectorAll(`${TREE_ROW}[data-node-id="${cursor.blockId}"]`);
@@ -94,6 +94,9 @@ function resolveCursor(cursor) {
 }
 
 function validCursor(cursor) {
+    if (cursor?.surface === 'ui') return cursor.documentId === null && cursor.blockId === null && validPage(cursor.page) && validUIAnchor(cursor.ui) &&
+        [cursor.x,cursor.y,cursor.screen?.x,cursor.screen?.y].every((value)=>Number.isFinite(value) && value>=0 && value<=1);
+    if (cursor?.page !== undefined && (!validPage(cursor.page) || ![cursor.screen?.x,cursor.screen?.y].every((value)=>Number.isFinite(value) && value>=0 && value<=1))) return false;
     return cursor && ["document", "tree"].includes(cursor.surface) && typeof cursor.blockId === "string" && DOCUMENT_ID.test(cursor.blockId) &&
         (cursor.surface === "document" ? typeof cursor.documentId === "string" && DOCUMENT_ID.test(cursor.documentId) : cursor.documentId === null) &&
         [cursor.x, cursor.y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1) &&

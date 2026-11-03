@@ -6,9 +6,11 @@
 
 ```text
 src/
+├─ protocol.js            共用协议验证与字段白名单
 ├─ kernel.js              在线会话与展示状态广播
 └─ frontend/
    ├─ anchors.js          指针和选区锚点
+   ├─ surfaces.js         页面、界面锚点、跟踪与快捷键
    └─ plugin.js           生命周期、菜单与多人状态展示
 scripts/
 ├─ compile.cjs            生成加载入口
@@ -39,15 +41,16 @@ npm run build
 
 | RPC | 内容 |
 | --- | --- |
-| `presenceHeartbeat(sessionId, payload)` | 注册、名字、观看文档与刷新代次 |
+| `presenceHeartbeat(sessionId, payload)` | 注册、名字、观看文档、页面与刷新代次 |
 | `presenceRename(sessionId, name, generation)` | 修改显示名字 |
 | `presenceLeave(sessionId, generation)` / `getStatus()` | 注销 / 在线状态 |
 | `cursorUpdate(sessionId, generation, sequence, cursor)` | 指针锚点或 null |
 | `selectionUpdate(sessionId, generation, sequence, selection)` | 文本选区或 null |
 | `editingUpdate(sessionId, generation, sequence, editing)` | 当前聚焦的文档 ID、块 ID 或 null，无排他性 |
+| `shortcut(sessionId, generation, sequence, keys)` | 只读组合键通知，无远端执行 |
 | `cursorSnapshot()` / `setCursorTick(tick)` | 展示快照 / 共享频率 |
 
-广播仅有 `presence-changed` 和 `cursor-changed`。不传选中的正文，会话密钥不出现在公共快照。参数必须验证 ID、类型、代次、序号和范围。
+广播为 `presence-changed`、`cursor-changed` 与 `shortcut-shown`。页面参数先经共享协议验证、去除未知字段，再进入快照；不得携带搜索输入、剪贴板、密码、插件内部数据或任意可执行命令。不传选中的正文，会话密钥不出现在公共快照。参数必须验证 ID、类型、代次、序号和范围。
 
 ## 修改约定
 

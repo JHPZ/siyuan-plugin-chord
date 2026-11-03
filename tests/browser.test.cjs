@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const frontendSource = fs.readFileSync(path.join(root, "index.js"), "utf8");
-const helpers = fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n');
+const helpers = fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
 const selectionMethods = frontendSource.slice(frontendSource.indexOf('    renderSelections() {'), frontendSource.indexOf('    clearRow(')).replace('renderSelections() {','function renderSelections() {') +
     frontendSource.slice(frontendSource.indexOf('    async sendSelection() {'), frontendSource.indexOf('    scheduleCursorRender(')).replace('async sendSelection() {','async function sendSelection() {');
 const treeMethods = frontendSource.slice(frontendSource.indexOf('    clearRow('), frontendSource.indexOf('    openMenu() {'))
@@ -58,14 +58,14 @@ async function test(name, run) {
     await test('文档树人数在 emoji 前，点击查看名单，不触发文档行点击', async () => {
         const row=document.querySelector('.sy__file li');
         const viewer={name:'chord-test',i18n:{viewers:'Viewers: '+String.fromCharCode(36)+'{count}'},
-            clients:[{name:'<b>A</b>',hue:120,documentId:row.dataset.nodeId},{name:'B',hue:215,documentId:row.dataset.nodeId}],clearRow};
+            clients:[{name:'<b>A</b>',hue:120,documentId:row.dataset.nodeId},{name:'B',hue:215,documentId:row.dataset.nodeId}],clearRow,openPeople:id=>viewer.openedPeople=id};
         renderTreePresence.call(viewer);
         const count=row.querySelector('.collab-presence-users'), icon=row.querySelector('.b3-list-item__icon');
         assert(count.tagName==='BUTTON' && count.textContent==='2','not a count button');
         assert(count.nextElementSibling===icon && count.previousElementSibling.classList.contains('b3-list-item__toggle'),'wrong count placement');
         let rowClicks=0;const onClick=()=>rowClicks++;row.addEventListener('click',onClick);
         count.click();assert(rowClicks===0,'count click navigated to the document');
-        assert(viewerMenus.at(-1).items.length===2 && viewerMenus.at(-1).items[0].label==='&lt;b&gt;A&lt;/b&gt;','unsafe or incomplete viewer menu');
+        assert(viewer.openedPeople===row.dataset.nodeId,'participant list did not open for this document');
         count.focus();assert(document.activeElement===count,'count cannot receive keyboard focus');
         renderTreePresence.call(viewer);assert(document.activeElement===count,'unchanged rendering lost focus');
         const style=getComputedStyle(count);assert(style.pointerEvents!=='none' && parseFloat(style.height)>=22,'count not interactive or clipped');
@@ -134,15 +134,16 @@ async function test(name, run) {
         assert(resolved && near(resolved.x,expected.x) && near(resolved.y,expected.y),'font scaling drift');
     });
     await test('未加载的块和其他文档不会画假光标', async () => {
-        assert(resolveCursor({...window.savedAnchor,blockId:'20261030165150-missing'}) === null,'missing block visible');
-        assert(resolveCursor({...window.savedAnchor,documentId:'20261030165150-other01'}) === null,'wrong document visible');
+        assert(resolveDocumentCursor({...window.savedAnchor,blockId:'20261030165150-missing'}) === null,'missing block precisely anchored');
+        assert(resolveDocumentCursor({...window.savedAnchor,documentId:'20261030165150-other01'}) === null,'wrong document precisely anchored');
+        assert(resolveCursor({...window.savedAnchor,blockId:'20261030165150-missing'})!==null,'cross-page screen position missing');
     });
     await test('视口外或弹窗遮挡时隐藏', async () => {
         await expose(block,150);
         const cover = document.createElement('div');cover.className='occluder';document.body.append(cover);
-        assert(resolveCursor(window.savedAnchor) === null,'occluded pointer visible');
+        assert(resolveDocumentCursor(window.savedAnchor) === null,'occluded content precisely anchored');
         cover.remove();scroller.scrollTop += 1000;await frame();
-        assert(resolveCursor(window.savedAnchor) === null,'offscreen pointer visible');
+        assert(resolveDocumentCursor(window.savedAnchor) === null,'offscreen content precisely anchored');
     });
     function select(element, from, to = from) {
         const root = cursorTextRoot(element);root.focus();
@@ -199,15 +200,20 @@ async function test(name, run) {
     });
     await test('完整插件在在线和断线时都放行正文编辑、拖拽与原生撤销', async () => {
         const commands=[], messages=[], subscriptions=new Map();
+        const navigation={opened:[],commands:[],tab:null,allow:false};
         const NativePlugin = (() => {
             const module={exports:{}};
             const store=new Map(),sessionStorage={getItem:key=>store.get(key),setItem:(key,value)=>store.set(key,value)};
             const require = () => ({
                 Plugin:class { addCommand(command){commands.push(command);} addTopBar(){return document.createElement('button');} },
                 Menu:class {addItem(){} open(){}}, Setting:class {addItem(){}}, showMessage:message=>messages.push(message),
-                openTab:()=>{throw Error('Unexpected navigation');}
+                openTab:options=>{if(!navigation.allow)throw Error('Unexpected navigation');navigation.opened.push(options);},
+                openSetting:()=>{const config=document.querySelector('.config__panel');if(config)config.dataset.opened='true';},
+                getActiveTab:()=>navigation.tab,
+                globalCommand:command=>{navigation.commands.push(command);return true;}
             });
             ${frontendSource}
+            module.exports.testPage=currentPage;
             return module.exports;
         })();
         const plugin=new NativePlugin();let offline=false;
@@ -223,6 +229,86 @@ async function test(name, run) {
         const input=cursorTextRoot(block), original=input.innerHTML;
         try {
             await plugin.onload();await plugin.onLayoutReady();
+            await test('设置和任意界面都有光标，跨页面保留窗口位置，快捷键只读显示',async()=>{
+                const config=document.createElement('div');config.className='config__panel';
+                config.style.cssText='position:fixed;left:20px;top:20px;width:500px;height:250px;background:white;z-index:100';
+                config.innerHTML='<div class="config__side"><button class="b3-list-item--focus" data-name="editor">编辑器</button><button data-name="appearance">外观</button></div><div class="config__tab-container"><button id="surface-action">示例按钮</button><input type="password"></div>';
+                document.body.append(config);
+                try {
+                    const page=currentPage(plugin);assert(page.kind==='settings'&&page.section==='editor','settings page missing');
+                    const button=config.querySelector('#surface-action'),rect=button.getBoundingClientRect();
+                    const point={x:rect.left+5,y:rect.top+5},anchor=captureCursor(point,plugin);
+                    assert(anchor?.surface==='ui'&&validCursor(anchor),'UI position missing');
+                    const resolved=resolveCursor(anchor,plugin);assert(near(resolved.x,point.x)&&near(resolved.y,point.y),'UI anchor drift');
+                    let clicked=0;config.querySelector('[data-name="appearance"]').addEventListener('click',()=>clicked++);
+                    plugin.clients.push({peerId:'peer-bob',name:'Bob',hue:210,documentId:null,page:{kind:'settings',section:'appearance',title:'设置 · 外观'}});
+                    plugin.openPeople();
+                    const row=plugin.peopleRows.get('peer-bob');assert(row?.querySelector('span').textContent==='设置 · 外观','participant page missing');
+                    row.querySelector('button').click();await frame();
+                    assert(clicked===1&&config.dataset.opened==='true','follow did not open settings section exactly once');
+                    assert(!plugin.peoplePanel,'follow did not close list');
+                    plugin.clients.push({name:'Bob',hue:210,documentId:null});
+                    plugin.showShortcut({name:'Bob',keys:'Ctrl+C'});
+                    assert(document.querySelector('.collab-shortcut')?.textContent==='Bob  Ctrl+C','remote shortcut missing');
+                    const event=new KeyboardEvent('keydown',{key:'c',ctrlKey:true,bubbles:true,cancelable:true});
+                    assert(button.dispatchEvent(event)&&captureShortcut(event)==='Ctrl+C','Ctrl+C canceled or not captured');
+                    assert(captureShortcut(new KeyboardEvent('keydown',{key:'a'}))===null,'plain typed text shared');
+                    const password=config.querySelector('input');let captured='not called';password.addEventListener('keydown',e=>captured=captureShortcut(e));
+                    password.dispatchEvent(new KeyboardEvent('keydown',{key:'c',ctrlKey:true,bubbles:true}));assert(captured===null,'password shortcut shared');
+                    config.remove();
+                    const fallback=resolveCursor(anchor,plugin);assert(near(fallback.x,point.x)&&near(fallback.y,point.y),'cross-page viewport position lost');
+                } finally {plugin.closePeople();config.remove();plugin.pendingShortcut=null;}
+            });
+            await test('侧栏、搜索和文档只打开一次，弹窗保留原生关闭保护',async()=>{
+                const dock=document.createElement('button');dock.className='dock__item';dock.dataset.type='outline';dock.setAttribute('aria-label','大纲');
+                document.body.append(dock);let clicks=0;dock.addEventListener('click',()=>{clicks++;dock.classList.add('dock__item--active');});
+                navigation.allow=true;
+                const follow=async page=>{
+                    plugin.clients=[{name:'A',hue:120,documentId:null},{peerId:'bob',name:'Bob',hue:210,documentId:null,page}];
+                    plugin.openPeople();plugin.peopleRows.get('bob').querySelector('button').click();await frame();
+                };
+                try {
+                    for(const [model,kind] of [[{editor:{protyle:{block:{rootID:'20261030165150-doc0001'}}}},'document'],[{path:'assets/example.pdf'},'asset'],[{type:'example-plugin-tab'},'custom']]) {
+                        navigation.tab={title:'页面',icon:'iconPlugin',model};plugin.surfaceTarget=null;
+                        assert(NativePlugin.testPage(plugin).kind===kind,'tab page not captured: '+kind);
+                    }
+                    const graph=document.createElement('div');graph.className='sy__globalGraph';
+                    navigation.tab={title:'关系图',model:{type:'global'},panelElement:graph};
+                    assert(NativePlugin.testPage(plugin).id==='globalGraph','graph classified as a plugin tab');navigation.tab=null;
+                    plugin.surfaceTarget=dock;assert(currentPage(plugin).kind==='dock','dock page not captured');
+                    await follow({kind:'dock',id:'outline',title:'大纲'});await follow({kind:'dock',id:'outline',title:'大纲'});
+                    assert(clicks===1,'following an open dock toggled it closed');
+                    const wrapper=document.createElement('div');wrapper.dataset.key='dialog-globalsearch';wrapper.innerHTML='<div class="b3-dialog" style="position:fixed;inset:5px"><div class="b3-dialog__scrim"></div><div class="b3-dialog__container"><div class="b3-dialog__header">搜索</div></div></div>';
+                    document.body.append(wrapper);assert(currentPage(plugin).command==='globalSearch'&&currentPage(plugin).title==='搜索','native search page was not captured');
+                    let close=false;wrapper.querySelector('.b3-dialog__scrim').addEventListener('click',()=>{if(close)wrapper.remove();});
+                    const start=navigation.opened.length;
+                    await follow({kind:'document',id:block.closest('.protyle').querySelector('.protyle-background').dataset.nodeId,title:'测试文档'});
+                    assert(navigation.opened.length===start,'follow bypassed the native dialog close guard');
+                    messages.length=0;close=true;
+                    await follow({kind:'document',id:'20261030165150-doc0001',title:'测试文档'});
+                    assert(!wrapper.isConnected&&navigation.opened.length===start+1,'document navigation left an overlay or opened twice');
+                    await follow({kind:'command',command:'globalSearch',title:'搜索'});
+                    assert(navigation.commands.at(-1)==='globalSearch','search route not opened');
+                    await follow({kind:'participants',title:'在线人员'});assert(plugin.peoplePanel,'following participant page closed itself');
+                    plugin.closePeople();
+                } finally {dock.remove();navigation.allow=false;plugin.surfaceTarget=null;plugin.closePeople();document.querySelector('[data-key="dialog-globalsearch"]')?.remove();}
+            });
+            await test('弹窗停止冒泡仍能观察快捷键，同源嵌入跟踪坐标并完整清理',async()=>{
+                const button=document.createElement('button');document.body.append(button);
+                button.addEventListener('keydown',event=>event.stopPropagation());
+                plugin.pendingShortcut=null;button.dispatchEvent(new KeyboardEvent('keydown',{key:'c',ctrlKey:true,bubbles:true}));
+                assert(plugin.pendingShortcut==='Ctrl+C','dialog swallowed shortcut observer');plugin.pendingShortcut=null;
+                const embedded=document.createElement('iframe');embedded.style.cssText='position:fixed;left:30px;top:50px;width:300px;height:150px';
+                const loaded=new Promise(resolve=>embedded.addEventListener('load',resolve,{once:true}));embedded.srcdoc='<button>内部按钮</button>';document.body.append(embedded);await loaded;
+                try {
+                    plugin.bindFrames();embedded.contentDocument.body.dispatchEvent(new PointerEvent('pointermove',{clientX:20,clientY:30,pointerType:'mouse',bubbles:true}));
+                    const rect=embedded.getBoundingClientRect();assert(plugin.pointer&&near(plugin.pointer.x,rect.left+20*rect.width/embedded.clientWidth)&&near(plugin.pointer.y,rect.top+30*rect.height/embedded.clientHeight),'iframe pointer not translated; bindings='+plugin.frameListeners.size);
+                    embedded.contentDocument.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'v',ctrlKey:true,bubbles:true}));
+                    assert(plugin.pendingShortcut==='Ctrl+V','iframe shortcut missing');plugin.pendingShortcut=null;
+                    plugin.openPeople();button.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));assert(!plugin.peoplePanel,'outside click did not dismiss list');
+                } finally {embedded.remove();button.remove();plugin.bindFrames();plugin.pendingShortcut=null;}
+                assert(plugin.frameListeners.size===0,'iframe listeners leaked');
+            });
             await test('编辑框合并同块多人，随滚动裁剪，缺失块不显示且不改正文', async () => {
                 await expose(block,10);select(block,10);
                 const editing=captureEditing(), before=block.outerHTML;
@@ -272,7 +358,7 @@ async function test(name, run) {
                     fail=false;await plugin.sendEditing();await plugin.sendEditing();
                     assert(sent.length===1 && sent[0][3].blockId===block.dataset.nodeId,'failed activity was not retried or deduplicated');
                     plugin.editingSentAt=Date.now()-10001;await plugin.sendEditing();
-                    assert(sent.length===2,'unchanged activity not renewed');
+                    assert(sent.length===1,'idle activity sent redundant packets');
                     const nested=document.querySelector('[data-node-id="20261030165150-para002"]');select(nested,2);
                     await plugin.sendEditing();assert(sent.at(-1)[3].blockId===nested.dataset.nodeId,'block switch not reported');
                     const outside=document.createElement('input');document.body.append(outside);outside.focus();

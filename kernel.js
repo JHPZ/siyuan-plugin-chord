@@ -1,7 +1,53 @@
 // Generated from src/kernel.js by npm run compile.
+const COLLAB_ID = /^\d{14}-[a-z0-9]{7}$/;
+const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backlinks', 'graphView', 'globalGraph', 'globalSearch', 'dataHistory', 'riffCard', 'mainMenu', 'recentDocs'];
+const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
+
+function validPage(page, depth = 0) {
+    if (!page || depth > 2 || typeof page.title !== 'string' || page.title.length > 160) return false;
+    if (page.kind === 'workspace') return true;
+    if (['participants','chord-settings','chord-name'].includes(page.kind)) return true;
+    if (page.kind === 'control') return PAGE_CONTROLS.includes(page.control);
+    if (page.kind === 'dock') return typeof page.id === 'string' && /^[\w-]{1,160}$/.test(page.id);
+    if (page.kind === 'settings') return typeof page.section === 'string' && /^[a-zA-Z][\w-]{0,63}$/.test(page.section);
+    if (page.kind === 'document') return COLLAB_ID.test(page.id) && typeof page.id === 'string';
+    if (page.kind === 'command') return PAGE_COMMANDS.includes(page.command);
+    if (page.kind === 'asset') {
+        if(typeof page.path!=='string' || page.path.length>=1024)return false;
+        let path;
+        try { path=decodeURIComponent(page.path); } catch { return false; }
+        return path.startsWith('assets/') && !/[\\\u0000-\u001f]/.test(path) && !path.split('/').includes('..');
+    }
+    if (page.kind === 'custom') return typeof page.id === 'string' && /^[\w-]{1,160}$/.test(page.id) && typeof page.icon === 'string' && /^icon[\w-]{1,80}$/.test(page.icon);
+    if (page.kind === 'dialog') return typeof page.key === 'string' && page.key.length <= 100 && validPage(page.base, depth + 1);
+    return false;
+}
+
+function pageKey(page) {
+    return JSON.stringify(page && [page.kind,page.section,page.id,page.command,page.control,page.path,page.key,page.base && pageKey(page.base)]);
+}
+
+
+function cleanPage(page) {
+    if (!validPage(page)) throw new Error('Invalid page');
+    const result={kind:page.kind,title:page.title};
+    const fields={settings:['section'],document:['id'],dock:['id'],command:['command'],control:['control'],asset:['path'],custom:['id','icon'],dialog:['key']};
+    for (const key of fields[page.kind] || []) result[key]=page[key];
+    if (page.kind==='dialog') result.base=cleanPage(page.base);
+    return result;
+}
+function validUIAnchor(value) {
+    return value && ['settings','dialog','layout','toolbar','body'].includes(value.kind) && Array.isArray(value.path) && value.path.length<=12 &&
+        value.path.every((index)=>Number.isSafeInteger(index) && index>=0 && index<=10000) && typeof value.tag==='string' && /^[a-z][a-z0-9-]{0,39}$/.test(value.tag);
+}
+function validShortcut(value) {
+    return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
+}
+
 const { plugin, rpc, logger, storage } = siyuan;
 const sessions = new Map();
 let peerSequence = 0;
+let presenceRevision = 0;
 const SESSION_TIMEOUT = 90000;
 let sweepTimer;
 let cursorTimer;
@@ -11,6 +57,10 @@ let settingsWrite = Promise.resolve();
 const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 
 function normalizeCursor(value) {
+    if (value?.surface === 'ui') {
+        if (value.documentId !== null || value.blockId !== null || !validUIAnchor(value.ui) || ![value.x,value.y,value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid UI cursor');
+        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:{kind:value.ui.kind,path:[...value.ui.path],tag:value.ui.tag},screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
+    }
     if (value === null) return null;
     if (!value || !["document", "tree"].includes(value.surface) || typeof value.blockId !== "string" || !BLOCK_ID.test(value.blockId) ||
         (value.surface === "document" ? typeof value.documentId !== "string" || !BLOCK_ID.test(value.documentId) : value.documentId !== null) ||
@@ -22,6 +72,10 @@ function normalizeCursor(value) {
         if (value.surface !== "document" || !value.text || !Number.isSafeInteger(value.text.offset) || value.text.offset < 0 || value.text.offset > 10000000 ||
             ![value.text.x, value.text.y].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 1)) throw new Error("Invalid cursor text anchor");
         cursor.text = { offset: value.text.offset, x: value.text.x, y: value.text.y };
+    }
+    if (value.page !== undefined) {
+        if (![value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid screen position');
+        cursor.page=cleanPage(value.page);cursor.screen={x:value.screen.x,y:value.screen.y};
     }
     return cursor;
 }
@@ -79,8 +133,8 @@ function startCursorTimer() {
 
 // shortcut: 每个前端窗口是一名参与者，接入账号身份后再做跨窗口去重。
 function snapshot(selfId) {
-    const clients = [...sessions.values()].map(({ name, documentId, hue }) => ({ name, documentId, hue }));
-    const result = { count: clients.length, clients };
+    const clients = [...sessions.values()].map(({ peerId, name, documentId, hue, page }) => ({ peerId, name, documentId, hue, page:page || null }));
+    const result = { count: clients.length, clients, revision:presenceRevision };
     const self = sessions.get(selfId);
     if (self) {
         result.self = { peerId: self.peerId, name: self.name, hue: self.hue };
@@ -140,6 +194,7 @@ function pruneSessions() {
 }
 
 function broadcastPresence() {
+    presenceRevision++;
     return rpc.broadcast("presence-changed", [snapshot()]);
 }
 
@@ -207,6 +262,18 @@ plugin.lifecycle.onload = async () => {
         client.editingSeen = Date.now();
         return true;
     }, "Share a focused block; never reserve it or restrict editing.");
+    await rpc.bind('shortcut', async (id,generation,sequence,value) => {
+        validateSession(id);validateGeneration(generation);
+        if (!Number.isSafeInteger(sequence) || sequence<1 || !validShortcut(value)) throw new Error('Invalid shortcut');
+        const client=sessions.get(id);
+        if (!client || client.generation!==generation) throw new Error('Session expired or superseded');
+        if (sequence <= (client.shortcutSequence || 0)) return false;
+        client.shortcutSequence=sequence;
+        if (Date.now()-(client.shortcutAt ?? -Infinity)<1000/tick) return false;
+        client.shortcutAt=Date.now();
+        await rpc.broadcast('shortcut-shown',[{peerId:client.peerId,name:client.name,hue:client.hue,keys:value,page:client.page || null}]);
+        return true;
+    },'Show a key combination without executing it or sharing clipboard content.');
     await rpc.bind("getStatus", async () => {
         await expireSessions();
         return { name: plugin.name, version: plugin.version, platform: plugin.platform, onlineCount: sessions.size };
@@ -223,6 +290,7 @@ plugin.lifecycle.onload = async () => {
             (typeof state.documentId !== "string" || !/^\d{14}-[a-z0-9]{7}$/.test(state.documentId))) {
             throw new Error("Invalid document ID");
         }
+        const page=state.page === undefined ? undefined : state.page === null ? null : cleanPage(state.page);
         let changed = pruneSessions();
         let client = sessions.get(id);
         if (client && generation < client.generation) throw new Error("Session superseded by a refreshed client");
@@ -238,6 +306,8 @@ plugin.lifecycle.onload = async () => {
             client.selectionSequence = 0;
             client.editing = null;
             client.editingSequence = 0;
+            client.shortcutSequence = 0;
+            client.shortcutAt = undefined;
             cursorDirty = true;
         }
         client.generation = generation;
@@ -248,7 +318,9 @@ plugin.lifecycle.onload = async () => {
             if (client.editing && client.editing.documentId !== client.documentId) { client.editing = null; cursorDirty = true; }
             changed = true;
         }
+        if (page !== undefined && JSON.stringify(client.page ?? null) !== JSON.stringify(page)) { client.page=page; changed=true; }
         client.lastSeen = Date.now();
+        if (client.editing) client.editingSeen = Date.now();
         if (changed) {
             await broadcastPresence();
         }
@@ -299,5 +371,5 @@ plugin.lifecycle.onunload = async () => {
     clearInterval(sweepTimer);
     clearInterval(cursorTimer);
     sessions.clear();
-    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "setCursorTick"].map((name) => rpc.unbind(name)));
+    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "shortcut", "setCursorTick"].map((name) => rpc.unbind(name)));
 };

@@ -1,6 +1,7 @@
 const { plugin, rpc, logger, storage } = siyuan;
 const sessions = new Map();
 let peerSequence = 0;
+let presenceRevision = 0;
 const SESSION_TIMEOUT = 90000;
 let sweepTimer;
 let cursorTimer;
@@ -10,6 +11,10 @@ let settingsWrite = Promise.resolve();
 const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 
 function normalizeCursor(value) {
+    if (value?.surface === 'ui') {
+        if (value.documentId !== null || value.blockId !== null || !validUIAnchor(value.ui) || ![value.x,value.y,value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid UI cursor');
+        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:{kind:value.ui.kind,path:[...value.ui.path],tag:value.ui.tag},screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
+    }
     if (value === null) return null;
     if (!value || !["document", "tree"].includes(value.surface) || typeof value.blockId !== "string" || !BLOCK_ID.test(value.blockId) ||
         (value.surface === "document" ? typeof value.documentId !== "string" || !BLOCK_ID.test(value.documentId) : value.documentId !== null) ||
@@ -21,6 +26,10 @@ function normalizeCursor(value) {
         if (value.surface !== "document" || !value.text || !Number.isSafeInteger(value.text.offset) || value.text.offset < 0 || value.text.offset > 10000000 ||
             ![value.text.x, value.text.y].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 1)) throw new Error("Invalid cursor text anchor");
         cursor.text = { offset: value.text.offset, x: value.text.x, y: value.text.y };
+    }
+    if (value.page !== undefined) {
+        if (![value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid screen position');
+        cursor.page=cleanPage(value.page);cursor.screen={x:value.screen.x,y:value.screen.y};
     }
     return cursor;
 }
@@ -78,8 +87,8 @@ function startCursorTimer() {
 
 // shortcut: 每个前端窗口是一名参与者，接入账号身份后再做跨窗口去重。
 function snapshot(selfId) {
-    const clients = [...sessions.values()].map(({ name, documentId, hue }) => ({ name, documentId, hue }));
-    const result = { count: clients.length, clients };
+    const clients = [...sessions.values()].map(({ peerId, name, documentId, hue, page }) => ({ peerId, name, documentId, hue, page:page || null }));
+    const result = { count: clients.length, clients, revision:presenceRevision };
     const self = sessions.get(selfId);
     if (self) {
         result.self = { peerId: self.peerId, name: self.name, hue: self.hue };
@@ -139,6 +148,7 @@ function pruneSessions() {
 }
 
 function broadcastPresence() {
+    presenceRevision++;
     return rpc.broadcast("presence-changed", [snapshot()]);
 }
 
@@ -206,6 +216,18 @@ plugin.lifecycle.onload = async () => {
         client.editingSeen = Date.now();
         return true;
     }, "Share a focused block; never reserve it or restrict editing.");
+    await rpc.bind('shortcut', async (id,generation,sequence,value) => {
+        validateSession(id);validateGeneration(generation);
+        if (!Number.isSafeInteger(sequence) || sequence<1 || !validShortcut(value)) throw new Error('Invalid shortcut');
+        const client=sessions.get(id);
+        if (!client || client.generation!==generation) throw new Error('Session expired or superseded');
+        if (sequence <= (client.shortcutSequence || 0)) return false;
+        client.shortcutSequence=sequence;
+        if (Date.now()-(client.shortcutAt ?? -Infinity)<1000/tick) return false;
+        client.shortcutAt=Date.now();
+        await rpc.broadcast('shortcut-shown',[{peerId:client.peerId,name:client.name,hue:client.hue,keys:value,page:client.page || null}]);
+        return true;
+    },'Show a key combination without executing it or sharing clipboard content.');
     await rpc.bind("getStatus", async () => {
         await expireSessions();
         return { name: plugin.name, version: plugin.version, platform: plugin.platform, onlineCount: sessions.size };
@@ -222,6 +244,7 @@ plugin.lifecycle.onload = async () => {
             (typeof state.documentId !== "string" || !/^\d{14}-[a-z0-9]{7}$/.test(state.documentId))) {
             throw new Error("Invalid document ID");
         }
+        const page=state.page === undefined ? undefined : state.page === null ? null : cleanPage(state.page);
         let changed = pruneSessions();
         let client = sessions.get(id);
         if (client && generation < client.generation) throw new Error("Session superseded by a refreshed client");
@@ -237,6 +260,8 @@ plugin.lifecycle.onload = async () => {
             client.selectionSequence = 0;
             client.editing = null;
             client.editingSequence = 0;
+            client.shortcutSequence = 0;
+            client.shortcutAt = undefined;
             cursorDirty = true;
         }
         client.generation = generation;
@@ -247,7 +272,9 @@ plugin.lifecycle.onload = async () => {
             if (client.editing && client.editing.documentId !== client.documentId) { client.editing = null; cursorDirty = true; }
             changed = true;
         }
+        if (page !== undefined && JSON.stringify(client.page ?? null) !== JSON.stringify(page)) { client.page=page; changed=true; }
         client.lastSeen = Date.now();
+        if (client.editing) client.editingSeen = Date.now();
         if (changed) {
             await broadcastPresence();
         }
@@ -298,5 +325,5 @@ plugin.lifecycle.onunload = async () => {
     clearInterval(sweepTimer);
     clearInterval(cursorTimer);
     sessions.clear();
-    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "setCursorTick"].map((name) => rpc.unbind(name)));
+    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "shortcut", "setCursorTick"].map((name) => rpc.unbind(name)));
 };
