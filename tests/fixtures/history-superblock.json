@@ -1,0 +1,100 @@
+{
+  "forward": [
+    {
+      "action": "move",
+      "id": "20261103151109-zm0aweb",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-n08tkj3",
+      "previousID": "20261103151109-zm0aweb",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-8wijxyt",
+      "previousID": "20261103151109-n08tkj3",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-aezdcor",
+      "previousID": "20261103151109-8wijxyt",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-4z14foo",
+      "previousID": "20261103151109-aezdcor",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-l5w2dmg",
+      "previousID": "20261103151109-4z14foo",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-qb7g0ln",
+      "previousID": "20261103151109-l5w2dmg",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "delete",
+      "id": "20261103151109-mfaxj1y"
+    }
+  ],
+  "backward": [
+    {
+      "action": "insert",
+      "id": "20261103151109-mfaxj1y",
+      "data": "<div data-node-id=\"20261103151109-mfaxj1y\" data-node-index=\"0\" data-type=\"NodeSuperBlock\" class=\"sb\" updated=\"20261103151109\" data-sb-layout=\"row\" data-editing=\"true\"><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div>",
+      "parentID": "20261103151109-8l43hkn"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-zm0aweb",
+      "parentID": "20261103151109-mfaxj1y"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-n08tkj3",
+      "previousID": "20261103151109-zm0aweb",
+      "parentID": "20261103151109-mfaxj1y"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-8wijxyt",
+      "previousID": "20261103151109-n08tkj3",
+      "parentID": "20261103151109-mfaxj1y"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-aezdcor",
+      "previousID": "20261103151109-8wijxyt",
+      "parentID": "20261103151109-mfaxj1y"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-4z14foo",
+      "previousID": "20261103151109-aezdcor",
+      "parentID": "20261103151109-mfaxj1y"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-l5w2dmg",
+      "previousID": "20261103151109-4z14foo",
+      "parentID": "20261103151109-mfaxj1y"
+    },
+    {
+      "action": "move",
+      "id": "20261103151109-qb7g0ln",
+      "previousID": "20261103151109-l5w2dmg",
+      "parentID": "20261103151109-mfaxj1y"
+    }
+  ],
+  "rootID": "20261103151109-8l43hkn",
+  "afterHTML": "<div data-node-id=\"20261103151109-zm0aweb\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">alpha</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-n08tkj3\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">beta</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-8wijxyt\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">gamma</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-aezdcor\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">delta</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-4z14foo\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">epsilon</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-l5w2dmg\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">zeta</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-qb7g0ln\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">eta</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div><div data-node-id=\"20261103151109-rfbyiz2\" data-node-index=\"1\" data-type=\"NodeParagraph\" class=\"p\" updated=\"20261103151109\"><div contenteditable=\"true\" spellcheck=\"false\">after group</div><div class=\"protyle-attr\" contenteditable=\"false\">​</div></div>"
+}

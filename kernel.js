@@ -1,5 +1,7 @@
+// Generated from src/kernel.js by npm run compile.
 const { plugin, rpc, logger, storage } = siyuan;
 const sessions = new Map();
+let peerSequence = 0;
 const SESSION_TIMEOUT = 90000;
 const EDIT_LEASE = 15000;
 const editLocks = new Map();
@@ -27,7 +29,7 @@ function pruneEditLocks() {
 function editSnapshot() {
     return { version: editVersion, ttl: EDIT_LEASE, locks: [...editLocks.values()].map(({ id, documentId, blockId, ancestors }) => {
         const client = sessions.get(id);
-        return { documentId, blockId, ancestors, name: client.name, hue: client.hue };
+        return { documentId, blockId, ancestors, peerId: client.peerId, name: client.name, hue: client.hue };
     }) };
 }
 
@@ -61,26 +63,27 @@ function normalizeSelection(value) {
 }
 
 function cursorSnapshot() {
-    return { tick, cursors: [...sessions.values()].filter((client) => client.cursor && Date.now() - client.cursorAt < 5000)
+    return { tick, cursors: [...sessions.values()].filter((client) => client.cursor && Date.now() - client.lastSeen < SESSION_TIMEOUT)
         .map(({ name, hue, cursor }) => ({ name, hue, cursor })),
-        selections: [...sessions.values()].filter((client) => client.selection && Date.now() - client.selectionAt < 5000)
+        selections: [...sessions.values()].filter((client) => client.selection && Date.now() - client.lastSeen < SESSION_TIMEOUT)
             .map(({ name, hue, selection }) => ({ name, hue, selection })) };
 }
 
 async function flushCursors() {
     for (const client of sessions.values()) {
-        if (client.cursor && Date.now() - client.cursorAt >= 5000) {
+        if (client.cursor && Date.now() - client.lastSeen >= SESSION_TIMEOUT) {
             client.cursor = null;
             cursorDirty = true;
         }
-        if (client.selection && Date.now() - client.selectionAt >= 5000) {
+        if (client.selection && Date.now() - client.lastSeen >= SESSION_TIMEOUT) {
             client.selection = null;
             cursorDirty = true;
         }
     }
     if (cursorDirty) {
         cursorDirty = false;
-        await rpc.broadcast("cursor-changed", [cursorSnapshot()]);
+        try { await rpc.broadcast("cursor-changed", [cursorSnapshot()]); }
+        catch (error) { cursorDirty = true; throw error; }
     }
 }
 
@@ -95,7 +98,7 @@ function snapshot(selfId) {
     const result = { count: clients.length, clients };
     const self = sessions.get(selfId);
     if (self) {
-        result.self = { name: self.name, hue: self.hue };
+        result.self = { peerId: self.peerId, name: self.name, hue: self.hue };
     }
     return result;
 }
@@ -129,11 +132,14 @@ function assignName(preferredName, selfId) {
     if (preferredName && !nameTaken(preferredName, selfId)) {
         return preferredName;
     }
-    let name;
-    do {
-        name = Array.from({ length: 4 }, () => String.fromCharCode(65 + Math.floor(Math.random() * 26))).join("");
-    } while (nameTaken(name, selfId));
-    return name;
+    const taken = new Set([...sessions].filter(([id]) => id !== selfId).map(([, client]) => client.name));
+    for (let index = 1; ; index++) {
+        let name = "";
+        for (let value = index; value > 0; value = Math.floor((value - 1) / 26)) {
+            name = String.fromCharCode(65 + (value - 1) % 26) + name;
+        }
+        if (!taken.has(name)) return name;
+    }
 }
 
 function pruneSessions() {
@@ -170,7 +176,8 @@ plugin.lifecycle.onload = async () => {
         if (!Number.isSafeInteger(sequence) || sequence < 1 || (documentId !== null && (typeof documentId !== "string" || !BLOCK_ID.test(documentId))) ||
             !Array.isArray(blocks) || blocks.length > 200 || (blocks.length && !documentId) || blocks.some((block) =>
                 !block || typeof block.blockId !== "string" || !BLOCK_ID.test(block.blockId) || !Array.isArray(block.ancestors) || block.ancestors.length > 32 ||
-                block.ancestors.some((ancestor) => typeof ancestor !== "string" || !BLOCK_ID.test(ancestor)))) throw new Error("Invalid edit claim");
+                block.ancestors.some((ancestor) => typeof ancestor !== "string" || !BLOCK_ID.test(ancestor) || ancestor === block.blockId)) ||
+            new Set(blocks.map(block => block.blockId)).size !== blocks.length) throw new Error("Invalid edit claim");
         const client = sessions.get(id);
         if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
         if (sequence <= (client.editSequence || 0)) {
@@ -178,12 +185,14 @@ plugin.lifecycle.onload = async () => {
             return { granted: false, stale: true, ...editSnapshot() };
         }
         client.editSequence = sequence;
+        // A retiring frontend stops presence heartbeats while it waits for its final save.
+        client.lastSeen = Date.now();
         let changed = pruneEditLocks();
         const conflict = [...editLocks.values()].find((lock) => lock.id !== id && blocks.some((block) =>
             block.blockId === lock.blockId || block.ancestors.includes(lock.blockId) || lock.ancestors.includes(block.blockId)));
         const granted = !conflict;
         const desired = new Set(granted ? blocks.map((block) => block.blockId) : []);
-        for (const [blockId, lock] of editLocks) {
+        if (granted) for (const [blockId, lock] of editLocks) {
             if (lock.id === id && (!desired.has(blockId) || lock.documentId !== documentId)) { editLocks.delete(blockId); changed = true; }
         }
         if (granted) for (const block of blocks) {
@@ -222,9 +231,8 @@ plugin.lifecycle.onload = async () => {
         if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
         if (sequence <= (client.cursorSequence || 0)) return false;
         client.cursorSequence = sequence;
+        if (JSON.stringify(client.cursor ?? null) !== JSON.stringify(cursor)) cursorDirty = true;
         client.cursor = cursor;
-        client.cursorAt = Date.now();
-        cursorDirty = true;
         return true;
     }, "Update a frontend's content-relative pointer position.");
     await rpc.bind("selectionUpdate", async (id, generation, sequence, value) => {
@@ -236,9 +244,8 @@ plugin.lifecycle.onload = async () => {
         if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
         if (sequence <= (client.selectionSequence || 0)) return false;
         client.selectionSequence = sequence;
+        if (JSON.stringify(client.selection ?? null) !== JSON.stringify(selection)) cursorDirty = true;
         client.selection = selection;
-        client.selectionAt = Date.now();
-        cursorDirty = true;
         return true;
     }, "Share text selection anchors without acquiring edit leases.");
     await rpc.bind("getStatus", async () => {
@@ -261,7 +268,7 @@ plugin.lifecycle.onload = async () => {
         let client = sessions.get(id);
         if (client && generation < client.generation) throw new Error("Session superseded by a refreshed client");
         if (!client) {
-            client = { name: assignName(preferredName, id), documentId: null, hue: Math.floor(Math.random() * 360), lastSeen: Date.now(), generation };
+            client = { peerId: `peer-${++peerSequence}`, name: assignName(preferredName, id), documentId: null, hue: Math.floor(Math.random() * 360), lastSeen: Date.now(), generation };
             sessions.set(id, client);
             changed = true;
         }
@@ -277,12 +284,8 @@ plugin.lifecycle.onload = async () => {
         if (pruneEditLocks()) await broadcastEdits();
         if (state.documentId !== undefined && client.documentId !== state.documentId) {
             client.documentId = state.documentId;
+            if (client.cursor?.surface === "document" && client.cursor.documentId !== client.documentId) { client.cursor = null; cursorDirty = true; }
             if (client.selection && client.selection.documentId !== client.documentId) { client.selection = null; cursorDirty = true; }
-            let released = false;
-            for (const [blockId, lock] of editLocks) {
-                if (lock.id === id && lock.documentId !== client.documentId) { editLocks.delete(blockId); released = true; }
-            }
-            if (released) { editVersion++; await broadcastEdits(); }
             changed = true;
         }
         client.lastSeen = Date.now();

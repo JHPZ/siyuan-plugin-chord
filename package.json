@@ -7,19 +7,37 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "test": "node tests/smoke.test.cjs",
-    "test:browser": "node tests/browser.test.cjs",
-    "check": "node scripts/check.cjs",
-    "check:release": "node scripts/check.cjs --release",
-    "build": "node scripts/package.cjs"
+    "test": "node scripts/compile.cjs --check && node tests/smoke.test.cjs",
+    "test:browser": "node scripts/compile.cjs --check && node tests/browser.test.cjs",
+    "check": "node scripts/compile.cjs --check && node scripts/check.cjs",
+    "check:release": "node scripts/compile.cjs --check && node scripts/check.cjs --release",
+    "build": "node scripts/compile.cjs && node scripts/package.cjs",
+    "compile": "node scripts/compile.cjs",
+    "test:browser:once": "node scripts/compile.cjs --check && node tests/browser.test.cjs --once"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "files": [
-    "index.js", "kernel.js", "index.css", "plugin.json", "package.json",
-    "i18n/en.json", "i18n/zh-CN.json", "icon.png",
-    "README.md", "README.en.md", "LICENSE", "CHANGELOG.md",
-    "docs/guide.md", "docs/development.md", "docs/releasing.md",
-    "docs/assets/README.md", "docs/assets/chord-icon.png",
-    "docs/assets/chord-cover.webp", "docs/assets/chord-poster.png"
+    "index.js",
+    "kernel.js",
+    "index.css",
+    "plugin.json",
+    "package.json",
+    "i18n/en.json",
+    "i18n/zh-CN.json",
+    "icon.png",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/guide.md",
+    "docs/development.md",
+    "docs/architecture.md",
+    "docs/releasing.md",
+    "docs/assets/README.md",
+    "docs/assets/chord-icon.png",
+    "docs/assets/chord-cover.webp",
+    "docs/assets/chord-poster.png"
   ]
 }
