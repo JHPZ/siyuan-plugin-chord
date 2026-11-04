@@ -643,6 +643,7 @@ function componentBacklinkContext(element) {
 }
 
 function componentTextHash(element) {
+    if(element.matches('#searchAssetPreview,#searchAssetPreview > p'))return componentHash(element.innerText);
     const text=element.matches('.block__logo--counter') && element.closest('.sy__backlink,.sy__backlink--bottom') ? [...element.childNodes].filter(node=>node.nodeType!==1 || !node.matches('.counter')).map(node=>node.textContent).join(''):element.textContent;
     return componentHash(text);
 }

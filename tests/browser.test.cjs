@@ -487,6 +487,19 @@ async function test(name, run) {
         try{const p=fixture.querySelector('p'),g=rectAt(p,0),r=p.getBoundingClientRect();const text=componentRoundTrip({x:g.left+g.width/2,y:g.top+g.height/2}),gap=componentRoundTrip({x:g.right+(r.right-g.right)*.7,y:g.top+g.height/2});p.innerHTML='相同<mark>资源</mark>文字<br>最后一行。';fixture.style.width='420px';const after=rectAt(p,0),resolved=resolveCursor(text);assert(resolved&&near(resolved.x,after.left+after.width/2)&&near(resolved.y,after.top+after.height/2),'highlight query moved or hid a glyph');assert(resolveCursor(gap),'query decoration hid unchanged blank');}
         finally{fixture.remove();}
     });
+    await test('同一资源的异步旧预览不能继承当前文字、外框留白和尾部指针，恢复后重新可见',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='dialog-globalsearch';fixture.style.cssText='position:fixed;left:140px;top:30px;width:600px;height:480px;z-index:100;background:white';
+        fixture.innerHTML='<div id="searchAssets"><div id="searchAssetList" class="search__list"><div class="b3-list-item b3-list-item--focus" data-type="search-item" data-id="20261104224000-asset00"><span class="b3-list-item__meta" aria-label="assets/a/race.txt">race.txt</span></div></div><div id="searchAssetPreview" class="search__preview b3-typography" style="height:360px;padding:8px"><p style="white-space:pre-wrap">共享前缀<mark>甲</mark>资源内容。<br>甲资源第二行。</p></div></div>';document.body.append(fixture);
+        try{const preview=fixture.querySelector('#searchAssetPreview'),p=preview.firstElementChild,original=p.innerHTML,r=preview.getBoundingClientRect(),box=p.getBoundingClientRect(),points=[];
+            for(const x of [r.left+1,box.left-1,(r.left+r.right)/2,box.right+1,r.right-1])for(const y of [r.top+1,box.top-1,box.bottom+1,(box.bottom+r.bottom)/2,r.bottom-1])if(document.elementFromPoint(x,y)===preview)points.push({x,y});
+            for(const index of [0,4,p.textContent.length-1]){const g=rectAt(p,index);points.push({x:g.left+g.width/2,y:g.top+g.height/2});}assert(points.length>10,'fixture did not cover preview whitespace');const anchors=points.map(point=>componentRoundTrip(point));
+            p.innerHTML='共享前缀<mark>乙</mark>资源内容。<br>乙资源第二行。';assert(anchors.every(a=>resolveCursor(a)===null),'stale asynchronous content inherited preview cursor');
+            p.innerHTML=original;assert(anchors.every(a=>resolveCursor(a)),'restored preview failed to show cursor');
+            p.innerHTML='共享<mark>前缀甲</mark>资源内容。<br>甲资源第二行。';assert(anchors.every(a=>resolveCursor(a)),'highlight-only response hid the same content');
+            p.innerHTML='共享前缀<mark>甲</mark>资源<br>内容。甲资源第二行。';assert(anchors.every(a=>resolveCursor(a)===null),'different explicit line breaks inherited stale preview cursor');
+            p.innerHTML=original;fixture.style.width='125px';const last=rectAt(p,p.textContent.length-1),actual=resolveCursor(anchors.at(-1));assert(p.getBoundingClientRect().height>box.height,'fixture did not soft-wrap');assert(actual&&near(actual.x,last.left+last.width/2)&&near(actual.y,last.top+last.height/2),'soft wrap changed asset content identity');
+        }finally{fixture.remove();}
+    });
     await test('组件字形跨行后只跟随自身边界，不借用原同排相邻字符',async()=>{
         const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='wrapped-components';fixture.style.cssText='position:fixed;left:140px;top:30px;width:420px;height:400px;z-index:100;background:white';
         fixture.innerHTML='<p style="font:20px/30px monospace;word-break:break-all;white-space:pre-wrap;width:360px">abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ</p>';document.body.append(fixture);
