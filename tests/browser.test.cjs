@@ -615,6 +615,36 @@ async function test(name, run) {
             rows[0].remove();assert(resolveCursor(samples[0].anchor)===null,'missing result moved to same-name sibling');samples.slice(4).forEach(check);
         }finally{fixture.remove();}
     });
+    await test('列表外围留白按当前内容边界定位，排序、筛选和透明行不绑定旧的首尾项目',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-list';fixture.id='list-perimeter-fixture';fixture.style.cssText='position:fixed;display:flex;flex-direction:column;gap:10px;left:25px;top:25px;width:240px;height:240px;padding:10px;box-sizing:border-box;z-index:100;background:white';fixture.innerHTML='<div class="b3-list-item" data-node-id="20261104153000-list001" style="height:30px;flex-shrink:0">同名项目</div><div class="b3-list-item" data-node-id="20261104153000-list002" style="height:50px;flex-shrink:0">同名项目</div>';document.body.append(fixture);
+        const first=fixture.firstElementChild,last=fixture.lastElementChild,point={x:145,y:245},cover=document.createElement('div');
+        try{
+            const tail=componentRoundTrip(point),gap=componentRoundTrip({x:145,y:70}),row=componentRoundTrip({x:45,y:45});assert(tail.ui.edges.y.some(edge=>edge.kind==='list')&&!tail.ui.textHash,'list tail inherited descendant text or a specific row');
+            fixture.prepend(last);const moved=resolveCursor(tail);assert(moved&&near(moved.x,point.x)&&near(moved.y,point.y),'reordered list perimeter drifted');assert(resolveCursor(gap)===null,'reversed interior gap painted over a row');
+            fixture.style.height='280px';const fraction=(245-125)/(265-125),expected=125+fraction*(305-125),resized=resolveCursor(tail);assert(resized&&near(resized.y,expected),'resized list tail used whole-list ratio');fixture.style.height='240px';
+            first.style.opacity='0';assert(resolveCursor(tail),'transparent occupying row removed perimeter');first.style.opacity='';
+            first.remove();const filtered=resolveCursor(tail),filteredBottom=85,filteredY=filteredBottom+fraction*(265-filteredBottom);assert(filtered&&near(filtered.y,filteredY),'filtered list retained old tail boundary');assert(resolveCursor(row)===null,'removed row inherited another row');fixture.append(first);
+            for(const item of [first,last])item.style.display='none';assert(resolveCursor(tail)===null,'empty list guessed a former content boundary');for(const item of [first,last])item.style.display='';
+            cover.style.cssText='position:fixed;left:25px;top:130px;width:240px;height:135px;z-index:101;background:white';document.body.append(cover);assert(resolveCursor(tail)===null,'covered list perimeter painted');
+        }finally{cover.remove();fixture.remove();}
+    });
+    await test('原生弹窗标题的临时 ID 不影响标题、搜索和留白，稳定 ID 和遮挡继续生效',async()=>{
+        const fixture=document.createElement('div');fixture.dataset.key='dialog-recentdocs';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:25px;top:25px;width:500px;height:240px;background:white;z-index:100"><div role="dialog" aria-labelledby="dialog-title-11111111-1111-4111-8111-111111111111" class="b3-dialog__container" style="width:100%;height:100%"><div class="b3-dialog__header" id="dialog-title-11111111-1111-4111-8111-111111111111" style="height:80px;padding:8px"><div class="switch-doc__title">最近文档</div><input class="switch-doc__search" placeholder="搜索..." style="width:200px"><span id="stable-header-action">固定动作</span></div><div class="b3-dialog__body">正文区域</div></div></div>';document.body.append(fixture);
+        const title=fixture.querySelector('.switch-doc__title'),header=fixture.querySelector('.b3-dialog__header'),container=fixture.querySelector('[role="dialog"]'),input=fixture.querySelector('input'),stable=fixture.querySelector('#stable-header-action');
+        const point=e=>{const r=e.getBoundingClientRect();return {x:r.left+3,y:r.top+5};};
+        try{
+            const samples=[title,input,stable].map(root=>({root,anchor:componentRoundTrip(point(root))})),blank=componentRoundTrip({x:510,y:100});
+            header.id='dialog-title-22222222-2222-4222-8222-222222222222';container.setAttribute('aria-labelledby',header.id);
+            for(const sample of samples){const p=resolveCursor(sample.anchor),q=point(sample.root);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'reopened dialog lost '+sample.root.className);}
+            assert(resolveCursor(blank),'dialog header whitespace lost after generated ID changed');
+            stable.id='other-header-action';assert(resolveCursor(samples[2].anchor)===null,'stable header control ID ignored');stable.id='stable-header-action';
+            header.id='unrelated-stable-header';container.setAttribute('aria-labelledby',header.id);assert(resolveCursor(samples[0].anchor)===null,'stable title ID ignored');
+            header.id='dialog-title-22222222-2222-4222-8222-222222222222';container.setAttribute('aria-labelledby','unrelated-title');assert(resolveCursor(samples[0].anchor)===null,'unreferenced title ID ignored');container.setAttribute('aria-labelledby',header.id);
+            title.style.opacity='0';assert(resolveCursor(samples[0].anchor)===null,'transparent dialog title painted');title.style.opacity='';
+            const cover=document.createElement('div');cover.style.cssText='position:fixed;left:25px;top:25px;width:500px;height:100px;z-index:101;background:white';fixture.append(cover);assert(resolveCursor(samples[0].anchor)===null&&resolveCursor(blank)===null,'covered title or whitespace painted');cover.remove();
+            fixture.remove();assert(resolveCursor(samples[0].anchor)===null&&resolveCursor(blank)===null,'closed dialog painted');document.body.append(fixture);assert(resolveCursor(samples[0].anchor),'restored dialog did not restore title');
+        }finally{fixture.remove();}
+    });
     await test('原生菜单按动作与相邻项定位，悬停、分组、子菜单和重排不改变可见目标',async()=>{
         const menu=document.createElement('div');menu.className='b3-menu';menu.dataset.name='native-menu-fixture';menu.style.cssText='position:fixed;left:25px;top:25px;width:300px;height:350px;padding:8px;box-sizing:border-box;background:white;z-index:100';
         menu.innerHTML='<div class="b3-menu__items"><button data-id="alpha" class="b3-menu__item b3-menu__item--group-first">同名动作</button><button data-id="separator_1" class="b3-menu__separator"></button><button data-id="beta" class="b3-menu__item b3-menu__item--group-last">同名动作</button><button data-id="headingNumber" class="b3-menu__item b3-menu__item--current b3-menu__item--show b3-menu__item--group-last"><span class="b3-menu__label">标题编号</span></button></div>';

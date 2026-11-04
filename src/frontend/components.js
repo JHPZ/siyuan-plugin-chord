@@ -21,6 +21,13 @@ function componentChildren(element) {
     });
 }
 
+function componentListRect(element) {
+    const children=element.matches('.b3-list') && componentChildren(element);
+    if(!children?.length || children.some(child=>!child.matches('.b3-list-item')))return null;
+    const rects=children.map(child=>child.getBoundingClientRect()).filter(rect=>rect.width>0 && rect.height>0);
+    return rects.length ? {left:Math.min(...rects.map(rect=>rect.left)),right:Math.max(...rects.map(rect=>rect.right)),top:Math.min(...rects.map(rect=>rect.top)),bottom:Math.max(...rects.map(rect=>rect.bottom))}:null;
+}
+
 function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
@@ -45,7 +52,8 @@ function componentKey(element) {
         }
     }
     if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
-    if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
+    const dialogTitle=/^dialog-title-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(element.id) && element.matches('.b3-dialog__header') && element.closest('.b3-dialog')?.querySelector('[role="dialog"]')?.getAttribute('aria-labelledby')===element.id;
+    if(element.id && !/^\d{14}-/.test(element.id) && !dialogTitle)values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
     if(element.matches('.protyle'))values.push(['document',editorDocumentId(element)]);
     if(element.matches('.layout__wnd,[data-type="wnd"]'))values.push(['pane',componentPane(element)]);
@@ -254,7 +262,7 @@ function componentNearText(element,point) {
         }
         return nearest ? [nearest]:null;
     }
-    if(element.closest('.b3-menu') && node.parentElement.closest('.b3-menu__item')!==element.closest('.b3-menu__item'))return null;
+    if(node.parentElement.closest('.b3-menu__item,.b3-list-item')!==element.closest('.b3-menu__item,.b3-list-item'))return null;
     if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
     return [prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
@@ -345,14 +353,16 @@ function componentBox(hit,point) {
 function componentGeometry(element,point) {
     const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
     if(box)point=box.toLocal(point);
-    const bounds=box ? box.bounds:element.getBoundingClientRect(),children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content;
+    const bounds=box ? box.bounds:element.getBoundingClientRect(),children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element);
     const edges={},relative={};let usedText=false;
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
-        for(const child of children){
+        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end]);
+        if(perimeter)for(const [side,key] of [['start',start],['end',end]])if(list[key]>=bounds[start] && list[key]<=bounds[end])entries.push({value:list[key],edge:{kind:'list',side}});
+        for(const child of perimeter ? []:children){
             const rect=child.getBoundingClientRect();if(!rect.width || !rect.height || other<rect[otherStart] || other>rect[otherEnd])continue;
             const step=componentStep(child);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'child',side,step}});
@@ -421,7 +431,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         if(values.some(value=>!Number.isFinite(value)) || values[1]<values[0] ||

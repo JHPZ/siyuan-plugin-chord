@@ -480,6 +480,9 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     for(const bad of [{pdf:null},{pdf:{...pdf,page:0}},{pdf:{...pdf,page:1.5}},{pdf:{...pdf,part:'canvas'}},{pdf:{...pdf,file:'raw file name'}},{pdf:{...pdf,x:Infinity}},{pdf:{...pdf,mark:'raw annotation'}},{pdf,graph},{pdf,frame:[]}]) {
         await assert.rejects(update('component-user-test',1,4,{...cursor,ui:{...ui,...bad}}),/Invalid UI cursor/);
     }
+    await update('component-user-test',1,5,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'list',side:'end',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind:'list',side:'end'});
+    await assert.rejects(update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'list',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
     for(const bad of [{scope:null},{scope:{kind:'global',key:'body'}},{route:Array(33).fill(step)},{route:[{...step,index:1}]},{route:[{...step,count:10001}]},
         {frame:[{...step,key:'<script>'}]},{textHash:'raw text'},{edges:{...ui.edges,x:[{kind:'selector',side:'start'},{kind:'self',side:'end'}]}},
         {edges:{...ui.edges,y:[{kind:'text',side:'start',offset:-1},{kind:'self',side:'end'}]}}]) {
