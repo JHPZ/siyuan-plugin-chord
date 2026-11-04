@@ -187,6 +187,22 @@ async function test(name, run) {
         assert(resolved && near(resolved.x,point.x) && near(resolved.y,point.y),'space drift: '+JSON.stringify({point,anchor,resolved}));
         return anchor;
     }
+    await test('正文表格与代码的内部滚动裁剪隐藏字形，滚动露出后恢复',async()=>{
+        const fixture=documentSpaceFixture();try{
+            const block=fixture.querySelector('.p');block.style.position='relative';
+            for(const table of [true,false]){
+                block.innerHTML=table?'<div class="clip" contenteditable="false" style="width:480px;overflow:auto"><table contenteditable="true" style="width:480px;table-layout:fixed;border-collapse:collapse"><tbody><tr><td>First</td><td>Middle</td><td>Target</td></tr></tbody></table></div>':'<div class="clip" style="width:480px;overflow:auto"><div contenteditable="true" style="width:480px;white-space:pre;font-family:monospace">'+(' '.repeat(28))+'Target</div></div>';
+                const root=cursorTextRoot(block),clip=block.querySelector('.clip'),offset=root.textContent.indexOf('Target')+2,r=rectAt(block,offset),anchor=componentRoundTrip({x:r.left+r.width/2,y:r.top+r.height/2});assert(anchor.text?.offset===offset,'text fixture used fallback');
+                clip.style.width='180px';assert(resolveCursor(anchor)===null,'internally clipped glyph painted');clip.scrollLeft=clip.scrollWidth-clip.clientWidth;const actual=resolveCursor(anchor),expected=rectAt(block,offset);assert(actual&&near(actual.x,expected.left+expected.width/2)&&near(actual.y,expected.top+expected.height/2),'visible scrolled text did not restore');
+                clip.scrollLeft=0;clip.style.width='480px';assert(resolveCursor(anchor),'unclipped text did not restore');
+                const cover=document.createElement('div');cover.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;background:white;user-select:none';block.append(cover);assert(resolveCursor(anchor)===null,'same-block overlay painted text');cover.remove();
+                root.style.pointerEvents='none';assert(resolveCursor(anchor),'visible text with pointer-events none was hidden');
+                clip.style.width='180px';assert(resolveCursor(anchor)===null,'pointer-events none bypassed horizontal clipping');clip.style.width='480px';
+                clip.style.height='8px';assert(resolveCursor(anchor)===null,'pointer-events none bypassed vertical clipping');clip.style.height='';
+                fixture.style.transform='scale(.8)';const scaled=resolveCursor(anchor),s=rectAt(block,offset);assert(scaled&&near(scaled.x,s.left+s.width/2)&&near(scaled.y,s.top+s.height/2),'scaled text lost geometry');fixture.style.transform='';
+            }
+        }finally{fixture.remove();}
+    });
     await test('正文行距、行尾和段落间空白连续移动不丢光标',async()=>{
         const fixture=documentSpaceFixture();
         try {

@@ -35,12 +35,27 @@ function cursorTextRoot(block) {
     return block.querySelector('[contenteditable="true"]') || block;
 }
 
+function visibleTextPoint(node, point) {
+    const hit = document.elementFromPoint(point.x, point.y);
+    if (!visibleElement(hit) || !hit.contains(node) || getComputedStyle(node.parentElement).visibility === 'hidden') return false;
+    // An ancestor hit can still contain text that an inner scroller has clipped.
+    for (let element = node.parentElement; element && element !== hit; element = element.parentElement) {
+        const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+        if (style.display === 'none' || style.opacity === '0') return false;
+        const sx = rect.width / (element.offsetWidth || rect.width || 1), sy = rect.height / (element.offsetHeight || rect.height || 1);
+        const left = rect.left + element.clientLeft * sx, top = rect.top + element.clientTop * sy;
+        if (style.overflowX !== 'visible' && (point.x < left || point.x >= left + element.clientWidth * sx)) return false;
+        if (style.overflowY !== 'visible' && (point.y < top || point.y >= top + element.clientHeight * sy)) return false;
+    }
+    return true;
+}
+
 function captureTextPoint(root, point, whitespace = false) {
     const caret = document.caretPositionFromPoint?.(point.x, point.y);
     const range = caret ? null : document.caretRangeFromPoint?.(point.x, point.y);
     const node = caret?.offsetNode || range?.startContainer;
     const offset = caret?.offset ?? range?.startOffset;
-    if (node?.nodeType !== 3 || !root.contains(node)) return null;
+    if (node?.nodeType !== 3 || !root.contains(node) || !visibleTextPoint(node, point)) return null;
     // 锚定鼠标下的字符，避免不同窗口宽度导致整段比例定位漂移。
     for (const index of [offset - 1, offset]) {
         if (index < 0 || index >= node.textContent.length || (!whitespace && /\s/.test(node.textContent[index]))) continue;
@@ -171,8 +186,7 @@ function resolveDocumentCursor(cursor) {
         if (!rect?.width || !rect.height) continue;
         const x = rect.left + rect.width * relative.x;
         const y = rect.top + rect.height * relative.y;
-        const hit = document.elementFromPoint(x, y);
-        if (visibleElement(hit) && block.contains(hit)) return { x, y };
+        if (visibleTextPoint(character.node, {x,y})) return { x, y };
     }
     return null;
 }
