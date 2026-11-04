@@ -426,6 +426,27 @@ test('document space anchors are validated and retained without arbitrary payloa
     await assert.rejects(update('space-user-test',1,2,{...anchor,surface:'tree',documentId:null}),/Invalid cursor/);
 });
 
+test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
+    const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    await heartbeat('component-user-test',{generation:1});
+    const step={key:'1234567890abcdef',count:1,index:0,secret:'private'};
+    const ui={version:3,kind:'component',scope:{kind:'document',key:'abcdef1234567890',pane:'abcdef1234567890',secret:'private'},route:[step],
+        edges:{x:[{kind:'self',side:'start'},{kind:'child',side:'end',step}],y:[{kind:'text',side:'start',offset:12},{kind:'self',side:'end'}]},textHash:'abcdef1234567890',secret:'private'};
+    const cursor={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.5,y:.5},x:.3,y:.4,ui};
+    await update('component-user-test',1,1,cursor);
+    const cleaned=(await snapshot()).cursors[0].cursor.ui;
+    assert.ok(!JSON.stringify(cleaned).includes('private'));assert.equal(cleaned.route[0].key,step.key);assert.equal(cleaned.edges.y[0].offset,12);
+    const graph={node:step.key,layout:step.key,x:.2,y:-.3,secret:'private'};
+    await update('component-user-test',1,2,{...cursor,ui:{...ui,graph}});
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.graph)),{node:step.key,layout:step.key,x:.2,y:-.3});
+    for(const invalid of [{...graph,node:'raw document name'},{...graph,x:Infinity},{...graph,y:1e8}])await assert.rejects(update('component-user-test',1,3,{...cursor,ui:{...ui,graph:invalid}}),/Invalid UI cursor/);
+    for(const bad of [{scope:null},{scope:{kind:'global',key:'body'}},{route:Array(33).fill(step)},{route:[{...step,index:1}]},{route:[{...step,count:10001}]},
+        {frame:[{...step,key:'<script>'}]},{textHash:'raw text'},{edges:{...ui.edges,x:[{kind:'selector',side:'start'},{kind:'self',side:'end'}]}},
+        {edges:{...ui.edges,y:[{kind:'text',side:'start',offset:-1},{kind:'self',side:'end'}]}}]) {
+        await assert.rejects(update('component-user-test',1,2,{...cursor,ui:{...ui,...bad}}),/Invalid UI cursor/);
+    }
+});
+
 test("text selections share the cursor channel without claiming locks; validate, order, deduplicate and reset", async () => {
     const kernel=await createKernel();
     const heartbeat=kernel.methods.get('presenceHeartbeat'), update=kernel.methods.get('selectionUpdate'), snapshot=kernel.methods.get('cursorSnapshot');

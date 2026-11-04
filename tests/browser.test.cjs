@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const frontendSource = fs.readFileSync(path.join(root, "index.js"), "utf8");
-const helpers = fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
+const helpers = fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/graphs.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/components.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
 const selectionMethods = frontendSource.slice(frontendSource.indexOf('    renderSelections() {'), frontendSource.indexOf('    clearRow(')).replace('renderSelections() {','function renderSelections() {') +
     frontendSource.slice(frontendSource.indexOf('    async sendSelection() {'), frontendSource.indexOf('    scheduleCursorRender(')).replace('async sendSelection() {','async function sendSelection() {');
 const treeMethods = frontendSource.slice(frontendSource.indexOf('    clearRow('), frontendSource.indexOf('    openMenu() {'))
@@ -42,6 +42,11 @@ const settleDialog = () => new Promise(resolve=>setTimeout(resolve,60));
 const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 const assert = (value, message) => { if (!value) throw new Error(message); };
 const near = (a,b) => Math.abs(a-b) < 1;
+function componentRoundTrip(point,plugin) {
+    const anchor=captureCursor(point,plugin);assert(anchor && validCursor(anchor),'missing anchor at '+JSON.stringify(point));
+    const resolved=resolveCursor(anchor,plugin);assert(resolved && near(point.x,resolved.x) && near(point.y,resolved.y),'round trip drift: '+JSON.stringify({point,anchor,resolved}));
+    return anchor;
+}
 const block = document.querySelector('[data-node-id="20261030165150-block01"]');
 const scroller = document.querySelector('.protyle-content');
 function rectAt(element, offset) { const character = characterAt(cursorTextRoot(element), offset); return characterRect(character.node, character.offset); }
@@ -138,19 +143,19 @@ async function test(name, run) {
                 const book=element.closest('ul');book.remove();assert(resolveCursor(anchor)===null,'same name or file in other notebook matched');fixture.prepend(book);
             }
             const row=fixture.querySelector('li'),label=row.querySelector('.b3-list-item__text'),r=label.getBoundingClientRect();
-            assert(captureCursor({x:r.right-4,y:r.top+r.height/2})===null,'label whitespace shared');
+            componentRoundTrip({x:r.right-4,y:r.top+r.height/2});
             const toggle=row.querySelector('.b3-list-item__toggle'),t=toggle.getBoundingClientRect();
-            assert(captureCursor({x:t.left+5,y:t.top+t.height/2})===null,'indentation shared');
+            componentRoundTrip({x:t.left+5,y:t.top+t.height/2});
         } finally {fixture.remove();}
     });
-    await test('界面空白、分屏缝隙和旧比例锚点均不显示指针',async()=>{
+    await test('界面空白与分屏缝隙精确往返，旧无身份比例锚点继续拒绝',async()=>{
         const fixture=document.createElement('div');fixture.id='blank-layout';fixture.className='layout__wnd--active';
         fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:240px;background:white;z-index:100';
         fixture.innerHTML='<div class="sy__file" style="height:80px"></div><div class="b3-list-item" style="height:30px"><span class="b3-list-item__text">反链列表行</span></div><div class="protyle-breadcrumb__space" style="height:40px"></div><div class="layout__resize" style="height:30px"></div>';
         document.body.append(fixture);
         try {
             for(const element of [fixture,...fixture.children]) {
-                const r=element.getBoundingClientRect();assert(captureCursor({x:r.left+10,y:r.bottom-5})===null,'blank region shared: '+element.className);
+                const r=element.getBoundingClientRect();componentRoundTrip({x:r.left+10,y:r.bottom-5});
             }
             const old={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.2,y:.2},x:.5,y:.5,ui:{version:2,kind:'id',id:fixture.id,path:[],tag:'div'}};
             assert(resolveCursor(old)===null,'legacy container anchor displayed');
@@ -184,7 +189,7 @@ async function test(name, run) {
             assert(spaceRoundTrip({x:space.left+space.width/2,y:space.top+space.height/2}).text?.offset===5,'actual text space lost');
         } finally {fixture.remove();}
     });
-    await test('空段落保留块身份，正文外边距和分屏缝隙仍隐藏',async()=>{
+    await test('空段落保留块身份，正文边距与底部留白精确往返',async()=>{
         const fixture=documentSpaceFixture();
         try {
             const editor=fixture.querySelector('.protyle-wysiwyg'),empty=fixture.querySelectorAll('.p')[1],r=cursorTextRoot(empty).getBoundingClientRect();
@@ -196,8 +201,8 @@ async function test(name, run) {
             }
             cursorTextRoot(empty).innerHTML='<br>';
             const bounds=editor.getBoundingClientRect();
-            assert(captureCursor({x:bounds.left+3,y:r.top+5})===null,'document side margin shared');
-            assert(captureCursor({x:r.left+20,y:bounds.bottom-3})===null,'document bottom padding shared');
+            componentRoundTrip({x:bounds.left+3,y:r.top+5});
+            componentRoundTrip({x:r.left+20,y:bounds.bottom-3});
             assert(resolveCursor({...anchor,documentId:'20261030165150-other01'})===null,'space escaped document');
             const copy=fixture.cloneNode(true);copy.style.left='600px';document.body.append(copy);
             assert(resolveCursor(anchor)===null,'ambiguous space picked arbitrary editor');copy.remove();
@@ -310,10 +315,11 @@ async function test(name, run) {
         root.dataset.nodeId='20261030165150-other01';
         assert(resolveCursor(anchor)===null,'other document displayed cursor');root.dataset.nodeId=id;
         block.classList.add('fn__none');assert(resolveCursor(anchor)===null,'hidden block displayed cursor');block.classList.remove('fn__none');
+        const editor=block.closest('.protyle');editor.style.opacity='0';assert(resolveCursor(anchor)===null && captureCursor(point)===null,'transparent parent still shared its text');editor.style.opacity='1';
         const cover=document.createElement('div');cover.className='occluder';document.body.append(cover);
         assert(resolveCursor(anchor)===null,'covered editor displayed cursor');cover.remove();
     });
-    await test('悬浮工具栏与顶部空白禁用，面包屑控件按文档定位',async()=>{
+    await test('悬浮工具栏、顶部留白和面包屑均按所属文档定位',async()=>{
         const fixture=document.createElement('div');fixture.id='shared-layout-id';
         fixture.style.cssText='position:fixed;left:20px;top:20px;width:900px;background:white;z-index:100;display:flex;gap:20px';
         const ids=['20261030165150-uiroot1','20261030165150-uiroot2'];
@@ -322,6 +328,8 @@ async function test(name, run) {
             wnd.innerHTML='<div class="protyle" style="width:400px"><div class="protyle-background" data-node-id="'+id+'"></div><div class="protyle-breadcrumb"><button data-type="doc">文档</button><span class="protyle-breadcrumb__space" style="display:inline-block;width:100px;height:24px"></span></div><div class="protyle-toolbar"><button data-type="b">粗体</button></div><div class="protyle-content"><div class="protyle-title"><div class="protyle-title__input" contenteditable="true">同名文档</div></div><button data-topbar-entry="document-plugin">文档插件</button></div></div>';
             fixture.append(wnd);return wnd;
         });document.body.append(fixture);
+        fixture.style.width=Math.min(900,innerWidth-40)+'px';
+        for(const wnd of windows)wnd.querySelector('.protyle').style.width=(Math.min(900,innerWidth-40)-20)/2+'px';
         const editor=windows[0].querySelector('.protyle'),root=editor.querySelector('.protyle-background');
         const plugin={i18n:{pageDocument:'文档'},currentDocument:()=>ids[1]};
         try {
@@ -341,7 +349,9 @@ async function test(name, run) {
             }
             for(const selector of ['.protyle-toolbar button','.protyle-breadcrumb__space','.protyle-title']) {
                 const element=editor.querySelector(selector),r=element.getBoundingClientRect();
-                assert(captureCursor({x:r.right-2,y:r.top+r.height/2},plugin)===null,'excluded editor area shared: '+selector);
+                const anchor=componentRoundTrip({x:r.right-2,y:r.top+r.height/2},plugin);
+                assert(anchor.ui.version===3,'component identity missing');
+                root.dataset.nodeId='20261030165150-other01';assert(resolveCursor(anchor,plugin)===null,'blank or toolbar leaked into other document');root.dataset.nodeId=ids[0];
             }
             const title=editor.querySelector('.protyle-title__input'),character=rectAt(title,2);
             const titleAnchor=captureCursor({x:character.left+character.width/2,y:character.top+character.height/2},plugin);
@@ -440,6 +450,126 @@ async function test(name, run) {
             assert(resolved&&near(resolved.x,r.left+r.width*content.x),'settings content followed child index');
             panel.classList.add('fn__none');assert(resolveCursor(content,plugin)===null,'hidden settings section displayed cursor');
         } finally {fixture.remove();}
+    });
+    await test('所有 DOM 组件的文字、边角和留白覆盖扫描：菜单、侧栏、设置、标签、图片与插件面板',async()=>{
+        const fixture=document.createElement('div');fixture.id='component-inventory';
+        fixture.style.cssText='position:fixed;left:12px;top:12px;width:'+Math.min(900,innerWidth-50)+'px;height:540px;background:white;z-index:100;overflow:auto;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding:6px';
+        const names=['toolbar','status','dock','sy__outline','sy__bookmark','sy__tag','backlinkList','sy__inbox','sy__search','sy__agent','layout-tab-bar','protyle-breadcrumb','config__side','config__tab-container','b3-list-item','custom-plugin','b3-menu','block__popover','protyle-hint','tooltip'];
+        for(const name of names){
+            const item=document.createElement('div');item.className=name;item.dataset.name=name;
+            item.style.cssText='height:82px;padding:6px;background:#eef;box-sizing:border-box;position:relative';
+            item.innerHTML='<span style="display:inline-block;width:150px">'+name+'</span><button data-type="same-control">OK</button><div class="blank-space" style="height:24px;margin-top:3px"></div>';
+            fixture.append(item);
+        }
+        document.body.append(fixture);
+        let samples=0;
+        try {
+            for(const scroll of [0,250,fixture.scrollHeight-fixture.clientHeight]){fixture.scrollTop=scroll;
+            for(const item of [fixture,...fixture.querySelectorAll('*')]){
+                const r=item.getBoundingClientRect();
+                for(const [x,y] of [[r.left+2,r.top+2],[r.right-2,r.top+2],[r.left+2,r.bottom-2],[r.right-2,r.bottom-2],[(r.left+r.right)/2,(r.top+r.bottom)/2]]){
+                    if(x<0 || x>=innerWidth || y<0 || y>=innerHeight || !fixture.contains(document.elementFromPoint(x,y)))continue;
+                    componentRoundTrip({x,y});samples++;
+                }
+            }
+            }
+            assert(samples>=350,'coverage unexpectedly small: '+samples);
+            fixture.dataset.samples=String(samples);
+        }finally{fixture.remove();}
+    });
+    await test('组件间留白按邻居边界映射，重排、改宽和目标消失时不串位',async()=>{
+        const fixture=document.createElement('div');fixture.id='gap-inventory';fixture.style.cssText='position:fixed;left:30px;top:30px;width:500px;height:250px;background:white;z-index:100;padding:20px';
+        fixture.innerHTML='<div data-name="first" style="height:40px;margin-bottom:30px">第一行</div><div data-name="second" style="height:50px">第二行</div>';
+        document.body.append(fixture);
+        try{
+            const first=fixture.firstElementChild,second=first.nextElementSibling,r=first.getBoundingClientRect(),point={x:r.left+10,y:r.bottom+15};
+            const anchor=componentRoundTrip(point);assert(anchor.ui.version===3,'gap not a component');
+            fixture.style.width='700px';first.style.height='70px';first.style.marginBottom='50px';
+            const after=resolveCursor(anchor),a=first.getBoundingClientRect(),b=second.getBoundingClientRect();
+            assert(after && near(after.y,(a.bottom+b.top)/2),'gap used whole panel height');
+            const inserted=document.createElement('div');inserted.style.cssText='position:absolute;left:20px;top:90px;width:60px;height:100px';fixture.append(inserted);
+            assert(resolveCursor(anchor)===null,'new component inherited blank pointer');inserted.remove();
+            second.remove();assert(resolveCursor(anchor)===null,'missing semantic neighbour retained pointer');fixture.append(second);
+            fixture.style.opacity='0';assert(resolveCursor(anchor)===null,'invisible component painted');fixture.style.opacity='1';
+            const overlay=document.createElement('div');overlay.style.cssText='position:fixed;inset:0;background:white;z-index:101';document.body.append(overlay);
+            assert(resolveCursor(anchor)===null,'covered blank painted');overlay.remove();
+        }finally{fixture.remove();}
+    });
+    await test('同源嵌入按内部组件与文字定位，边框缩放和内部滚动不会用整帧比例',async()=>{
+        const frameElement=document.createElement('iframe');frameElement.id='component-frame';frameElement.style.cssText='position:fixed;left:30px;top:30px;width:400px;height:220px;border:7px solid black;z-index:100';
+        frameElement.srcdoc='<style>body{margin:12px;height:800px}button{display:block;margin-top:30px;width:180px;height:40px}</style><button data-name="inside">内部按钮</button><div style="height:100px">内部留白</div>';
+        const loaded=new Promise(resolve=>frameElement.onload=resolve);document.body.append(frameElement);await loaded;
+        try{
+            const r=frameElement.getBoundingClientRect(),button=frameElement.contentDocument.querySelector('button'),b=button.getBoundingClientRect();
+            const point={x:r.left+(b.left+20+frameElement.clientLeft)*r.width/frameElement.offsetWidth,y:r.top+(b.top+10+frameElement.clientTop)*r.height/frameElement.offsetHeight};
+            const anchor=componentRoundTrip(point);assert(anchor.ui.frame,'internal component route missing');
+            frameElement.style.transform='scale(.8)';frameElement.style.transformOrigin='top left';
+            const after=resolveCursor(anchor),s=frameElement.getBoundingClientRect();
+            assert(after && near(after.x,s.left+(b.left+20+frameElement.clientLeft)*s.width/frameElement.offsetWidth),'frame scaling drift');
+            frameElement.contentWindow.scrollTo(0,20);await frame();assert(resolveCursor(anchor),'visible scrolled button disappeared');
+            button.remove();assert(resolveCursor(anchor)===null,'missing iframe component used frame fraction');
+        }finally{frameElement.remove();}
+    });
+    await test('原生关系图按节点身份与场景坐标定位，缩放平移、节点移动和缺失不误画',async()=>{
+        const fixture=document.createElement('div'),dock=document.createElement('button');fixture.className='dockPanel sy__graph';dock.className='dock__item';dock.dataset.type='graph';
+        fixture.style.cssText='position:fixed;left:30px;top:30px;width:420px;height:280px;z-index:100;background:white';fixture.innerHTML='<div class="graph__svg" style="width:100%;height:100%"><canvas width="420" height="280" style="width:100%;height:100%"></canvas></div>';
+        const container=fixture.firstElementChild,canvas=container.firstElementChild;
+        const engine={container,data:{nodes:[{id:'first-node'},{id:'second-node'}],sizes:[10,12]},positions:[60,70,180,90],camera:{x:20,y:20,scale:1},positionVersion:1};
+        engine.hitTest=(x,y)=>{for(let i=0;i<engine.data.nodes.length;i++)if(Math.hypot(x-engine.positions[i*2]*engine.camera.scale-engine.camera.x,y-engine.positions[i*2+1]*engine.camera.scale-engine.camera.y)<=engine.data.sizes[i]*engine.camera.scale)return i;return -1;};
+        const model={type:'local',rootId:'20261030165150-doc0001',parent:{panelElement:fixture},graphEngine:engine};
+        document.body.append(fixture,dock);dockModels.set('graph',model);
+        try{
+            const nodePoint={x:30+80+3,y:30+90+2},anchor=componentRoundTrip(nodePoint);assert(anchor.ui.graph?.node===componentHash('first-node'),'node identity missing');
+            const blank=componentRoundTrip({x:330,y:230});assert(blank.ui.graph?.node===null,'blank graph position not captured');
+            engine.camera={x:-10,y:5,scale:1.5};
+            const moved=resolveCursor(anchor);assert(moved && near(moved.x,30-10+(60+3)*1.5)&&near(moved.y,30+5+(70+2)*1.5),'node lost camera transform');
+            const space=resolveCursor(blank);assert(space && near(space.x,30-10+280*1.5),'graph blank lost model coordinate');
+            engine.positions[0]+=30;engine.positionVersion++;
+            const shifted=resolveCursor(anchor);assert(shifted && near(shifted.x,moved.x+45),'node movement lost identity');assert(resolveCursor(blank)===null,'different blank scene painted');
+            engine.data.nodes.reverse();engine.data.sizes.reverse();engine.positions=[180,90,90,70];engine.positionVersion++;
+            assert(resolveCursor(anchor),'node reorder lost identity');
+            model.rootId='20261030165150-other01';assert(resolveCursor(anchor)===null,'other local graph matched');model.rootId='20261030165150-doc0001';
+            engine.data={nodes:[],sizes:[]};engine.positions=[];engine.positionVersion++;assert(resolveCursor(anchor)===null,'missing graph node painted');
+            dockModels.delete('graph');assert(captureCursor(nodePoint)===null,'opaque custom canvas guessed a position');
+        }finally{dockModels.delete('graph');fixture.remove();dock.remove();}
+    });
+    await test('零尺寸祖先、溢出图标和跨域嵌入边界不会丢失或猜测定位',async()=>{
+        const fixture=document.createElement('div');fixture.id='overflow-fixture';fixture.style.cssText='position:fixed;left:30px;top:30px;width:350px;height:150px;z-index:100;background:white';
+        fixture.innerHTML='<div style="width:0;height:0"><div data-name="attribute-count" style="position:absolute;left:30px;top:20px;width:25px;height:25px">1</div></div><button style="position:absolute;left:90px;top:20px;width:40px;height:30px"><svg style="width:16px;height:16px;overflow:visible"><path d="M0 0H16V16H0Z"/></svg></button>';
+        document.body.append(fixture);
+        try{
+            const count=fixture.querySelector('[data-name]'),r=count.getBoundingClientRect();componentRoundTrip({x:r.left+3,y:r.top+3});
+            const svg=fixture.querySelector('svg'),s=svg.getBoundingClientRect();componentRoundTrip({x:s.left+1,y:s.top+1});
+            const embedded=document.createElement('iframe');embedded.setAttribute('sandbox','');embedded.srcdoc='<button>Unreachable internal component</button>';fixture.append(embedded);
+            await new Promise(resolve=>embedded.onload=resolve);const f=embedded.getBoundingClientRect();assert(captureCursor({x:f.left+20,y:f.top+20})===null,'cross-origin frame guessed a fraction');
+        }finally{fixture.remove();}
+    });
+    await test('图片按实际图像定位，适应 contain 留白和 cover 裁切，消失的留白不画到图中',async()=>{
+        const image=document.createElement('img');image.id='image-fit-fixture';image.style.cssText='position:fixed;left:30px;top:30px;width:300px;height:300px;object-fit:contain;object-position:50% 50%;z-index:100;background:white';
+        image.src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="blue"/></svg>');
+        const loaded=new Promise(resolve=>image.onload=resolve);document.body.append(image);await loaded;
+        try{
+            const rect=componentImageRect(image),point={x:rect.left+rect.width*.25,y:rect.top+rect.height*.75};
+            const anchor=componentRoundTrip(point),blank=componentRoundTrip({x:40,y:40});assert(anchor.ui.imagePoint,'image pixel not identified');
+            image.style.width='400px';image.style.height='200px';
+            const moved=resolveCursor(anchor),after=componentImageRect(image);
+            assert(moved && near(moved.x,after.left+after.width*.25)&&near(moved.y,after.top+after.height*.75),'image point followed box rather than image');
+            assert(resolveCursor(blank)===null,'missing letterbox area inherited pixel position');
+            image.style.width='100px';image.style.height='300px';image.style.objectFit='cover';
+            assert(resolveCursor(anchor)===null,'cropped-away image pixel painted');
+        }finally{image.remove();}
+    });
+    await test('三个分屏重排后匹配同一对文档之间的分隔条，缺少邻接文档时隐藏',async()=>{
+        const fixture=document.createElement('div');fixture.id='three-pane-fixture';fixture.style.cssText='position:fixed;left:20px;top:20px;width:500px;height:100px;background:white;z-index:100;display:flex';
+        const panels=['pane001','pane002','pane003'].map(id=>{const panel=document.createElement('div');panel.style.cssText='width:130px;height:100px';panel.innerHTML='<div class="protyle-background" data-node-id="20261030165150-'+id+'"></div>';return panel;});
+        const gaps=[0,1].map(()=>{const gap=document.createElement('div');gap.className='layout__resize layout__resize--lr';gap.style.cssText='width:10px;height:100px';return gap;});
+        fixture.append(panels[0],gaps[0],panels[1],gaps[1],panels[2]);document.body.append(fixture);
+        try{
+            const r=gaps[0].getBoundingClientRect(),anchor=componentRoundTrip({x:r.left+5,y:r.top+40});
+            fixture.replaceChildren(panels[2],gaps[1],panels[0],gaps[0],panels[1]);
+            const moved=resolveCursor(anchor),expected=gaps[0].getBoundingClientRect();assert(moved && near(moved.x,expected.left+5),'split gap matched ordinal instead of neighbours');
+            panels[1].remove();assert(resolveCursor(anchor)===null,'missing adjacent document inherited split cursor');
+        }finally{fixture.remove();}
     });
     await test('完整插件在在线和断线时都放行正文编辑、拖拽与原生撤销', async () => {
         const commands=[], messages=[], subscriptions=new Map();
@@ -576,7 +706,7 @@ async function test(name, run) {
                 const loaded=new Promise(resolve=>embedded.addEventListener('load',resolve,{once:true}));embedded.srcdoc='<button>内部按钮</button>';document.body.append(embedded);await loaded;
                 try {
                     plugin.bindFrames();embedded.contentDocument.body.dispatchEvent(new PointerEvent('pointermove',{clientX:20,clientY:30,pointerType:'mouse',bubbles:true}));
-                    const rect=embedded.getBoundingClientRect();assert(plugin.pointer&&near(plugin.pointer.x,rect.left+20*rect.width/embedded.clientWidth)&&near(plugin.pointer.y,rect.top+30*rect.height/embedded.clientHeight),'iframe pointer not translated; bindings='+plugin.frameListeners.size);
+                    const rect=embedded.getBoundingClientRect();assert(plugin.pointer&&near(plugin.pointer.x,rect.left+(20+embedded.clientLeft)*rect.width/embedded.offsetWidth)&&near(plugin.pointer.y,rect.top+(30+embedded.clientTop)*rect.height/embedded.offsetHeight),'iframe pointer not translated; bindings='+plugin.frameListeners.size);
                     embedded.contentDocument.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'v',ctrlKey:true,bubbles:true}));
                     assert(plugin.pendingShortcut==='Ctrl+V','iframe shortcut missing');plugin.pendingShortcut=null;
                     plugin.openPeople();plugin.peopleDialog.element.querySelector('.b3-dialog__scrim').click();await settleDialog();assert(!plugin.peoplePanel,'native scrim did not dismiss list');
@@ -623,9 +753,24 @@ async function test(name, run) {
                 plugin.updateCursors({tick:10,cursors:[],editing:[]});
                 assert(saved===editing.documentId && block.outerHTML===before,'rendering modified activity or note');
             });
+            await test('编辑光晕遵循原生层级，浮动工具栏、菜单与面板部分重叠时盖住边框和标签',async()=>{
+                await expose(block,10);select(block,10);
+                const editing=captureEditing(),editor=block.closest('.protyle');
+                plugin.updateCursors({tick:10,cursors:[],editing:[{name:'A',hue:120,editing}]});await frame();
+                const marker=plugin.editingMarkers.get(block);assert(marker && marker.closest('.protyle')===editor && !marker.closest('.collab-cursor-layer'),'editing frame is still in global top layer');
+                const before=cursorTextRoot(block).innerHTML,r=marker.getBoundingClientRect();
+                for(const className of ['protyle-toolbar','b3-menu','block__popover','dockPanel']){
+                    const overlay=document.createElement('div');overlay.className=className;overlay.style.cssText='position:fixed;left:'+r.left+'px;top:'+r.top+'px;width:120px;height:70px;background:white;z-index:5';
+                    document.body.append(overlay);marker.style.pointerEvents='auto';
+                    try{assert(document.elementFromPoint(r.left+3,r.top+3)===overlay,'glow is above '+className);}
+                    finally{marker.style.pointerEvents='';overlay.remove();}
+                }
+                assert(before===cursorTextRoot(block).innerHTML,'layer changed editable DOM');
+                plugin.updateCursors({tick:10,cursors:[],editing:[]});await frame();assert(!document.querySelector('.collab-editing-layer'),'empty native layer leaked');
+            });
             await test('集市和多层弹窗遮挡背景编辑框，关闭后自动恢复', async () => {
                 await expose(block,10);select(block,10);
-                const editing=captureEditing(), editor=block.closest('.protyle'), before=editor.outerHTML;
+                const editing=captureEditing(), editor=block.closest('.protyle'), before=editor.querySelector('.protyle-wysiwyg').outerHTML;
                 const dialog=document.createElement('div'), nested=document.createElement('div');
                 dialog.className=nested.className='b3-dialog occluder';
                 dialog.innerHTML='<div class="config__panel">集市</div>';
@@ -648,7 +793,7 @@ async function test(name, run) {
                     assert(plugin.editingMarkers.size===0,'main-document frame leaked into lower dialog preview');
                     dialog.remove();await frame();
                     assert(plugin.editingMarkers.size===1&&plugin.editingMarkers.has(block),'closing dialog did not restore document frame');
-                    assert(editor.outerHTML===before,'dialog visibility changed note content');
+                    assert(editor.querySelector('.protyle-wysiwyg').outerHTML===before,'dialog visibility changed note content');
                 } finally {
                     nested.remove();dialog.remove();
                     plugin.updateCursors({tick:10,cursors:[],editing:[]});await frame();

@@ -16,6 +16,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.remoteSelections = [];
         this.remoteEditing = [];
         this.editingMarkers = new Map();
+        this.editingLayers = new Map();
         this.editingSequence = 0;
         this.lastEditingSignature = "null";
         this.selectionHighlights = new Set();
@@ -212,16 +213,17 @@ module.exports = class CollaborationPlugin extends Plugin {
     observeLayout() {
         this.domObserver = new MutationObserver((records) => {
             for (const record of records) {
-                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-people")) continue;
-                if (record.type === "characterData") { this.scheduleCursorRender(false); continue; }
+                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-editing-layer, .collab-people")) continue;
+                if (record.type === "characterData") { this.scheduleCursorRender(false); this.queueActivity(); continue; }
                 if (record.type === "attributes") {
                     this.scheduleDocumentReport();
                     if (record.target.matches(".protyle") || record.target.classList.contains("layout__wnd--active") ||
                         (record.oldValue || "").includes("layout__wnd--active")) this.scheduleDocumentReport();
                     this.scheduleCursorRender(false);
+                    this.queueActivity();
                     continue;
                 }
-                const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.classList.contains("collab-presence-users"));
+                const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.matches('.collab-presence-users,.collab-editing-layer'));
                 if (!elements.length) continue;
                 if(elements.some((element)=>element.matches('iframe') || element.querySelector('iframe')))this.bindFrames();
                 this.scheduleDocumentReport();
@@ -229,9 +231,10 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if ((record.target.closest(".layout-tab-container") && !record.target.closest(".protyle")) ||
                     elements.some((node) => node.matches(".protyle") || node.querySelector(".protyle"))) this.scheduleDocumentReport();
                 this.scheduleCursorRender(false);
+                this.queueActivity();
             }
         });
-        this.domObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "data-node-id"], attributeOldValue: true });
+        this.domObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "data-node-id", "hidden", "open"], attributeOldValue: true });
     }
 
     initSettings() {
@@ -309,6 +312,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.remoteSelections = selections;
         this.remoteEditing = editing;
         this.scheduleCursorRender(true);
+        this.watchGraphs();
     }
 
     startTracking() {
@@ -326,6 +330,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.scheduleDocumentReport();
                 this.scheduleCursorRender(true);
                 this.queueActivity();
+                this.watchGraphs();
             }
         };
         this.handlePointerLeave = () => {
@@ -386,11 +391,11 @@ module.exports = class CollaborationPlugin extends Plugin {
         for(const frame of document.querySelectorAll('iframe')) {
             if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
             let doc;
-            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+event.clientX*rect.width/(frame.clientWidth || rect.width),clientY:rect.top+event.clientY*rect.height/(frame.clientHeight || rect.height)});};
-            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc=null;};
+            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+(event.clientX+frame.clientLeft)*rect.width/(frame.offsetWidth || rect.width),clientY:rect.top+(event.clientY+frame.clientTop)*rect.height/(frame.offsetHeight || rect.height)});};
+            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc=null;};
             const load=()=>{
                 stopDocument();
-                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});}catch{}
+                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc?.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});}catch{}
             };
             const enter=()=>this.handlePointerLeave();
             frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
@@ -416,6 +421,16 @@ module.exports = class CollaborationPlugin extends Plugin {
     startCursorTimer() {
         clearInterval(this.cursorTimer);
         this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender(false);},1000);
+    }
+
+    watchGraphs() {
+        if(this.stopped || this.graphTimer || document.hidden)return;
+        const local=this.pointer && document.elementFromPoint(this.pointer.x,this.pointer.y)?.matches('canvas');
+        if(!local && !this.remoteCursors.some(client=>client.cursor.ui?.graph))return;
+        const models=graphModels();if(!models.length)return;
+        const revision=JSON.stringify(models.map(({graphEngine:engine})=>[engine.positionVersion,engine.geometryVersion,engine.camera.x,engine.camera.y,engine.camera.scale]));
+        if(revision!==this.graphRevision){this.graphRevision=revision;this.scheduleCursorRender(false);this.queueActivity();}
+        this.graphTimer=setTimeout(()=>{this.graphTimer=null;this.watchGraphs();},1000/this.tick);
     }
 
     async sendCursor() {
@@ -533,10 +548,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         for (const clients of groups.values()) {
             const { editing, hue } = clients[0];
             for (const block of document.querySelectorAll('.protyle-wysiwyg [data-node-id="' + editing.blockId + '"]')) {
-                // 编辑框在全局光标层上，不能穿过弹窗覆盖背景正文。
+                // Modal dialogs hide the background; other floating UI occludes the editor's native layer.
                 if (dialog && !dialog.contains(block)) continue;
                 const editor = block.closest('.protyle');
-                if (block.closest('.fn__none') || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
+                if (!visibleElement(block) || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
                 const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();
                 const left = Math.max(rect.left, clip.left, 0), top = Math.max(rect.top, clip.top, 0);
                 const right = Math.min(rect.right, clip.right, window.innerWidth), bottom = Math.min(rect.bottom, clip.bottom, window.innerHeight);
@@ -547,18 +562,26 @@ module.exports = class CollaborationPlugin extends Plugin {
                     marker = document.createElement('div');
                     marker.className = 'collab-editing';
                     marker.append(document.createElement('span'));
-                    this.cursorLayer.append(marker);
+                    let layer=this.editingLayers.get(editor);
+                    if(!layer){
+                        layer=document.createElement('div');layer.className='collab-editing-layer';layer.setAttribute('aria-hidden','true');
+                        editor.append(layer);this.editingLayers.set(editor,layer);
+                    }
+                    layer.append(marker);
                     this.editingMarkers.set(block, marker);
                 }
                 marker.firstElementChild.textContent = this.i18n.editingNames.replace('${names}', clients.map((client) => client.name).join('、'));
                 marker.classList.toggle('collab-editing--inset', top - 22 < Math.max(clip.top, 0));
                 marker.style.setProperty('--collab-editing-hue', String(hue));
-                marker.style.transform = 'translate3d(' + left + 'px,' + top + 'px,0)';
-                marker.style.width = (right - left) + 'px';
-                marker.style.height = (bottom - top) + 'px';
+                const layer=marker.parentElement, origin=layer.getBoundingClientRect();
+                const scaleX=origin.width/(layer.clientWidth || origin.width),scaleY=origin.height/(layer.clientHeight || origin.height);
+                marker.style.transform = 'translate3d(' + (left-origin.left)/scaleX + 'px,' + (top-origin.top)/scaleY + 'px,0)';
+                marker.style.width = (right - left)/scaleX + 'px';
+                marker.style.height = (bottom - top)/scaleY + 'px';
             }
         }
         for (const [block, marker] of this.editingMarkers) if (!visible.has(block)) { marker.remove(); this.editingMarkers.delete(block); }
+        for(const [editor,layer] of this.editingLayers)if(!layer.childElementCount || !editor.isConnected){layer.remove();this.editingLayers.delete(editor);}
     }
 
     renderSelections() {
@@ -784,6 +807,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         clearTimeout(this.restoreTimer);
         clearInterval(this.heartbeatTimer);
         clearInterval(this.cursorTimer);
+        clearTimeout(this.graphTimer);
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
         clearTimeout(this.typingTimer);
@@ -794,6 +818,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.cursorLayer?.remove();
         this.cursorMarkers.clear();
         this.editingMarkers.clear();
+        for(const layer of this.editingLayers.values())layer.remove();this.editingLayers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
         document.removeEventListener('input',this.handleTyping,true);
         document.removeEventListener('selectionchange',this.handleSelectionActivity);

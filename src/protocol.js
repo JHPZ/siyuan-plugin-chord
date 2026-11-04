@@ -50,6 +50,7 @@ function cleanPage(page) {
     return result;
 }
 function validUIAnchor(value) {
+    if(value?.version===3)return validComponentAnchor(value);
     if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
     if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
     if(!['file','document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
@@ -68,10 +69,52 @@ function validUIAnchor(value) {
 
 function cleanUIAnchor(value) {
     if(!validUIAnchor(value))throw Error('Invalid UI anchor');
+    if(value.version===3)return cleanComponentAnchor(value);
     const result={kind:value.kind,path:[...value.path],tag:value.tag};
     for(const key of ['version','id','key','part','attribute','value','label','classes','offset'])if(value[key]!==undefined)result[key]=value[key];
     if(value.page!==undefined)result.page=cleanPage(value.page);
     return result;
+}
+
+function validComponentStep(step) {
+    return step && typeof step.key==='string' && /^[a-f0-9]{16}$/.test(step.key) &&
+        Number.isSafeInteger(step.count) && step.count>0 && step.count<=10000 &&
+        Number.isSafeInteger(step.index) && step.index>=0 && step.index<step.count;
+}
+
+function validComponentRoute(route) {
+    return Array.isArray(route) && route.length<=32 && route.every(validComponentStep);
+}
+
+function validComponentEdge(edge) {
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' ||
+        edge.kind==='child' && validComponentStep(edge.step) ||
+        edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
+}
+
+function validComponentAnchor(value) {
+    const scope=value.scope;
+    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global'].includes(scope.kind) &&
+        typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
+        (scope.pane===undefined || typeof scope.pane==='string' && /^[a-f0-9]{16}$/.test(scope.pane)) &&
+        validComponentRoute(value.route) && (value.frame===undefined || validComponentRoute(value.frame)) && (value.target===undefined || validComponentRoute(value.target)) &&
+        ['x','y'].every(axis=>Array.isArray(value.edges?.[axis]) && value.edges[axis].length===2 && value.edges[axis].every(validComponentEdge)) &&
+        (value.textHash===undefined || typeof value.textHash==='string' && /^[a-f0-9]{16}$/.test(value.textHash)) &&
+        (value.imagePoint===undefined || value.imagePoint && [value.imagePoint.x,value.imagePoint.y].every(number=>Number.isFinite(number) && number>=0 && number<=1)) &&
+        (value.graph===undefined || value.frame===undefined && value.graph &&
+            (value.graph.node===null || typeof value.graph.node==='string' && /^[a-f0-9]{16}$/.test(value.graph.node)) &&
+            typeof value.graph.layout==='string' && /^[a-f0-9]{16}$/.test(value.graph.layout) &&
+            [value.graph.x,value.graph.y].every(number=>Number.isFinite(number) && Math.abs(number)<=10000000));
+}
+
+function cleanComponentAnchor(value) {
+    const step=s=>({key:s.key,count:s.count,index:s.index});
+    const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
+    return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{})},
+        route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
+        edges:{x:value.edges.x.map(edge),y:value.edges.y.map(edge)},...(value.textHash ? {textHash:value.textHash}:{}),
+        ...(value.imagePoint ? {imagePoint:{x:value.imagePoint.x,y:value.imagePoint.y}}:{}),
+        ...(value.graph ? {graph:{node:value.graph.node,layout:value.graph.layout,x:value.graph.x,y:value.graph.y}}:{})};
 }
 function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);

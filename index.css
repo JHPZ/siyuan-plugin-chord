@@ -112,6 +112,14 @@
     .collab-cursor { transition: none; }
 }
 
+.collab-editing-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
 .collab-editing {
     position: absolute;
     top: 0;

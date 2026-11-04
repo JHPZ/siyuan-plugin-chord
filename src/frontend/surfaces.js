@@ -1,5 +1,13 @@
 const textLabel = (element) => (element?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
-const visibleElement = (element) => element && !element.closest('.fn__none') && element.getBoundingClientRect().width > 0;
+function visibleElement(element) {
+    if(!element || element.closest('.fn__none') || element.getBoundingClientRect().width<=0 || element.getBoundingClientRect().height<=0 || element.checkVisibility?.({checkOpacity:true,checkVisibilityCSS:true})===false)return false;
+    const view=element.ownerDocument?.defaultView;
+    if(view?.getComputedStyle){
+        if(view.getComputedStyle(element).visibility==='hidden')return false;
+        for(let node=element;node;node=node.parentElement){const style=view.getComputedStyle(node);if(style.display==='none' || style.opacity==='0')return false;}
+    }
+    return true;
+}
 
 function dockPage(target) {
     if (!target) return null;
@@ -282,7 +290,7 @@ function captureCursor(point, plugin) {
     const anchored=captureDocumentCursor(point);
     if (!point || document.hidden) return null;
     const hit=document.elementFromPoint(point.x,point.y);
-    if (!hit) return null;
+    if (!visibleElement(hit) || hit.closest('[data-private]')) return null;
     const active=document.activeElement;
     const editable=document.hasFocus?.() && active?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') && !active.closest('[data-private]');
     const state=editable ? (plugin?.typingTarget===active ? 'typing':'editing'):undefined;
@@ -290,18 +298,24 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page,...activity};
-    if(hit.closest('.protyle-wysiwyg'))return null;
+    const fallback=()=>{
+        const component=captureComponent(hit,plugin,point);
+        return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
+    };
     const target=uiAnchor(hit,plugin,point);
-    if(!target)return null;
+    if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
-    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
+    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return fallback();
     const region=cursorRegion(hit);
-    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
+    const cursor={surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
         x:target.text ? target.text.x : Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)),
         y:target.text ? target.text.y : Math.max(0,Math.min(1,(point.y-rect.top)/rect.height))};
+    const local=resolveCursor(cursor,plugin);
+    return local && Math.hypot(local.x-point.x,local.y-point.y)<1 ? cursor:fallback();
 }
 
 function resolveCursor(cursor, plugin) {
+    if(cursor?.surface==='ui' && cursor.ui?.version===3)return resolveComponent(cursor,plugin);
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
     const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
     if(!element || element.closest(CURSOR_EXCLUDED))return null;

@@ -51,6 +51,7 @@ function cleanPage(page) {
     return result;
 }
 function validUIAnchor(value) {
+    if(value?.version===3)return validComponentAnchor(value);
     if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
     if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
     if(!['file','document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
@@ -69,10 +70,52 @@ function validUIAnchor(value) {
 
 function cleanUIAnchor(value) {
     if(!validUIAnchor(value))throw Error('Invalid UI anchor');
+    if(value.version===3)return cleanComponentAnchor(value);
     const result={kind:value.kind,path:[...value.path],tag:value.tag};
     for(const key of ['version','id','key','part','attribute','value','label','classes','offset'])if(value[key]!==undefined)result[key]=value[key];
     if(value.page!==undefined)result.page=cleanPage(value.page);
     return result;
+}
+
+function validComponentStep(step) {
+    return step && typeof step.key==='string' && /^[a-f0-9]{16}$/.test(step.key) &&
+        Number.isSafeInteger(step.count) && step.count>0 && step.count<=10000 &&
+        Number.isSafeInteger(step.index) && step.index>=0 && step.index<step.count;
+}
+
+function validComponentRoute(route) {
+    return Array.isArray(route) && route.length<=32 && route.every(validComponentStep);
+}
+
+function validComponentEdge(edge) {
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' ||
+        edge.kind==='child' && validComponentStep(edge.step) ||
+        edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
+}
+
+function validComponentAnchor(value) {
+    const scope=value.scope;
+    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global'].includes(scope.kind) &&
+        typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
+        (scope.pane===undefined || typeof scope.pane==='string' && /^[a-f0-9]{16}$/.test(scope.pane)) &&
+        validComponentRoute(value.route) && (value.frame===undefined || validComponentRoute(value.frame)) && (value.target===undefined || validComponentRoute(value.target)) &&
+        ['x','y'].every(axis=>Array.isArray(value.edges?.[axis]) && value.edges[axis].length===2 && value.edges[axis].every(validComponentEdge)) &&
+        (value.textHash===undefined || typeof value.textHash==='string' && /^[a-f0-9]{16}$/.test(value.textHash)) &&
+        (value.imagePoint===undefined || value.imagePoint && [value.imagePoint.x,value.imagePoint.y].every(number=>Number.isFinite(number) && number>=0 && number<=1)) &&
+        (value.graph===undefined || value.frame===undefined && value.graph &&
+            (value.graph.node===null || typeof value.graph.node==='string' && /^[a-f0-9]{16}$/.test(value.graph.node)) &&
+            typeof value.graph.layout==='string' && /^[a-f0-9]{16}$/.test(value.graph.layout) &&
+            [value.graph.x,value.graph.y].every(number=>Number.isFinite(number) && Math.abs(number)<=10000000));
+}
+
+function cleanComponentAnchor(value) {
+    const step=s=>({key:s.key,count:s.count,index:s.index});
+    const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
+    return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{})},
+        route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
+        edges:{x:value.edges.x.map(edge),y:value.edges.y.map(edge)},...(value.textHash ? {textHash:value.textHash}:{}),
+        ...(value.imagePoint ? {imagePoint:{x:value.imagePoint.x,y:value.imagePoint.y}}:{}),
+        ...(value.graph ? {graph:{node:value.graph.node,layout:value.graph.layout,x:value.graph.x,y:value.graph.y}}:{})};
 }
 function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
@@ -184,7 +227,7 @@ function captureDocumentSpace(editor, hit, point) {
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
-    if (!editor) return null;
+    if (!editor || !visibleElement(hit)) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
     const blank = !text && captureDocumentSpace(editor, hit, point);
@@ -204,7 +247,7 @@ function resolveDocumentCursor(cursor) {
     const blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
             .filter((editor) => !editor.closest(".fn__none") && editorDocumentId(editor) === cursor.documentId)
             .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)])
-            .filter(block=>!block.closest('.fn__none') && matchesRegion(block,cursor.region));
+            .filter(block=>visibleElement(block) && matchesRegion(block,cursor.region));
     if(blocks.length!==1)return null;
     for (const block of blocks) {
         if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
@@ -218,7 +261,7 @@ function resolveDocumentCursor(cursor) {
             const editor = block.closest('.protyle-wysiwyg'), column = documentColumn(editor);
             const x = column.left + (column.right - column.left) * relative.x;
             const y = rect.top + relative.y * line, hit = document.elementFromPoint(x, y);
-            if (hit?.closest('.protyle-wysiwyg') === editor) return { x, y };
+            if (visibleElement(hit) && hit.closest('.protyle-wysiwyg') === editor) return { x, y };
             continue;
         }
         const character = characterAt(cursorTextRoot(block), cursor.text.offset);
@@ -228,7 +271,7 @@ function resolveDocumentCursor(cursor) {
         const x = rect.left + rect.width * relative.x;
         const y = rect.top + rect.height * relative.y;
         const hit = document.elementFromPoint(x, y);
-        if (hit && block.contains(hit)) return { x, y };
+        if (visibleElement(hit) && block.contains(hit)) return { x, y };
     }
     return null;
 }
@@ -322,8 +365,310 @@ function captureEditing() {
     return validEditing(editing) && region ? {...editing,region}:null;
 }
 
+function graphModels() {
+    // shortcut: native graph internals are checked at runtime; use a public coordinate API when SiYuan exposes one.
+    const models=[];
+    try{models.push(...getAllTabs().map(tab=>tab.model));}catch{}
+    for(const item of document.querySelectorAll('.dock__item[data-type]'))try{models.push(getModelByDockType(item.getAttribute('data-type')));}catch{}
+    return [...new Set(models)].filter(model=>{
+        const engine=model?.graphEngine;
+        return engine?.container?.isConnected && visibleElement(engine.container) && !engine.destroyed && Array.isArray(engine.data?.nodes) && engine.data.sizes?.length===engine.data.nodes.length &&
+            engine.positions?.length===engine.data.nodes.length*2 && typeof engine.hitTest==='function' &&
+            [engine.camera?.x,engine.camera?.y,engine.camera?.scale].every(Number.isFinite) && engine.camera.scale>0;
+    });
+}
+
+function graphContext(model) {
+    return model?.graphEngine ? JSON.stringify([model.type,model.blockId,model.rootId,model.notebookId]):'';
+}
+
+function graphModel(element) {
+    return graphModels().find(model=>model.graphEngine.container.contains(element));
+}
+
+const graphLayouts=new WeakMap();
+function graphLayout(engine) {
+    const previous=graphLayouts.get(engine);
+    if(previous?.data===engine.data && previous.positions===engine.positions && previous.version===engine.positionVersion)return previous.key;
+    const key=componentHash(JSON.stringify(engine.data.nodes.map((node,index)=>[node.id,engine.positions[index*2],engine.positions[index*2+1],engine.data.sizes[index]])));
+    graphLayouts.set(engine,{data:engine.data,positions:engine.positions,version:engine.positionVersion,key});return key;
+}
+
+function captureGraph(element,point) {
+    const model=graphModel(element);if(!model)return null;
+    const engine=model.graphEngine,rect=engine.container.getBoundingClientRect(),x=point.x-rect.left,y=point.y-rect.top;
+    const index=engine.hitTest(x,y),node=engine.data.nodes[index],camera=engine.camera;
+    const size=node ? engine.data.sizes[index]:1;if(!(size>0))return null;
+    return {node:node ? componentHash(String(node.id)):null,layout:graphLayout(engine),
+        x:((x-camera.x)/camera.scale-(node ? engine.positions[index*2]:0))/size,
+        y:((y-camera.y)/camera.scale-(node ? engine.positions[index*2+1]:0))/size};
+}
+
+function resolveGraph(element,anchor) {
+    const model=graphModel(element);if(!model)return null;
+    const engine=model.graphEngine,camera=engine.camera;
+    let index=-1;
+    if(anchor.node){
+        const matches=engine.data.nodes.map((node,index)=>({key:componentHash(String(node.id)),index})).filter(node=>node.key===anchor.node);
+        if(matches.length!==1)return null;index=matches[0].index;
+    }else if(graphLayout(engine)!==anchor.layout)return null;
+    const size=index>=0 ? engine.data.sizes[index]:1;
+    const x=((index>=0 ? engine.positions[index*2]:0)+anchor.x*size)*camera.scale+camera.x;
+    const y=((index>=0 ? engine.positions[index*2+1]:0)+anchor.y*size)*camera.scale+camera.y;
+    if(engine.hitTest(x,y)!==index)return null;
+    const rect=engine.container.getBoundingClientRect(),point={x:rect.left+x,y:rect.top+y};
+    return document.elementFromPoint(point.x,point.y)===element ? point:null;
+}
+
+// Component identities are bounded hashes; input values and document text never enter the wire format.
+function componentHash(value) {
+    let a=2166136261,b=5381;
+    for(let index=0;index<value.length;index++){const code=value.charCodeAt(index);a=Math.imul(a^code,16777619);b=Math.imul(b,33)^code;}
+    return (a>>>0).toString(16).padStart(8,'0')+(b>>>0).toString(16).padStart(8,'0');
+}
+
+function componentChildren(element) {
+    return [...element.children].filter(child=>{
+        if(child.matches('style,script,.collab-cursor-layer,.collab-editing-layer,.collab-presence-users,.fn__none,[hidden]'))return false;
+        const style=child.ownerDocument.defaultView.getComputedStyle(child);
+        return style.display!=='none' && style.visibility!=='hidden' && style.opacity!=='0';
+    });
+}
+
+function componentKey(element) {
+    const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
+    const values=attributes.map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('img'))values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
+    if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
+    if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
+    if(element.matches('.protyle'))values.push(['document',editorDocumentId(element)]);
+    if(element.matches('.layout__wnd,[data-type="wnd"]'))values.push(['pane',componentPane(element)]);
+    if(element.matches('.layout__resize')){
+        const neighbour=node=>{
+            if(!node)return '';
+            if(node.matches('.layout__dockl,.layout__dockr,.layout__dockb'))return uiClasses(node);
+            const pages=[...node.querySelectorAll('[data-type="tab-header"]')].map(head=>pageKey(tabPage(head))).sort();
+            const ids=[...node.querySelectorAll('.protyle-background[data-node-id]')].map(editor=>editor.getAttribute('data-node-id')).sort();
+            return pages.length || ids.length ? JSON.stringify([pages,ids]):uiClasses(node);
+        };
+        values.push(['between',[neighbour(element.previousElementSibling),neighbour(element.nextElementSibling)].sort()]);
+    }
+    const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
+    const label=!privateText && !values.length ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
+        (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') ? textLabel(element):'')):'';
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name)).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
+}
+
+function componentPane(element) {
+    const wnd=element.closest('.layout__wnd,[data-type="wnd"]');
+    return wnd ? [...wnd.querySelectorAll('[data-type="tab-header"]')].map(head=>pageKey(tabPage(head))).sort().join('|'):'';
+}
+
+function componentStep(element) {
+    const key=componentKey(element),siblings=componentChildren(element.parentElement).filter(child=>componentKey(child)===key);
+    return {key,count:siblings.length,index:siblings.indexOf(element)};
+}
+
+function componentChild(parent,step) {
+    const children=componentChildren(parent).filter(child=>componentKey(child)===step.key);
+    return children.length===step.count ? children[step.index]:null;
+}
+
+function componentRoute(root,element) {
+    const route=[];
+    for(let node=element;node!==root;node=node.parentElement){
+        if(!node?.parentElement || route.length>=32)return null;
+        route.unshift(componentStep(node));
+    }
+    return route;
+}
+
+function componentFollow(root,route) {
+    for(const step of route){root=componentChild(root,step);if(!root)return null;}
+    return root;
+}
+
+const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
+
+function componentScope(element,plugin) {
+    const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
+    const dialog=element.closest('.b3-dialog');
+    if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
+    const floating=element.closest(COMPONENT_FLOATING);
+    if(floating && !floating.closest('.protyle,.dockPanel')){
+        const context=plugin ? pageKey(plugin.dialogBase || currentPage(plugin,false)):'';
+        return make(floating,'floating',componentKey(floating)+'|'+(floating.getAttribute('data-oid') || '')+'|'+context);
+    }
+    const dock=dockPage(element);
+    if(dock){
+        let root;
+        try{root=getModelByDockType(dock.id)?.parent?.panelElement;}catch{}
+        if(root?.contains(element)){
+            let model;try{model=getModelByDockType(dock.id);}catch{}
+            return make(root,'dock',dock.id+'|'+graphContext(model));
+        }
+    }
+    const editor=element.closest('.protyle');
+    if(editor){
+        const id=editorDocumentId(editor),region=cursorRegion(editor);
+        return DOCUMENT_ID.test(id || '') && region ? make(editor,'document',id+'|'+region.kind+'|'+region.id):null;
+    }
+    const panel=element.closest('.layout-tab-container > [data-id]');
+    if(panel){
+        let tab;try{tab=getAllTabs().find(item=>item.panelElement===panel);}catch{}
+        if(tab?.headElement){const page=tabPage(tab.headElement);return make(panel,'tab',pageKey(page)+'|'+(page.kind==='custom' ? page.title:'')+'|'+graphContext(tab.model));}
+    }
+    return make(document.body,'global','workspace-ui');
+}
+
+function componentRoots(scope,plugin) {
+    const selector={document:'.protyle',dock:'.dockPanel',dialog:'.b3-dialog',floating:COMPONENT_FLOATING,tab:'.layout-tab-container > [data-id]',global:'body'}[scope.kind];
+    let roots=[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
+        const local=componentScope(root,plugin);
+        return local?.root===root && local.scope.kind===scope.kind && local.scope.key===scope.key;
+    });
+    if(roots.length>1 && scope.pane)roots=roots.filter(root=>componentHash(componentPane(root))===scope.pane);
+    return roots.length===1 ? roots[0]:null;
+}
+
+function componentCharacter(element,offset) {
+    const character=characterAt(element,offset);
+    if(!character)return null;
+    const range=element.ownerDocument.createRange();range.setStart(character.node,character.offset);range.setEnd(character.node,character.offset+1);
+    const rect=range.getBoundingClientRect();return rect.width && rect.height ? rect:null;
+}
+
+function componentNearText(element,point) {
+    if(element.matches('input,textarea') || element.closest('[data-private]'))return null;
+    const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
+    const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
+    if(node?.nodeType!==3 || !element.contains(node))return null;
+    const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
+    return [prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
+}
+
+function componentImageRect(image) {
+    if(!image.matches('img') || !image.naturalWidth || !image.naturalHeight)return null;
+    const style=image.ownerDocument.defaultView.getComputedStyle(image),rect=image.getBoundingClientRect();
+    const left=parseFloat(style.paddingLeft),right=parseFloat(style.paddingRight),top=parseFloat(style.paddingTop),bottom=parseFloat(style.paddingBottom);
+    const width=image.clientWidth-left-right,height=image.clientHeight-top-bottom;
+    let factor=1,w=image.naturalWidth,h=image.naturalHeight;
+    if(style.objectFit==='contain' || style.objectFit==='cover' || style.objectFit==='scale-down'){
+        factor=(style.objectFit==='cover' ? Math.max:Math.min)(width/w,height/h);if(style.objectFit==='scale-down')factor=Math.min(1,factor);
+    }else if(style.objectFit==='fill'){w=width;h=height;}
+    w*=factor;h*=factor;
+    const position=style.objectPosition.split(' ');
+    const offset=(value,size)=>/^-?[\d.]+%$/.test(value) ? size*parseFloat(value)/100:/^-?[\d.]+px$/.test(value) ? parseFloat(value):NaN;
+    const x=offset(position[0],width-w),y=offset(position[1],height-h),sx=rect.width/image.offsetWidth,sy=rect.height/image.offsetHeight;
+    if(![x,y,w,h,sx,sy].every(Number.isFinite) || w<=0 || h<=0)return null;
+    return {left:rect.left+(image.clientLeft+left+x)*sx,top:rect.top+(image.clientTop+top+y)*sy,
+        right:rect.left+(image.clientLeft+left+x+w)*sx,bottom:rect.top+(image.clientTop+top+y+h)*sy,width:w*sx,height:h*sy};
+}
+
+function componentGeometry(element,point) {
+    const bounds=element.getBoundingClientRect(),children=componentChildren(element),text=componentNearText(element,point) || [],image=componentImageRect(element);
+    const edges={},relative={};let usedText=false;
+    for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
+        const other=point[axis==='x' ? 'y':'x'];
+        const entries=[{value:bounds[start],edge:{kind:'self',side:'start'}},{value:bounds[end],edge:{kind:'self',side:'end'}}];
+        if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
+        for(const child of children){
+            if(!visibleElement(child))continue;
+            const rect=child.getBoundingClientRect();if(other<rect[otherStart] || other>rect[otherEnd])continue;
+            const step=componentStep(child);
+            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'child',side,step}});
+        }
+        for(const item of text)for(const [side,key] of [['start',start],['end',end]])if(item.rect[key]>=bounds[start] && item.rect[key]<=bounds[end])entries.push({value:item.rect[key],edge:{kind:'text',side,offset:item.offset}});
+        const lower=entries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0];
+        const upper=entries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0];
+        if(!lower || !upper)return null;
+        edges[axis]=[lower.edge,upper.edge];relative[axis]=upper.value===lower.value ? 0:(point[axis]-lower.value)/(upper.value-lower.value);
+        usedText ||= lower.edge.kind==='text' || upper.edge.kind==='text';
+    }
+    const imagePoint=image && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
+    return {edges,...relative,...(usedText ? {textHash:componentHash(element.textContent)}:{}),...(imagePoint ? {imagePoint}:{})};
+}
+
+function captureComponent(hit,plugin,point) {
+    if(hit.closest('[data-private]'))return null;
+    const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
+    if(hit.matches('canvas') && !graph)return null;
+    const original=hit;
+    if(hit instanceof SVGElement)hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
+    while(hit.parentElement){
+        const rect=hit.getBoundingClientRect();
+        if(point.x>=rect.left && point.x<=rect.right && point.y>=rect.top && point.y<=rect.bottom)break;
+        hit=hit.parentElement;
+    }
+    const scope=componentScope(hit,plugin);if(!scope)return null;
+    const route=componentRoute(scope.root,hit);if(!route)return null;
+    let frame;
+    if(hit.matches('iframe')){
+        let doc;try{doc=hit.contentDocument;}catch{}
+        if(!doc?.body)return null;
+        const rect=hit.getBoundingClientRect();point={x:(point.x-rect.left)*hit.offsetWidth/rect.width-hit.clientLeft,y:(point.y-rect.top)*hit.offsetHeight/rect.height-hit.clientTop};
+        const inner=doc.elementFromPoint(point.x,point.y);if(!inner || inner.closest('[data-private]') || inner.matches('canvas,iframe'))return null;
+        frame=componentRoute(doc.body,inner);if(!frame)return null;hit=inner;
+    }
+    const target=hit!==original && !frame ? componentRoute(hit,original):undefined;
+    if(target===null)return null;
+    const geometry=componentGeometry(hit,point);if(!geometry)return null;
+    const {x,y,...fields}=geometry;
+    const ui={version:3,kind:'component',scope:scope.scope,route,...(frame ? {frame}:{}),...(target ? {target}:{}),...(graph ? {graph}:{}),...fields};
+    return validUIAnchor(ui) ? {ui,x,y}:null;
+}
+
+function resolveComponent(cursor,plugin) {
+    const anchor=cursor.ui;
+    if(!validUIAnchor(anchor))return null;
+    const root=componentRoots(anchor.scope,plugin);if(!root)return null;
+    let element=componentFollow(root,anchor.route),frame;
+    if(!element)return null;
+    if(anchor.graph)return visibleElement(element) && element.matches('canvas') ? resolveGraph(element,anchor.graph):null;
+    if(anchor.frame){
+        frame=element;if(!frame.matches('iframe'))return null;
+        let doc;try{doc=frame.contentDocument;}catch{}
+        element=doc?.body && componentFollow(doc.body,anchor.frame);if(!element)return null;
+    }
+    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas,iframe') ||
+        anchor.textHash && componentHash(element.textContent)!==anchor.textHash)return null;
+    const point={};
+    for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
+        if(anchor.imagePoint){
+            const rect=componentImageRect(element);if(!rect)return null;
+            point[axis]=rect[start]+(rect[end]-rect[start])*anchor.imagePoint[axis];continue;
+        }
+        const values=anchor.edges[axis].map(edge=>{
+            const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
+            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):target?.getBoundingClientRect();
+            return rect?.[edge.side==='start' ? start:end];
+        });
+        if(values.some(value=>!Number.isFinite(value)) || values[1]<values[0] ||
+            values[0]===values[1] && JSON.stringify(anchor.edges[axis][0])!==JSON.stringify(anchor.edges[axis][1]))return null;
+        point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
+    }
+    const hit=element.ownerDocument.elementFromPoint(point.x,point.y);
+    const target=anchor.target ? componentFollow(element,anchor.target):element;
+    // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
+    if(!target || hit!==target && !(hit instanceof SVGElement && target.contains(hit)))return null;
+    if(frame){
+        const rect=frame.getBoundingClientRect();point.x=rect.left+(point.x+frame.clientLeft)*rect.width/frame.offsetWidth;point.y=rect.top+(point.y+frame.clientTop)*rect.height/frame.offsetHeight;
+        if(document.elementFromPoint(point.x,point.y)!==frame)return null;
+    }
+    return point;
+}
+
 const textLabel = (element) => (element?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
-const visibleElement = (element) => element && !element.closest('.fn__none') && element.getBoundingClientRect().width > 0;
+function visibleElement(element) {
+    if(!element || element.closest('.fn__none') || element.getBoundingClientRect().width<=0 || element.getBoundingClientRect().height<=0 || element.checkVisibility?.({checkOpacity:true,checkVisibilityCSS:true})===false)return false;
+    const view=element.ownerDocument?.defaultView;
+    if(view?.getComputedStyle){
+        if(view.getComputedStyle(element).visibility==='hidden')return false;
+        for(let node=element;node;node=node.parentElement){const style=view.getComputedStyle(node);if(style.display==='none' || style.opacity==='0')return false;}
+    }
+    return true;
+}
 
 function dockPage(target) {
     if (!target) return null;
@@ -606,7 +951,7 @@ function captureCursor(point, plugin) {
     const anchored=captureDocumentCursor(point);
     if (!point || document.hidden) return null;
     const hit=document.elementFromPoint(point.x,point.y);
-    if (!hit) return null;
+    if (!visibleElement(hit) || hit.closest('[data-private]')) return null;
     const active=document.activeElement;
     const editable=document.hasFocus?.() && active?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') && !active.closest('[data-private]');
     const state=editable ? (plugin?.typingTarget===active ? 'typing':'editing'):undefined;
@@ -614,18 +959,24 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page,...activity};
-    if(hit.closest('.protyle-wysiwyg'))return null;
+    const fallback=()=>{
+        const component=captureComponent(hit,plugin,point);
+        return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
+    };
     const target=uiAnchor(hit,plugin,point);
-    if(!target)return null;
+    if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
-    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
+    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return fallback();
     const region=cursorRegion(hit);
-    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
+    const cursor={surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
         x:target.text ? target.text.x : Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)),
         y:target.text ? target.text.y : Math.max(0,Math.min(1,(point.y-rect.top)/rect.height))};
+    const local=resolveCursor(cursor,plugin);
+    return local && Math.hypot(local.x-point.x,local.y-point.y)<1 ? cursor:fallback();
 }
 
 function resolveCursor(cursor, plugin) {
+    if(cursor?.surface==='ui' && cursor.ui?.version===3)return resolveComponent(cursor,plugin);
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
     const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
     if(!element || element.closest(CURSOR_EXCLUDED))return null;
@@ -662,6 +1013,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.remoteSelections = [];
         this.remoteEditing = [];
         this.editingMarkers = new Map();
+        this.editingLayers = new Map();
         this.editingSequence = 0;
         this.lastEditingSignature = "null";
         this.selectionHighlights = new Set();
@@ -858,16 +1210,17 @@ module.exports = class CollaborationPlugin extends Plugin {
     observeLayout() {
         this.domObserver = new MutationObserver((records) => {
             for (const record of records) {
-                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-people")) continue;
-                if (record.type === "characterData") { this.scheduleCursorRender(false); continue; }
+                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-editing-layer, .collab-people")) continue;
+                if (record.type === "characterData") { this.scheduleCursorRender(false); this.queueActivity(); continue; }
                 if (record.type === "attributes") {
                     this.scheduleDocumentReport();
                     if (record.target.matches(".protyle") || record.target.classList.contains("layout__wnd--active") ||
                         (record.oldValue || "").includes("layout__wnd--active")) this.scheduleDocumentReport();
                     this.scheduleCursorRender(false);
+                    this.queueActivity();
                     continue;
                 }
-                const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.classList.contains("collab-presence-users"));
+                const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.matches('.collab-presence-users,.collab-editing-layer'));
                 if (!elements.length) continue;
                 if(elements.some((element)=>element.matches('iframe') || element.querySelector('iframe')))this.bindFrames();
                 this.scheduleDocumentReport();
@@ -875,9 +1228,10 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if ((record.target.closest(".layout-tab-container") && !record.target.closest(".protyle")) ||
                     elements.some((node) => node.matches(".protyle") || node.querySelector(".protyle"))) this.scheduleDocumentReport();
                 this.scheduleCursorRender(false);
+                this.queueActivity();
             }
         });
-        this.domObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "data-node-id"], attributeOldValue: true });
+        this.domObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "data-node-id", "hidden", "open"], attributeOldValue: true });
     }
 
     initSettings() {
@@ -955,6 +1309,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.remoteSelections = selections;
         this.remoteEditing = editing;
         this.scheduleCursorRender(true);
+        this.watchGraphs();
     }
 
     startTracking() {
@@ -972,6 +1327,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.scheduleDocumentReport();
                 this.scheduleCursorRender(true);
                 this.queueActivity();
+                this.watchGraphs();
             }
         };
         this.handlePointerLeave = () => {
@@ -1032,11 +1388,11 @@ module.exports = class CollaborationPlugin extends Plugin {
         for(const frame of document.querySelectorAll('iframe')) {
             if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
             let doc;
-            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+event.clientX*rect.width/(frame.clientWidth || rect.width),clientY:rect.top+event.clientY*rect.height/(frame.clientHeight || rect.height)});};
-            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc=null;};
+            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+(event.clientX+frame.clientLeft)*rect.width/(frame.offsetWidth || rect.width),clientY:rect.top+(event.clientY+frame.clientTop)*rect.height/(frame.offsetHeight || rect.height)});};
+            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc=null;};
             const load=()=>{
                 stopDocument();
-                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});}catch{}
+                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc?.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});}catch{}
             };
             const enter=()=>this.handlePointerLeave();
             frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
@@ -1062,6 +1418,16 @@ module.exports = class CollaborationPlugin extends Plugin {
     startCursorTimer() {
         clearInterval(this.cursorTimer);
         this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender(false);},1000);
+    }
+
+    watchGraphs() {
+        if(this.stopped || this.graphTimer || document.hidden)return;
+        const local=this.pointer && document.elementFromPoint(this.pointer.x,this.pointer.y)?.matches('canvas');
+        if(!local && !this.remoteCursors.some(client=>client.cursor.ui?.graph))return;
+        const models=graphModels();if(!models.length)return;
+        const revision=JSON.stringify(models.map(({graphEngine:engine})=>[engine.positionVersion,engine.geometryVersion,engine.camera.x,engine.camera.y,engine.camera.scale]));
+        if(revision!==this.graphRevision){this.graphRevision=revision;this.scheduleCursorRender(false);this.queueActivity();}
+        this.graphTimer=setTimeout(()=>{this.graphTimer=null;this.watchGraphs();},1000/this.tick);
     }
 
     async sendCursor() {
@@ -1179,10 +1545,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         for (const clients of groups.values()) {
             const { editing, hue } = clients[0];
             for (const block of document.querySelectorAll('.protyle-wysiwyg [data-node-id="' + editing.blockId + '"]')) {
-                // 编辑框在全局光标层上，不能穿过弹窗覆盖背景正文。
+                // Modal dialogs hide the background; other floating UI occludes the editor's native layer.
                 if (dialog && !dialog.contains(block)) continue;
                 const editor = block.closest('.protyle');
-                if (block.closest('.fn__none') || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
+                if (!visibleElement(block) || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
                 const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();
                 const left = Math.max(rect.left, clip.left, 0), top = Math.max(rect.top, clip.top, 0);
                 const right = Math.min(rect.right, clip.right, window.innerWidth), bottom = Math.min(rect.bottom, clip.bottom, window.innerHeight);
@@ -1193,18 +1559,26 @@ module.exports = class CollaborationPlugin extends Plugin {
                     marker = document.createElement('div');
                     marker.className = 'collab-editing';
                     marker.append(document.createElement('span'));
-                    this.cursorLayer.append(marker);
+                    let layer=this.editingLayers.get(editor);
+                    if(!layer){
+                        layer=document.createElement('div');layer.className='collab-editing-layer';layer.setAttribute('aria-hidden','true');
+                        editor.append(layer);this.editingLayers.set(editor,layer);
+                    }
+                    layer.append(marker);
                     this.editingMarkers.set(block, marker);
                 }
                 marker.firstElementChild.textContent = this.i18n.editingNames.replace('${names}', clients.map((client) => client.name).join('、'));
                 marker.classList.toggle('collab-editing--inset', top - 22 < Math.max(clip.top, 0));
                 marker.style.setProperty('--collab-editing-hue', String(hue));
-                marker.style.transform = 'translate3d(' + left + 'px,' + top + 'px,0)';
-                marker.style.width = (right - left) + 'px';
-                marker.style.height = (bottom - top) + 'px';
+                const layer=marker.parentElement, origin=layer.getBoundingClientRect();
+                const scaleX=origin.width/(layer.clientWidth || origin.width),scaleY=origin.height/(layer.clientHeight || origin.height);
+                marker.style.transform = 'translate3d(' + (left-origin.left)/scaleX + 'px,' + (top-origin.top)/scaleY + 'px,0)';
+                marker.style.width = (right - left)/scaleX + 'px';
+                marker.style.height = (bottom - top)/scaleY + 'px';
             }
         }
         for (const [block, marker] of this.editingMarkers) if (!visible.has(block)) { marker.remove(); this.editingMarkers.delete(block); }
+        for(const [editor,layer] of this.editingLayers)if(!layer.childElementCount || !editor.isConnected){layer.remove();this.editingLayers.delete(editor);}
     }
 
     renderSelections() {
@@ -1430,6 +1804,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         clearTimeout(this.restoreTimer);
         clearInterval(this.heartbeatTimer);
         clearInterval(this.cursorTimer);
+        clearTimeout(this.graphTimer);
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
         clearTimeout(this.typingTimer);
@@ -1440,6 +1815,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.cursorLayer?.remove();
         this.cursorMarkers.clear();
         this.editingMarkers.clear();
+        for(const layer of this.editingLayers.values())layer.remove();this.editingLayers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
         document.removeEventListener('input',this.handleTyping,true);
         document.removeEventListener('selectionchange',this.handleSelectionActivity);

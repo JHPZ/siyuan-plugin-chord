@@ -104,7 +104,7 @@ function captureDocumentSpace(editor, hit, point) {
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
-    if (!editor) return null;
+    if (!editor || !visibleElement(hit)) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
     const blank = !text && captureDocumentSpace(editor, hit, point);
@@ -124,7 +124,7 @@ function resolveDocumentCursor(cursor) {
     const blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
             .filter((editor) => !editor.closest(".fn__none") && editorDocumentId(editor) === cursor.documentId)
             .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)])
-            .filter(block=>!block.closest('.fn__none') && matchesRegion(block,cursor.region));
+            .filter(block=>visibleElement(block) && matchesRegion(block,cursor.region));
     if(blocks.length!==1)return null;
     for (const block of blocks) {
         if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
@@ -138,7 +138,7 @@ function resolveDocumentCursor(cursor) {
             const editor = block.closest('.protyle-wysiwyg'), column = documentColumn(editor);
             const x = column.left + (column.right - column.left) * relative.x;
             const y = rect.top + relative.y * line, hit = document.elementFromPoint(x, y);
-            if (hit?.closest('.protyle-wysiwyg') === editor) return { x, y };
+            if (visibleElement(hit) && hit.closest('.protyle-wysiwyg') === editor) return { x, y };
             continue;
         }
         const character = characterAt(cursorTextRoot(block), cursor.text.offset);
@@ -148,7 +148,7 @@ function resolveDocumentCursor(cursor) {
         const x = rect.left + rect.width * relative.x;
         const y = rect.top + rect.height * relative.y;
         const hit = document.elementFromPoint(x, y);
-        if (hit && block.contains(hit)) return { x, y };
+        if (visibleElement(hit) && block.contains(hit)) return { x, y };
     }
     return null;
 }
