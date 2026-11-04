@@ -615,6 +615,21 @@ async function test(name, run) {
             rows[0].remove();assert(resolveCursor(samples[0].anchor)===null,'missing result moved to same-name sibling');samples.slice(4).forEach(check);
         }finally{fixture.remove();}
     });
+    await test('命令面板按稳定命令身份匹配，同名重排、替换、重复和隐藏不串位',async()=>{
+        const fixture=document.createElement('div');fixture.dataset.key='dialog-commandpanel';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:25px;top:25px;width:420px;height:300px;z-index:100;background:white"><div class="b3-dialog__header">命令面板</div><ul id="commands" class="b3-list search__list" style="padding:10px;margin:0;height:240px;box-sizing:border-box"></ul></div>';document.body.append(fixture);
+        const list=fixture.querySelector('ul');for(const key of ['a','b','c'])list.insertAdjacentHTML('beforeend','<li class="b3-list-item" data-command-id="plugin/example/identity_'+key+'" style="display:block;list-style:none;height:40px"><span class="b3-list-item__text">同名命令</span></li>');
+        const rows=[...list.children],point=(root,blank)=>{const r=root.getBoundingClientRect();return{x:blank?r.right-3:r.left+4,y:r.top+12};};
+        try{
+            const samples=rows.flatMap(row=>[{root:row,blank:true},{root:row.firstElementChild,blank:false}]).map(sample=>({...sample,anchor:componentRoundTrip(point(sample.root,sample.blank))}));
+            assert(samples.every(s=>!JSON.stringify(s.anchor).includes('plugin/')&&!JSON.stringify(s.anchor).includes('同名命令')),'command identity leaked raw labels or IDs');
+            list.prepend(rows[2]);rows[0].classList.add('b3-list-item--focus');
+            for(const sample of samples){const p=resolveCursor(sample.anchor),q=point(sample.root,sample.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'same-name command followed list position');}
+            rows[1].dataset.commandId='plugin/example/identity_replacement';for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'replacement command inherited pointer');rows[1].dataset.commandId='plugin/example/identity_b';
+            const duplicate=rows[0].cloneNode(true);list.append(duplicate);for(const sample of samples.filter(s=>rows[0].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'duplicate command identity guessed an occurrence');duplicate.remove();
+            rows[1].style.opacity='0';for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'transparent command painted');rows[1].style.opacity='';
+            rows[1].remove();for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'missing command painted');
+        }finally{fixture.remove();}
+    });
     await test('列表外围留白按当前内容边界定位，排序、筛选和透明行不绑定旧的首尾项目',async()=>{
         const fixture=document.createElement('div');fixture.className='b3-list';fixture.id='list-perimeter-fixture';fixture.style.cssText='position:fixed;display:flex;flex-direction:column;gap:10px;left:25px;top:25px;width:240px;height:240px;padding:10px;box-sizing:border-box;z-index:100;background:white';fixture.innerHTML='<div class="b3-list-item" data-node-id="20261104153000-list001" style="height:30px;flex-shrink:0">同名项目</div><div class="b3-list-item" data-node-id="20261104153000-list002" style="height:50px;flex-shrink:0">同名项目</div>';document.body.append(fixture);
         const first=fixture.firstElementChild,last=fixture.lastElementChild,point={x:145,y:245},cover=document.createElement('div');
