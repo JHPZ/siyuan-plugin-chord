@@ -66,6 +66,21 @@
     pointer-events: none;
 }
 
+.collab-cursor-layer[popover] {
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.collab-cursor-layer::backdrop {
+    pointer-events: none;
+}
+
 .collab-cursor svg {
     display: block;
     width: 22px;

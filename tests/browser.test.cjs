@@ -552,6 +552,11 @@ async function test(name, run) {
             p.innerHTML=original;fixture.style.width='125px';const last=rectAt(p,p.textContent.length-1),actual=resolveCursor(anchors.at(-1));assert(p.getBoundingClientRect().height>box.height,'fixture did not soft-wrap');assert(actual&&near(actual.x,last.left+last.width/2)&&near(actual.y,last.top+last.height/2),'soft wrap changed asset content identity');
         }finally{fixture.remove();}
     });
+    await test('混合方向文字的视觉首尾字形和留白随字号改宽定位',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='dialog-bidi';fixture.style.cssText='position:fixed;left:30px;top:30px;background:white;z-index:100';fixture.innerHTML='<div class="b3-dialog__container"><div id="bidi-label" style="width:280px;padding:8px;font:14px/28px sans-serif">العربية (ar) 中文 English 😀</div></div>';document.body.append(fixture);
+        const label=fixture.querySelector('#bidi-label'),points=()=>{const text=label.firstChild,range=document.createRange(),box=label.getBoundingClientRect();range.selectNodeContents(label);const all=range.getBoundingClientRect(),samples=[];for(const {index,segment}of new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text.data)){range.setStart(text,index);range.setEnd(text,index+segment.length);const r=range.getBoundingClientRect();samples.push({x:(r.left+r.right)/2,y:(r.top+r.bottom)/2});}samples.push({x:(box.left+all.left)/2,y:(all.top+all.bottom)/2},{x:(all.right+box.right)/2,y:(all.top+all.bottom)/2});return samples;};
+        try{const anchors=points().map(point=>componentRoundTrip(point));label.style.fontSize='20px';label.style.width='350px';for(const [index,point]of points().entries()){const actual=resolveCursor(anchors[index]);assert(actual&&Math.hypot(actual.x-point.x,actual.y-point.y)<.02,'bidi glyph or gap drifted at '+index);}label.style.display='none';assert(anchors.every(anchor=>resolveCursor(anchor)===null),'hidden bidi text kept cursors');}finally{fixture.remove();}
+    });
     await test('组件字形跨行后只跟随自身边界，不借用原同排相邻字符',async()=>{
         const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='wrapped-components';fixture.style.cssText='position:fixed;left:140px;top:30px;width:420px;height:400px;z-index:100;background:white';
         fixture.innerHTML='<p style="font:20px/30px monospace;word-break:break-all;white-space:pre-wrap;width:360px">abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ</p>';document.body.append(fixture);
@@ -1662,6 +1667,24 @@ async function test(name, run) {
                     assert(captureEditing()===null,'stale editor selection reported while typing outside');
                     await plugin.sendEditing();assert(sent.at(-1)[3]===null,'leaving editor did not clear');outside.remove();
                 } finally {plugin.kernel.rpc.call=realUpdate;}
+            });
+            await test('原生下拉弹层上的光标实际可见，关闭重开不抢焦点且选项照常点击',async()=>{
+                const fixture=document.createElement('div');fixture.dataset.key='dialog-native-picker';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:30px;top:30px;width:420px;height:100px;z-index:100;background:white"><div class="b3-dialog__container"><select id="native-picker" style="appearance:base-select;width:280px"><option value="first">中文 English 😀</option><option value="second">第二项</option></select></div></div><style>#native-picker::picker(select){appearance:base-select}#native-picker option{font:16px/24px sans-serif}</style>';document.body.append(fixture);
+                const field=fixture.querySelector('select'),option=field.options[0],point=()=>{const r=componentCharacter(option,1);return {x:r.left+r.width*.5,y:r.top+r.height*.5};};
+                const click=(name,action)=>new Promise((resolve,reject)=>{const button=document.createElement('button');button.textContent=name;button.style.cssText='position:fixed;left:30px;top:150px;z-index:100';fixture.append(button);button.onclick=()=>{try{action?.();button.remove();resolve();}catch(error){button.remove();reject(error);}};});
+                const peer={name:'picker-peer',hue:290};plugin.clients.push(peer);let inputs=0,changes=0;field.addEventListener('input',()=>inputs++);field.addEventListener('change',()=>changes++);
+                try{
+                    await click('展开原生下拉框进行层级验证',()=>field.showPicker());await frame();assert(field.matches(':open'),'native picker did not open');
+                    plugin.clients.push(peer);plugin.presenceReceivedAt=Date.now();
+                    const anchor=captureCursor(point(),plugin);assert(anchor?.ui.version===3,'native option identity missing');plugin.updateCursors({tick:10,cursors:[{...peer,cursor:anchor}]});plugin.renderCursors(false);
+                    const marker=plugin.cursorMarkers.get(peer.name),active=document.activeElement;assert(marker&&plugin.cursorLayer.matches(':popover-open'),'cursor layer remained below picker');assert(field.contains(active),'cursor stole native option focus');
+                    const check=()=>{const marker=plugin.cursorMarkers.get(peer.name),p=point(),r=marker.getBoundingClientRect();assert(Math.hypot(r.left-p.x,r.top-p.y)<.02,'native option cursor drifted');marker.style.pointerEvents='auto';try{assert(marker.contains(document.elementFromPoint(p.x+3,p.y+3)),'picker covers cursor');}finally{marker.style.pointerEvents='';}assert(document.elementFromPoint(p.x,p.y)===option,'cursor intercepts native option');assert(document.activeElement===active,'render changed native focus');};
+                    check();option.style.fontSize='22px';field.style.width='350px';plugin.renderCursors(false);check();
+                    await click('关闭并重开原生下拉框');await frame();assert(!field.matches(':open'),'outside click failed to close picker');plugin.renderCursors(false);assert(resolveCursor(anchor,plugin)===null&&!plugin.cursorLayer.hasAttribute('popover'),'closed picker kept pointer or top layer');
+                    plugin.clients.push(peer);plugin.presenceReceivedAt=Date.now();field.showPicker();await frame();plugin.renderCursors(false);assert(field.matches(':open')&&plugin.cursorLayer.matches(':popover-open'),'reopened picker covered pointer');check();
+                    document.getElementById('results').dataset.nativePicker='choose-second';await new Promise(resolve=>field.addEventListener('change',resolve,{once:true}));await frame();plugin.renderCursors(false);assert(field.value==='second'&&inputs===1&&changes===1,'cursor layer changed native input/change behavior');assert(!field.matches(':open')&&!plugin.cursorLayer.hasAttribute('popover'),'native selection left top layer open');
+                    document.getElementById('results').dataset.nativePicker='complete';
+                }finally{fixture.remove();plugin.updateCursors({tick:10,cursors:[]});plugin.clients=plugin.clients.filter(client=>client.name!==peer.name);plugin.renderCursors(false);}
             });
             for(const disconnected of [false,true]) {
                 offline=disconnected;await plugin.refreshInBackground();await plugin.loadCursors();

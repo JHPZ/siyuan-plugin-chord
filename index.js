@@ -1015,7 +1015,17 @@ function componentNearText(element,point) {
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
     const candidates=[prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
     const inside=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
-    return inside ? [inside]:candidates;
+    if(inside)return [inside];
+    // Bidi run boundaries can return a caret at the opposite visual end.
+    const start=prefix.toString().length-offset;
+    for(let index=0;index<node.length;index++){
+        const position=start+index;
+        const rect=componentCharacter(element,position);if(rect)candidates.push({offset:position,rect});
+    }
+    const hit=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
+    if(hit)return [hit];
+    const distance=rect=>Math.max(rect.top-point.y,point.y-rect.bottom,0),nearest=Math.min(...candidates.map(item=>distance(item.rect)));
+    return candidates.filter(item=>distance(item.rect)===nearest);
 }
 
 function componentImageRect(image) {
@@ -1962,9 +1972,10 @@ module.exports = class CollaborationPlugin extends Plugin {
             else if(event?.type==='pointerdown' && !event.target.closest('.b3-dialog, .b3-menu'))this.pageControl=null;
             if(event?.type==='pointerdown' && !this.topBar?.contains?.(event.target))this.closePeople();
             this.dialogBase = currentPage(this, false);
-            this.scheduleDocumentReport();this.queueActivity();
+            this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender(false);
         };
         this.handleKey = (event) => {
+            this.scheduleCursorRender(false);
             const keys=captureShortcut(event);
             if (keys) {
                 this.pendingShortcut=keys;
@@ -2122,6 +2133,15 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     renderCursors(animate) {
+        const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
+        if(picker && this.cursorLayer.showPopover){
+            if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
+            // A picker reopened between frames must not cover the read-only cursor layer.
+            if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
+            this.cursorLayer.showPopover();
+        }else if(this.cursorLayer.hasAttribute('popover')){
+            this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
+        }
         const visible = new Set();
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
             for (const client of this.remoteCursors) {

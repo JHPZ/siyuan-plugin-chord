@@ -494,7 +494,17 @@ function componentNearText(element,point) {
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
     const candidates=[prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
     const inside=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
-    return inside ? [inside]:candidates;
+    if(inside)return [inside];
+    // Bidi run boundaries can return a caret at the opposite visual end.
+    const start=prefix.toString().length-offset;
+    for(let index=0;index<node.length;index++){
+        const position=start+index;
+        const rect=componentCharacter(element,position);if(rect)candidates.push({offset:position,rect});
+    }
+    const hit=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
+    if(hit)return [hit];
+    const distance=rect=>Math.max(rect.top-point.y,point.y-rect.bottom,0),nearest=Math.min(...candidates.map(item=>distance(item.rect)));
+    return candidates.filter(item=>distance(item.rect)===nearest);
 }
 
 function componentImageRect(image) {

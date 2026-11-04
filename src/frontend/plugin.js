@@ -363,9 +363,10 @@ module.exports = class CollaborationPlugin extends Plugin {
             else if(event?.type==='pointerdown' && !event.target.closest('.b3-dialog, .b3-menu'))this.pageControl=null;
             if(event?.type==='pointerdown' && !this.topBar?.contains?.(event.target))this.closePeople();
             this.dialogBase = currentPage(this, false);
-            this.scheduleDocumentReport();this.queueActivity();
+            this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender(false);
         };
         this.handleKey = (event) => {
+            this.scheduleCursorRender(false);
             const keys=captureShortcut(event);
             if (keys) {
                 this.pendingShortcut=keys;
@@ -523,6 +524,15 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     renderCursors(animate) {
+        const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
+        if(picker && this.cursorLayer.showPopover){
+            if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
+            // A picker reopened between frames must not cover the read-only cursor layer.
+            if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
+            this.cursorLayer.showPopover();
+        }else if(this.cursorLayer.hasAttribute('popover')){
+            this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
+        }
         const visible = new Set();
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
             for (const client of this.remoteCursors) {
