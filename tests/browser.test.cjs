@@ -460,6 +460,35 @@ async function test(name, run) {
             panel.classList.add('fn__none');assert(resolveCursor(content,plugin)===null,'hidden settings section displayed cursor');
         } finally {fixture.remove();}
     });
+    await test('数据库分组标题、表头、汇总、行按钮和留白按身份匹配，重排冻结不丢失或串位',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:25px;top:25px;width:650px;height:580px;z-index:100;background:white';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261104132000-dbdoc01"></div><div class="protyle-wysiwyg" style="padding:0"><div data-type="NodeAttributeView" data-node-id="20261104132000-dbblock" data-av-id="20261104132000-dbdata1" contenteditable="false"><div class="av__scroll"></div></div></div>';
+        const av=fixture.querySelector('[data-av-id]'),scroll=fixture.querySelector('.av__scroll');
+        const groups=['20261104132000-group01','20261104132000-group02'].map(id=>{
+            const title=document.createElement('div');title.className='av__group-title';title.style.cssText='height:32px;display:flex';title.innerHTML='<span data-type="av-group-fold" data-id="'+id+'" style="width:24px">›</span><span class="av__group-name">同组名</span>';
+            const body=document.createElement('div');body.className='av__body';body.dataset.groupId=id;
+            body.innerHTML='<div class="av__row av__row--header" style="height:36px;display:flex"><div class="av__colsticky"><div class="av__firstcol" style="width:24px">□</div></div><div class="av__cell av__cell--header" data-col-id="20261104132000-col0001" style="width:200px"><span class="av__celltext">同字段</span></div></div><div class="av__row" data-id="20261104132000-row0001" style="display:flex;height:54px"><div class="av__colsticky"><div class="av__firstcol" style="width:24px">□</div></div><div class="av__cell" data-col-id="20261104132000-col0001" style="width:200px"><span class="av__celltext">同内容</span></div></div><div class="av__row--footer" style="height:32px;display:flex"><div class="av__calc" data-col-id="20261104132000-col0001" style="width:200px"><small>计算</small></div></div>';
+            scroll.append(title,body);return {title,body};
+        });for(const frozen of fixture.querySelectorAll('.av__colsticky'))frozen.style.display='flex';document.body.append(fixture);
+        const at=(element,x=8,y=10)=>{const r=element.getBoundingClientRect();return {x:r.left+x,y:r.top+y};};
+        const check=(anchor,element,x=8,y=10)=>{const p=resolveCursor(anchor),expected=at(element,x,y);assert(p&&Math.hypot(p.x-expected.x,p.y-expected.y)<.6,'wrong or missing '+element.className+': '+JSON.stringify(p));};
+        try{
+            const group=groups[0],title=group.title.querySelector('.av__group-name'),header=group.body.querySelector('.av__cell--header'),label=header.firstElementChild,calc=group.body.querySelector('.av__calc'),row=group.body.querySelector('.av__row[data-id]'),control=row.querySelector('.av__firstcol'),cell=row.querySelector('.av__cell');
+            const anchors={title:componentRoundTrip(at(title)),header:componentRoundTrip(at(label)),calc:componentRoundTrip(at(calc.firstElementChild)),control:componentRoundTrip(at(control)),blank:componentRoundTrip(at(row,620,45)),cell:componentRoundTrip(at(cell.firstElementChild))};
+            for(const anchor of Object.values(anchors).filter(anchor=>anchor.ui.scope.part))assert(resolveCursor({...anchor,ui:{...anchor.ui,scope:{...anchor.ui.scope,part:undefined,group:undefined}}})===null,'old receiver guessed a database region as a cell');
+            scroll.prepend(groups[1].title,groups[1].body);
+            check(anchors.title,title);check(anchors.header,label);check(anchors.calc,calc.firstElementChild);check(anchors.control,control);check(anchors.blank,row,620,45);check(anchors.cell,cell.firstElementChild);
+            group.body.querySelector('.av__row--header').classList.add('av__row--header--fixed');
+            const headerFrozen=header.parentElement.querySelector('.av__colsticky');headerFrozen.append(header);headerFrozen.classList.add('av__colsticky--freeze');
+            const rowFrozen=row.querySelector('.av__colsticky');row.prepend(control);rowFrozen.remove();
+            check(anchors.header,label);check(anchors.calc,calc.firstElementChild);check(anchors.control,control);check(anchors.blank,row,620,45);
+            group.body.style.display='none';assert(resolveCursor(anchors.header)===null&&resolveCursor(anchors.cell)===null,'collapsed group kept body pointers');check(anchors.title,title);group.body.style.display='';
+            group.title.style.opacity='0';assert(resolveCursor(anchors.title)===null,'transparent group title painted');group.title.style.opacity='1';
+            group.body.dataset.groupId='20261104132000-othergp';assert(resolveCursor(anchors.header)===null,'header matched another group');group.body.dataset.groupId='20261104132000-group01';
+            const duplicate=header.cloneNode(true);header.after(duplicate);assert(resolveCursor(anchors.header)===null,'duplicate header guessed');duplicate.remove();
+            fixture.querySelector('.protyle-background').dataset.nodeId='20261104132000-otherdc';assert(Object.values(anchors).every(anchor=>resolveCursor(anchor)===null),'database regions crossed documents');
+        }finally{fixture.remove();}
+    });
     await test('数据库单元格按数据库、行与列定位，重排、冻结、过滤和切换可见布局不串位',async()=>{
         const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:35px;top:35px;width:650px;height:450px;z-index:100;background:white';
         fixture.innerHTML='<div class="protyle-background" data-node-id="20261104130000-dbdoc01"></div><div class="protyle-wysiwyg" style="padding:0"><div data-type="NodeAttributeView" data-node-id="20261104130000-dbblock" data-av-id="20261104130000-dbdata1" data-av-type="table" contenteditable="false"><div class="av__container"><div class="av__body" style="height:220px;overflow:auto"></div></div></div></div>';
@@ -479,6 +508,10 @@ async function test(name, run) {
             cell.style.opacity='0';assert(resolveCursor(blank)===null,'transparent database cell painted');cell.style.opacity='1';
             const clone=rows[1].cloneNode(true);rows[0].replaceWith(clone);assert(resolveCursor(anchor)===null,'virtual row reuse inherited another item pointer');clone.replaceWith(rows[0]);
             database.dataset.avType='gallery';rows[0].className='av__gallery-item';cell.dataset.fieldId=cell.dataset.colId;delete cell.dataset.colId;assert(resolveCursor(anchor),'same visible gallery field did not match');
+            const field=document.createElement('div');field.className='av__gallery-field';const name=document.createElement('span');name.className='av__gallery-name';name.textContent='字段名称';field.append(name,cell);rows[0].append(field);
+            const nr=name.getBoundingClientRect(),fieldAnchor=componentRoundTrip({x:nr.left+8,y:nr.top+8});assert(fieldAnchor.ui.scope.part==='field','gallery field label was not identified');rows[0].prepend(field);assert(resolveCursor(fieldAnchor),'field wrapper reorder lost its label');
+            assert(resolveCursor({...fieldAnchor,ui:{...fieldAnchor.ui,scope:{...fieldAnchor.ui.scope,part:undefined,group:undefined}}})===null,'old receiver drew a field label inside its value cell');
+            name.style.opacity='0';assert(resolveCursor(fieldAnchor)===null,'hidden field name painted');name.style.opacity='1';
             const duplicate=cell.cloneNode(true);frozen.append(duplicate);assert(resolveCursor(anchor)===null,'ambiguous repeated database field guessed');duplicate.remove();
             database.dataset.avId='20261104130000-otherdb';assert(resolveCursor(anchor)===null,'another database inherited pointer');database.dataset.avId='20261104130000-dbdata1';
             fixture.querySelector('.protyle-background').dataset.nodeId='20261104130000-otherdc';assert(resolveCursor(anchor)===null,'database pointer crossed documents');
@@ -661,7 +694,10 @@ async function test(name, run) {
         document.body.append(fixture);
         try{
             const count=fixture.querySelector('[data-name]'),r=count.getBoundingClientRect();componentRoundTrip({x:r.left+3,y:r.top+3});
-            const svg=fixture.querySelector('svg'),s=svg.getBoundingClientRect();componentRoundTrip({x:s.left+1,y:s.top+1});
+            const svg=fixture.querySelector('svg'),s=svg.getBoundingClientRect(),point={x:s.left+1,y:s.top+1},anchor=componentRoundTrip(point);
+            const component={surface:'ui',documentId:null,blockId:null,...captureComponent(document.elementFromPoint(point.x,point.y),undefined,point)};
+            svg.querySelector('path').style.opacity='0';
+            assert(resolveCursor(anchor)===null && resolveCursor(component)===null,'transparent child of a visible control painted');svg.querySelector('path').style.opacity='1';
             const embedded=document.createElement('iframe');embedded.setAttribute('sandbox','');embedded.srcdoc='<button>Unreachable internal component</button>';fixture.append(embedded);
             await new Promise(resolve=>embedded.onload=resolve);const f=embedded.getBoundingClientRect();assert(captureCursor({x:f.left+20,y:f.top+20})===null,'cross-origin frame guessed a fraction');
         }finally{fixture.remove();}

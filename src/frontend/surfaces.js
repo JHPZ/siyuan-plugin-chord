@@ -333,5 +333,5 @@ function resolveCursor(cursor, plugin) {
     if(!rect?.width || !rect.height)return null;
     const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
     const hit=document.elementFromPoint(point.x,point.y);
-    return hit && element.contains(hit) ? point:null;
+    return hit && visibleElement(hit) && element.contains(hit) ? point:null;
 }

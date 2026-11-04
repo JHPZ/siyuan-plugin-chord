@@ -97,6 +97,8 @@ function validComponentAnchor(value) {
     return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av'].includes(scope.kind) &&
         typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
         (scope.kind!=='av' || [scope.row,scope.column].every(value=>typeof value==='string' && /^[a-f0-9]{16}$/.test(value))) &&
+        (scope.group===undefined || scope.kind==='av' && typeof scope.group==='string' && /^[a-f0-9]{16}$/.test(scope.group)) &&
+        (scope.part===undefined || scope.kind==='av' && typeof scope.group==='string' && ['header','footer','field','row-control','header-control','row','header-row','footer-row','group-title','group'].includes(scope.part)) &&
         (scope.pane===undefined || typeof scope.pane==='string' && /^[a-f0-9]{16}$/.test(scope.pane)) &&
         validComponentRoute(value.route) && (value.frame===undefined || validComponentRoute(value.frame)) && (value.target===undefined || validComponentRoute(value.target)) &&
         (value.frames===undefined || value.frame===undefined && Array.isArray(value.frames) && value.frames.length>=2 && value.frames.length<=8 && value.frames.every(validComponentRoute)) &&
@@ -118,7 +120,7 @@ function validComponentAnchor(value) {
 function cleanComponentAnchor(value) {
     const step=s=>({key:s.key,count:s.count,index:s.index});
     const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
-    return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{}),...(value.scope.kind==='av' ? {row:value.scope.row,column:value.scope.column}:{})},
+    return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{}),...(value.scope.kind==='av' ? {row:value.scope.row,column:value.scope.column,...(value.scope.group ? {group:value.scope.group}:{}),...(value.scope.part ? {part:value.scope.part}:{})}:{})},
         route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
         ...(value.frames ? {frames:value.frames.map(route=>route.map(step))}:{}),
         edges:{x:value.edges.x.map(edge),y:value.edges.y.map(edge)},...(value.textHash ? {textHash:value.textHash}:{}),

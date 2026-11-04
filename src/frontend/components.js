@@ -73,6 +73,29 @@ function componentFollow(root,route) {
 }
 
 const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
+const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id],.av__gallery-field,.av__firstcol,.av__row[data-id],.av__gallery-item[data-id],.av__row--header,.av__row--footer,.av__group-title,.av__body[data-group-id]';
+
+function componentAVRegion(element) {
+    const av=element.closest('[data-type="NodeAttributeView"]');if(!av || element===av)return null;
+    const cell=element.closest('.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id]');
+    const row=element.closest('.av__row[data-id],.av__gallery-item[data-id]'),field=element.closest('.av__gallery-field');
+    const first=element.closest('.av__firstcol'),header=element.closest('.av__row--header'),footer=element.closest('.av__row--footer');
+    const title=element.closest('.av__group-title'),body=element.closest('.av__body[data-group-id]');
+    let root,part,column=cell?.getAttribute('data-col-id') || cell?.getAttribute('data-field-id') || '';
+    if(cell && row){root=cell;part='cell';}
+    else if(cell?.matches('.av__cell--header')){root=cell;part='header';}
+    else if(cell?.matches('.av__calc')){root=cell;part='footer';}
+    else if(field && row){root=field;part='field';column=field.querySelector('[data-field-id]')?.getAttribute('data-field-id') || '';}
+    else if(first && (row || header)){root=first;part=row ? 'row-control':'header-control';}
+    else if(row){root=row;part='row';}
+    else if(header){root=header;part='header-row';}
+    else if(footer){root=footer;part='footer-row';}
+    else if(title){root=title;part='group-title';}
+    else if(body){root=body;part='group';}
+    if(!root || root.closest('[data-type="NodeAttributeView"]')!==av)return null;
+    const group=title ? title.querySelector('[data-type="av-group-fold"][data-id]')?.getAttribute('data-id'):body?.getAttribute('data-group-id');
+    return {av,root,part,row:row?.getAttribute('data-id') || '',column,group:group || ''};
+}
 
 function componentAVScope(av,plugin) {
     const base=componentScope(av,plugin);if(!base)return null;
@@ -81,12 +104,14 @@ function componentAVScope(av,plugin) {
 
 function componentScope(element,plugin) {
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
-    const cell=element.closest('.av__cell[data-col-id],.av__cell[data-field-id]'),av=cell?.closest('[data-type="NodeAttributeView"]'),row=cell?.closest('.av__row[data-id],.av__gallery-item[data-id]');
-    if(av && row){
-        const column=cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id');
-        if(![av.getAttribute('data-node-id'),av.getAttribute('data-av-id'),row.getAttribute('data-id'),column].every(value=>DOCUMENT_ID.test(value || '')))return null;
+    const region=componentAVRegion(element);
+    if(region){
+        const {av,root,part,row,column,group}=region;
+        if(![av.getAttribute('data-node-id'),av.getAttribute('data-av-id')].every(value=>DOCUMENT_ID.test(value || '')) ||
+            [row,column,group].some(value=>value && !DOCUMENT_ID.test(value)) ||
+            ['cell','field'].includes(part) && (!row || !column) || ['header','footer'].includes(part) && !column || part==='group-title' && !group)return null;
         const scope=componentAVScope(av,plugin);
-        return scope ? {root:cell,scope:{...scope,row:componentHash(row.getAttribute('data-id')),column:componentHash(column)}}:null;
+        return scope ? {root,scope:{...scope,row:componentHash(part==='cell' ? row:'@'+part+'|'+row),column:componentHash(column || '@'+part),group:componentHash(group),...(part==='cell' ? {}:{part})}}:null;
     }
     const dialog=element.closest('.b3-dialog');
     if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
@@ -121,14 +146,18 @@ function componentRoots(scope,plugin) {
     const selector={document:'.protyle',dock:'.dockPanel',dialog:'.b3-dialog',floating:COMPONENT_FLOATING,tab:'.layout-tab-container > [data-id]',global:'body'}[scope.kind];
     let roots=scope.kind==='av' ? [...document.querySelectorAll('[data-type="NodeAttributeView"]')]
         .filter(av=>componentAVScope(av,plugin)?.key===scope.key)
-        .flatMap(av=>[...av.querySelectorAll('.av__cell[data-col-id],.av__cell[data-field-id]')].filter(cell=>{
-            const row=cell.closest('.av__row[data-id],.av__gallery-item[data-id]');
-            return cell.closest('[data-type="NodeAttributeView"]')===av && row && componentHash(row.getAttribute('data-id'))===scope.row && componentHash(cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id'))===scope.column;
-        })).filter(visibleElement):[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
+        .flatMap(av=>[...av.querySelectorAll(COMPONENT_AV_REGIONS)].filter(root=>{
+            const region=componentAVRegion(root);
+            return region?.av===av && region.root===root && region.part===(scope.part || 'cell') &&
+                componentHash(region.part==='cell' ? region.row:'@'+region.part+'|'+region.row)===scope.row && componentHash(region.column || '@'+region.part)===scope.column &&
+                (!scope.part || ['row','row-control','field'].includes(scope.part) || componentHash(region.group)===scope.group);
+        })):[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
         const local=componentScope(root,plugin);
         return local?.root===root && local.scope.kind===scope.kind && local.scope.key===scope.key;
     });
+    if(roots.length>1 && scope.group)roots=roots.filter(root=>componentHash(componentAVRegion(root).group)===scope.group);
     if(roots.length>1 && scope.pane)roots=roots.filter(root=>componentHash(componentPane(root))===scope.pane);
+    if(scope.kind==='av')roots=roots.filter(visibleElement);
     return roots.length===1 ? roots[0]:null;
 }
 
@@ -317,7 +346,7 @@ function resolveComponent(cursor,plugin) {
     const hit=element.ownerDocument.elementFromPoint(point.x,point.y);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!target || hit!==target && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || !visibleElement(hit) || hit!==target && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);

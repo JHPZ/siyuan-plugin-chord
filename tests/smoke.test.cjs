@@ -430,11 +430,17 @@ test('database cell scopes require bounded row and column hashes and strip priva
     const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate');
     await kernel.methods.get('presenceHeartbeat')('database-scope-test',{generation:1});
     const scope={kind:'av',key:'1234567890abcdef',row:'abcdef1234567890',column:'0123456789abcdef',raw:'private value'};
-    const edge={kind:'self',side:'start'},cursor={surface:'ui',documentId:null,blockId:null,x:.4,y:.5,ui:{version:3,kind:'component',scope,route:[],edges:{x:[edge,edge],y:[edge,edge]}}};
+    const edge={kind:'self',side:'start'},cursor={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.4,y:.5},x:.4,y:.5,ui:{version:3,kind:'component',scope,route:[],edges:{x:[edge,edge],y:[edge,edge]}}};
     await update('database-scope-test',1,1,cursor);
     const cleaned=(await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.ui.scope;
     assert.deepEqual(JSON.parse(JSON.stringify(cleaned)),{kind:'av',key:scope.key,row:scope.row,column:scope.column});
-    for(const bad of [{row:undefined},{column:null},{row:'raw row name'},{column:'abcdef1234567890'.repeat(20)}])await assert.rejects(update('database-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
+    for(const bad of [{row:undefined},{column:null},{row:'raw row name'},{column:'abcdef1234567890'.repeat(20)},{group:'private group'},{part:'header'},{part:'arbitrary',group:scope.row},{kind:'global',group:scope.row},{kind:'global',part:'header',group:scope.row}])await assert.rejects(update('database-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
+    let sequence=1;
+    for(const part of ['header','footer','field','row-control','header-control','row','header-row','footer-row','group-title','group']){
+        await update('database-scope-test',1,++sequence,{...cursor,ui:{...cursor.ui,scope:{...scope,part,group:scope.row}}});
+        const copied=(await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.ui.scope;
+        assert.deepEqual(JSON.parse(JSON.stringify(copied)),{kind:'av',key:scope.key,row:scope.row,column:scope.column,group:scope.row,part});
+    }
 });
 
 test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
