@@ -88,7 +88,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' || edge.kind==='frame' ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' || edge.kind==='frame' || edge.kind==='frame-box' ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }

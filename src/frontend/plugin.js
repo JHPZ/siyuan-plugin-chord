@@ -403,7 +403,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!frame.isConnected)return;
                 let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=false;
                 for(let current=frame;current;){
-                    point=frameToParent(current,point);target=current;
+                    point=frameToParent(current,point);if(!point){this.handlePointerLeave();return;}target=current;
                     if(current.ownerDocument===document){reachedRoot=true;break;}
                     current=current.ownerDocument.defaultView?.frameElement;
                 }

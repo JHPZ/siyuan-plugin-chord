@@ -88,7 +88,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' || edge.kind==='frame' ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' || edge.kind==='frame' || edge.kind==='frame-box' ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -623,21 +623,55 @@ function componentImageRect(image) {
         right:rect.left+(image.clientLeft+left+x+w)*sx,bottom:rect.top+(image.clientTop+top+y+h)*sy,width:w*sx,height:h*sy};
 }
 
-function frameContentRect(frame) {
-    const rect=frame.getBoundingClientRect(),sx=rect.width/frame.offsetWidth,sy=rect.height/frame.offsetHeight;
-    const left=rect.left+frame.clientLeft*sx,top=rect.top+frame.clientTop*sy;
-    return {left,top,right:left+frame.clientWidth*sx,bottom:top+frame.clientHeight*sy,width:frame.clientWidth*sx,height:frame.clientHeight*sy};
+function frameBox(frame) {
+    const view=frame.ownerDocument.defaultView,style=view.getComputedStyle(frame),rect=frame.getBoundingClientRect();
+    const inset=side=>parseFloat(style['border'+side+'Width'])+parseFloat(style['padding'+side]);
+    const left=inset('Left'),top=inset('Top'),right=inset('Right'),bottom=inset('Bottom');
+    const width=parseFloat(style.width)+(style.boxSizing==='border-box' ? 0:left+right),height=parseFloat(style.height)+(style.boxSizing==='border-box' ? 0:top+bottom);
+    if(![width,height,left,top,right,bottom].every(Number.isFinite) || width<=left+right || height<=top+bottom)return null;
+    let matrix=new view.DOMMatrix();
+    for(let element=frame;element;element=element.parentElement){
+        const css=view.getComputedStyle(element);
+        if(element!==frame && css.display==='inline' && element.namespaceURI==='http://www.w3.org/1999/xhtml')continue;
+        // shortcut: perspective needs a projective box map; reject it until that map is available.
+        if(css.perspective!=='none')return null;
+        let local=new view.DOMMatrix();
+        const rotate=css.rotate.split(' ');
+        if(css.rotate!=='none'){
+            if(rotate.length>1 && !(rotate.length===2 && rotate[0]==='z') && !(rotate.length===4 && +rotate[0]===0 && +rotate[1]===0 && +rotate[2]!==0))return null;
+            const angle=rotate.at(-1),units={deg:1,rad:180/Math.PI,grad:.9,turn:360},unit=angle.match(/(deg|rad|grad|turn)$/)?.[0];
+            if(!unit)return null;
+            local=local.rotate(parseFloat(angle)*units[unit]*(rotate.length===4 && +rotate[2]<0 ? -1:1));
+        }
+        if(css.scale!=='none'){
+            const scale=css.scale.split(' ').map(value=>parseFloat(value)/(value.endsWith('%') ? 100:1));
+            if(scale.length>2 && scale[2]!==1)return null;
+            local=local.scale(scale[0],scale[1] ?? scale[0]);
+        }
+        local=local.multiply(new view.DOMMatrix(css.transform==='none' ? undefined:css.transform));
+        if(!local.is2D)return null;
+        matrix=local.multiply(matrix);
+    }
+    let {a,b,c,d}=matrix;
+    const sx=rect.width/(Math.abs(a)*width+Math.abs(c)*height),sy=rect.height/(Math.abs(b)*width+Math.abs(d)*height);
+    a*=sx;c*=sx;b*=sy;d*=sy;
+    const determinant=a*d-b*c;
+    if(![a,b,c,d,determinant].every(Number.isFinite) || Math.abs(determinant)<1e-10)return null;
+    const x=rect.left-Math.min(0,a*width,c*height,a*width+c*height),y=rect.top-Math.min(0,b*width,d*height,b*width+d*height);
+    return {bounds:{left:0,top:0,right:width,bottom:height},content:{left,top,right:width-right,bottom:height-bottom},
+        toLocal:point=>({x:(d*(point.x-x)-c*(point.y-y))/determinant,y:(a*(point.y-y)-b*(point.x-x))/determinant}),
+        toParent:point=>({x:x+a*point.x+c*point.y,y:y+b*point.x+d*point.y})};
 }
 
 function frameToContent(frame,point) {
-    const rect=frameContentRect(frame);
-    return point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom ?
-        {x:(point.x-rect.left)*frame.clientWidth/rect.width,y:(point.y-rect.top)*frame.clientHeight/rect.height}:null;
+    const box=frameBox(frame);if(!box)return null;
+    const local=box.toLocal(point),rect=box.content;
+    return local.x>=rect.left && local.x<rect.right && local.y>=rect.top && local.y<rect.bottom ? {x:local.x-rect.left,y:local.y-rect.top}:null;
 }
 
 function frameToParent(frame,point) {
-    const rect=frameContentRect(frame);
-    return {x:rect.left+point.x*rect.width/frame.clientWidth,y:rect.top+point.y*rect.height/frame.clientHeight};
+    const box=frameBox(frame);
+    return box ? box.toParent({x:point.x+box.content.left,y:point.y+box.content.top}):null;
 }
 
 function componentBox(hit,point) {
@@ -651,11 +685,13 @@ function componentBox(hit,point) {
 }
 
 function componentGeometry(element,point) {
-    const bounds=element.getBoundingClientRect(),children=componentChildren(element),text=componentNearText(element,point) || [],image=componentImageRect(element),frame=element.matches('iframe') ? frameContentRect(element):null;
+    const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
+    if(box)point=box.toLocal(point);
+    const bounds=box ? box.bounds:element.getBoundingClientRect(),children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content;
     const edges={},relative={};let usedText=false;
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
-        const entries=[{value:bounds[start],edge:{kind:'self',side:'start'}},{value:bounds[end],edge:{kind:'self',side:'end'}}];
+        const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
         for(const child of children){
@@ -684,6 +720,7 @@ function captureComponent(hit,plugin,point) {
     const route=componentRoute(scope.root,hit);if(!route)return null;
     const frames=[];
     while(hit.matches('iframe')){
+        if(!frameBox(hit))return null;
         const inside=frameToContent(hit,point);if(!inside)break;
         // shortcut: cap embedded document chains at eight levels; raise with a matching protocol bound if needed.
         if(frames.length>=8)return null;
@@ -717,6 +754,7 @@ function resolveComponent(cursor,plugin) {
     }
     if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') ||
         anchor.textHash && componentHash(element.textContent)!==anchor.textHash)return null;
+    const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
         if(anchor.imagePoint){
@@ -725,20 +763,21 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):edge.kind==='frame' && element.matches('iframe') ? frameContentRect(element):target?.getBoundingClientRect();
+            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         if(values.some(value=>!Number.isFinite(value)) || values[1]<values[0] ||
             values[0]===values[1] && JSON.stringify(anchor.edges[axis][0])!==JSON.stringify(anchor.edges[axis][1]))return null;
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
+    if(box)Object.assign(point,box.toParent(point));
     const hit=element.ownerDocument.elementFromPoint(point.x,point.y);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
     if(!target || hit!==target && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
-        Object.assign(point,frameToParent(frame,point));
+        const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
         if(frame.ownerDocument.elementFromPoint(point.x,point.y)!==frame)return null;
     }
     return point;
@@ -1487,7 +1526,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!frame.isConnected)return;
                 let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=false;
                 for(let current=frame;current;){
-                    point=frameToParent(current,point);target=current;
+                    point=frameToParent(current,point);if(!point){this.handlePointerLeave();return;}target=current;
                     if(current.ownerDocument===document){reachedRoot=true;break;}
                     current=current.ownerDocument.defaultView?.frameElement;
                 }

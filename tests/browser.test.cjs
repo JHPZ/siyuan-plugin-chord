@@ -49,6 +49,13 @@ function componentRoundTrip(point,plugin) {
     const resolved=resolveCursor(anchor,plugin);assert(resolved && near(point.x,resolved.x) && near(point.y,resolved.y),'round trip drift: '+JSON.stringify({point,anchor,resolved}));
     return anchor;
 }
+function projectedFramePoint(element,point) {
+    const probe=element.ownerDocument.createElement('i');probe.style.cssText=element.style.cssText;
+    probe.style.border='none';probe.style.padding='0';probe.style.pointerEvents='none';probe.style.opacity='0';
+    const markers=[[0,0],[100,0],[0,100]].map(([x,y])=>{const marker=element.ownerDocument.createElement('i');marker.style.cssText='position:absolute;width:0;height:0;left:'+x+'px;top:'+y+'px';probe.append(marker);return marker;});
+    element.parentElement.append(probe);
+    try{const [o,x,y]=markers.map(marker=>marker.getBoundingClientRect());return {x:o.left+(x.left-o.left)*point.x/100+(y.left-o.left)*point.y/100,y:o.top+(x.top-o.top)*point.x/100+(y.top-o.top)*point.y/100};}finally{probe.remove();}
+}
 const block = document.querySelector('[data-node-id="20261030165150-block01"]');
 const scroller = document.querySelector('.protyle-content');
 function rectAt(element, offset) { const character = characterAt(cursorTextRoot(element), offset); return characterRect(character.node, character.offset); }
@@ -536,6 +543,33 @@ async function test(name, run) {
             inner.setAttribute('sandbox','');const replaced=new Promise(resolve=>inner.onload=resolve);inner.srcdoc='<button>Opaque embedded page</button>';await replaced;const ir=inner.getBoundingClientRect(),or=outer.getBoundingClientRect(),opaquePoint={x:or.left+(ir.left+20+outer.clientLeft)*or.width/outer.offsetWidth,y:or.top+(ir.top+20+outer.clientTop)*or.height/outer.offsetHeight};assert(captureCursor(opaquePoint)===null,'nested cross-origin content guessed');
         }finally{outer.remove();}
     });
+    await test('嵌入页面旋转、倾斜、翻转和祖先变换时按原生投影标记定位内容与边框',async()=>{
+        const holder=document.createElement('div');holder.id='affine-frame-holder';holder.style.cssText='position:fixed;left:160px;top:100px;width:600px;height:480px;transform:rotate(7deg) skewX(6deg);transform-origin:23% 71%;z-index:100';
+        const outer=document.createElement('iframe');outer.id='affine-frame';outer.style.cssText='position:absolute;left:30px;top:25px;width:390px;height:300px;box-sizing:border-box;border:7.5px solid black;padding:3.5px;transform:rotate(13deg) scale(.9,.85);transform-origin:20% 65%';
+        outer.srcdoc='<style>body{margin:0;height:900px}</style>';const loaded=new Promise(resolve=>outer.onload=resolve);const inline=document.createElement('span');inline.style.transform='rotate(25deg)';inline.append(outer);holder.append(inline);document.body.append(holder);await loaded;
+        const inner=outer.contentDocument.createElement('iframe');inner.style.cssText='position:absolute;left:28px;top:60px;width:280px;height:200px;box-sizing:border-box;border:5px solid black;transform:rotate(-9deg) skewY(4deg);transform-origin:75% 30%';
+        inner.srcdoc='<style>body{margin:12px;height:800px}button{width:160px;height:36px}#blank{height:65px}</style><button data-name="affine-target">旋转按钮</button><div id="blank"></div>';
+        const innerLoaded=new Promise(resolve=>inner.onload=resolve);outer.contentDocument.body.append(inner);await innerLoaded;
+        const contentPoint=(element,p)=>{const style=element.ownerDocument.defaultView.getComputedStyle(element);return projectedFramePoint(element,{x:p.x+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft),y:p.y+parseFloat(style.borderTopWidth)+parseFloat(style.paddingTop)});};
+        const pointAt=element=>{const r=element.getBoundingClientRect();return contentPoint(outer,contentPoint(inner,{x:r.left+20,y:r.top+15}));};
+        try{
+            const button=inner.contentDocument.querySelector('button'),anchor=componentRoundTrip(pointAt(button));assert(anchor.ui.frames?.length===2,'transformed nested route missing');
+            componentRoundTrip(pointAt(inner.contentDocument.querySelector('#blank')));
+            const borderPoint=projectedFramePoint(outer,{x:3,y:105}),border=componentRoundTrip(borderPoint);
+            assert(border.ui.edges.x.some(edge=>edge.kind==='frame-box'),'local frame border indistinguishable from legacy viewport edges');
+            holder.style.rotate='-5deg';holder.style.scale='1.05 .95';outer.style.transform='rotate(-17deg) scale(-.82,.9)';inner.style.transform='rotate(18deg) skewX(-11deg)';outer.style.transformOrigin='82% 24%';
+            let expected=pointAt(button),actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'receiver transform drift: '+JSON.stringify({actual,expected}));
+            const borderExpected=projectedFramePoint(outer,{x:3,y:105}),borderActual=resolveCursor(border);assert(borderActual&&Math.hypot(borderActual.x-borderExpected.x,borderActual.y-borderExpected.y)<.6,'transformed frame border drift');
+            outer.contentWindow.scrollTo(0,6);inner.contentWindow.scrollTo(0,4);await frame();expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'rotated nested scroll drift: '+JSON.stringify({actual,expected}));
+            outer.contentWindow.scrollTo(0,150);await frame();assert(resolveCursor(anchor)===null,'rotated frame ignored viewport clipping');outer.contentWindow.scrollTo(0,0);await frame();assert(resolveCursor(anchor),'visible rotated target did not recover');
+            for(const transform of ['rotate(90deg)','rotate(180deg)','scale(-.9,-.8) skewX(6deg)']){
+                outer.style.transform=transform;outer.style.transformOrigin='50% 50%';expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'quarter turn or inversion drift: '+transform);
+            }
+            outer.style.transform='rotate(8deg)';outer.style.rotate='0 0 -1 .1rad';outer.style.scale='95% 90%';outer.style.zoom='1.1';expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'individual rotation, percentage scale or CSS zoom drift');
+            holder.style.perspective='600px';assert(resolveCursor(anchor)===null,'unsupported perspective guessed');holder.style.perspective='';
+            inner.style.transform='scale(0)';assert(resolveCursor(anchor)===null,'singular frame painted');
+        }finally{holder.remove();}
+    });
     await test('原生 PDF 页面按文件和页码定位，缩放旋转、页间空白与遮挡不会串页',async()=>{
         const fixture=document.createElement('div');fixture.className='layout-tab-container';
         fixture.style.cssText='position:fixed;left:30px;top:30px;width:420px;height:360px;z-index:100;background:white;overflow:auto';
@@ -779,6 +813,9 @@ async function test(name, run) {
                     const childDoc=child.contentDocument;childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
                     const c=child.getBoundingClientRect(),e=embedded.getBoundingClientRect(),expected={x:e.left+(c.left+(12+child.clientLeft)*c.width/child.offsetWidth+embedded.clientLeft)*e.width/embedded.offsetWidth,y:e.top+(c.top+(16+child.clientTop)*c.height/child.offsetHeight+embedded.clientTop)*e.height/embedded.offsetHeight};
                     assert(near(plugin.pointer.x,expected.x)&&near(plugin.pointer.y,expected.y),'nested frame pointer not translated through parent');
+                    embedded.style.cssText='position:fixed;left:180px;top:120px;width:310px;height:180px;box-sizing:border-box;border:7px solid black;transform:rotate(13deg) scale(-.9,.85)';child.style.cssText='position:absolute;left:18px;top:16px;width:180px;height:90px;box-sizing:border-box;border:5px solid black;transform:rotate(-8deg) skewX(6deg)';
+                    childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
+                    const innerPoint=projectedFramePoint(child,{x:17,y:21}),rotatedExpected=projectedFramePoint(embedded,{x:innerPoint.x+7,y:innerPoint.y+7});assert(plugin.pointer&&Math.hypot(plugin.pointer.x-rotatedExpected.x,plugin.pointer.y-rotatedExpected.y)<.6,'rotated nested pointer event drift');
                     childDoc.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'b',ctrlKey:true,bubbles:true}));assert(plugin.pendingShortcut==='Ctrl+B','nested shortcut missing');plugin.pendingShortcut=null;
                     const nextDocument=new Promise(resolve=>child.onload=resolve);child.srcdoc='<button>New nested page</button>';await nextDocument;
                     const before=JSON.stringify(plugin.pointer);childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:60,clientY:50,pointerType:'mouse',bubbles:true}));assert(JSON.stringify(plugin.pointer)===before,'replaced frame document kept its pointer listener');

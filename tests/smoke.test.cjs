@@ -437,9 +437,9 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     const cleaned=(await snapshot()).cursors[0].cursor.ui;
     assert.ok(!JSON.stringify(cleaned).includes('private'));assert.equal(cleaned.route[0].key,step.key);assert.equal(cleaned.edges.y[0].offset,12);
     const frames=[[step],[step]];
-    await update('component-user-test',1,2,{...cursor,ui:{...ui,frames}});
+    await update('component-user-test',1,2,{...cursor,ui:{...ui,frames,edges:{...ui.edges,x:[{kind:'frame-box',side:'start',secret:'private'},{kind:'frame',side:'start'}]}}});
     const nested=(await snapshot()).cursors[0].cursor.ui;
-    assert.equal(nested.frames.length,2);assert.ok(!JSON.stringify(nested).includes('private'));
+    assert.equal(nested.frames.length,2);assert.equal(nested.edges.x[0].kind,'frame-box');assert.ok(!JSON.stringify(nested).includes('private'));
     for(const bad of [{frames:[]},{frames:[[step]]},{frames:Array(9).fill([step])},{frames,frame:[step]},{frames:[[step],[{...step,key:'raw name'}]]}]) {
         await assert.rejects(update('component-user-test',1,3,{...cursor,ui:{...ui,...bad}}),/Invalid UI cursor/);
     }
