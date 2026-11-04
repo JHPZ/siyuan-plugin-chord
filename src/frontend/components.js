@@ -786,14 +786,17 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    if(picker || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field')){
+    const precise=picker || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
+    const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
+    if(precise || gaps.length){
         // Padding is visible whitespace; text underneath it is clipped by the native input.
         if(fieldRects && field && !select && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
         const local=componentGeometry(element,point);
         if(!local)return null;
-        const same=['x','y'].every(axis=>anchor.edges[axis].every((edge,index)=>{
+        const same=['x','y'].every(axis=>!precise && !gaps.includes(axis) || anchor.edges[axis].every((edge,index)=>{
             const match=local.edges[axis][index],collapsed=field && (axis==='x' ? field.left===field.right:field.top===field.bottom);
-            return edge.kind===match.kind && edge.offset===match.offset && (edge.side===match.side || edge.kind==='field' && collapsed);
+            return edge.kind===match.kind && edge.offset===match.offset && (edge.side===match.side || edge.kind==='field' && collapsed) &&
+                (edge.kind!=='child' || edge.step.key===match.step.key && edge.step.count===match.step.count && edge.step.index===match.step.index);
         }));
         if(select){
             const glyph=edges=>['x','y'].every(axis=>edges[axis].every(edge=>edge.kind==='text' && edge.offset===edges.x[0].offset));
