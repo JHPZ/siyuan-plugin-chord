@@ -83,7 +83,7 @@ function captureDocumentSpace(editor, hit, point) {
     const column = documentColumn(editor, block);
     if (point.x < column.left || point.x > column.right) return null;
     const root = cursorTextRoot(block);
-    if (!root.matches('[contenteditable="true"]')) return null;
+    if (!root.matches('[contenteditable="true"]') || root.closest('[data-node-id]') !== block) return null;
     const caret = document.caretPositionFromPoint?.(point.x, point.y);
     const range = caret ? null : document.caretRangeFromPoint?.(point.x, point.y);
     const node = caret?.offsetNode || range?.startContainer, offset = caret?.offset ?? range?.startOffset;

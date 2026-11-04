@@ -50,6 +50,12 @@ function componentAssetPath(element) {
     return [...list.querySelectorAll('[data-type="search-item"] .b3-list-item__meta[aria-label]')].filter(e=>e.getAttribute('aria-label')===path).length===1 ? path:null;
 }
 
+function componentSuperblockDivider(element) {
+    const handle=element.closest('.sb__resize');if(!handle)return undefined;
+    const ids=[handle.previousElementSibling?.getAttribute('data-node-id'),handle.nextElementSibling?.getAttribute('data-node-id')];
+    return ids.every(id=>DOCUMENT_ID.test(id || '')) ? ids.sort():null;
+}
+
 function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
@@ -82,6 +88,7 @@ function componentKey(element) {
     if(element.id && !/^\d{14}-/.test(element.id) && !dialogTitle)values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
     if(element.matches('.protyle'))values.push(['document',editorDocumentId(element)]);
+    if(element.matches('.sb__resize'))values.push(['between',componentSuperblockDivider(element)]);
     if(element.matches('.layout__wnd,[data-type="wnd"]'))values.push(['pane',componentPane(element)]);
     if(element.matches('.layout__resize')){
         const neighbour=node=>{
@@ -96,7 +103,7 @@ function componentKey(element) {
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
     const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') || element.matches(COMPONENT_HIGHLIGHT_TEXT) ? textLabel(element):'')):'';
-    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^protyle-wysiwyg--select$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
 
@@ -324,7 +331,7 @@ function componentCharacter(element,offset) {
 }
 
 function componentNearText(element,point) {
-    if(element.matches('input,textarea') || element.closest('[data-private]'))return null;
+    if(element.matches('input,textarea,[data-type="NodeSuperBlock"]') || element.closest('[data-private]'))return null;
     if(componentTreeRegion(element)?.root===element || element.matches('.backlinkList__header,.backlinkMList__header') && element.closest('.sy__backlink,.sy__backlink--bottom'))return null;
     const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
@@ -450,6 +457,7 @@ function componentGeometry(element,point) {
     const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
+        const column=axis==='x' && element.matches('.sb[data-sb-layout="col"]');
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
@@ -461,9 +469,12 @@ function componentGeometry(element,point) {
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
         }
         for(const child of perimeter ? []:children){
-            const rect=child.getBoundingClientRect();if(!rect.width || !rect.height || other<rect[otherStart] || other>rect[otherEnd])continue;
+            const rect=child.getBoundingClientRect();if(!rect.width || !rect.height || (other<rect[otherStart] || other>rect[otherEnd]) && !column)continue;
             const step=componentStep(child);
-            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'child',side,step}});
+            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end]){
+                const entry={value:rect[key],edge:{kind:'child',side,step}};
+                if(column && child.hasAttribute('data-node-id'))entries.unshift(entry);else entries.push(entry);
+            }
         }
         for(const item of text)for(const [side,key] of [['start',start],['end',end]])if(item.rect[key]>=bounds[start] && item.rect[key]<=bounds[end])entries.push({value:item.rect[key],edge:{kind:'text',side,offset:item.offset}});
         const lower=entries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0];
@@ -477,7 +488,7 @@ function componentGeometry(element,point) {
 }
 
 function captureComponent(hit,plugin,point) {
-    if(hit.closest('[data-private]') || componentSearchField(hit)===null || componentAssetPath(hit)===null)return null;
+    if(hit.closest('[data-private]') || componentSearchField(hit)===null || componentAssetPath(hit)===null || componentSuperblockDivider(hit)===null)return null;
     const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
     if(hit.matches('canvas') && !graph)return null;
     let original=hit;hit=componentBox(hit,point);
@@ -492,7 +503,7 @@ function captureComponent(hit,plugin,point) {
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
         point=inside;const inner=componentHit(doc,point);
-        if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || inner.matches('canvas'))return null;
+        if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || componentSuperblockDivider(inner)===null || inner.matches('canvas'))return null;
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
@@ -542,7 +553,7 @@ function resolveComponent(cursor,plugin) {
     const highlight=target===element && element.matches(COMPONENT_HIGHLIGHT_TEXT) && hit?.matches('mark') && hit.parentElement===element;
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || componentSearchField(target)===null || componentAssetPath(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);

@@ -254,6 +254,24 @@ async function test(name, run) {
             editor.prepend(paragraph);row.closest('.sb')?.remove();paragraph.style.cssText='';fixture.style.width='540px';const restored=resolveCursor(anchor);assert(restored&&near(restored.x,point.x)&&near(restored.y,point.y),'undo did not restore whitespace');
         }finally{fixture.remove();}
     });
+    await test('超级块容器边距跟随子列边界，分栏改宽和原生临时选中不丢指针',async()=>{
+        const fixture=documentSpaceFixture();try{
+            const editor=fixture.querySelector('.protyle-wysiwyg'),columns=[...editor.querySelectorAll('.p')],row=document.createElement('div');row.className='sb';row.dataset.type='NodeSuperBlock';row.dataset.nodeId='20261030165150-space06';row.dataset.sbLayout='col';row.style.cssText='display:flex;gap:18px;padding:2px 0';editor.prepend(row);
+            for(const column of columns){row.append(column);column.style.cssText='width:140px;flex:none;margin:0;padding:4px';cursorTextRoot(column).textContent='Column content';}
+            const samples=[];for(const column of columns)for(const side of ['top','bottom']){const r=column.getBoundingClientRect(),b=row.getBoundingClientRect(),point={x:r.left+r.width*.4,y:side==='top'?(b.top+r.top)/2:(r.bottom+b.bottom)/2};assert(document.elementFromPoint(point.x,point.y)===row,'fixture margin missing');const anchor=componentRoundTrip(point);assert(anchor.ui?.kind==='component','container borrowed child text');samples.push({column,side,anchor});}
+            columns[0].style.width='220px';columns[1].style.width='100px';columns[0].classList.add('protyle-wysiwyg--select');row.prepend(columns[2]);
+            for(const {column,side,anchor}of samples){const r=column.getBoundingClientRect(),b=row.getBoundingClientRect(),expected={x:r.left+r.width*.4,y:side==='top'?(b.top+r.top)/2:(r.bottom+b.bottom)/2},actual=resolveCursor(anchor);assert(actual&&near(actual.x,expected.x)&&near(actual.y,expected.y),'margin lost local column after resize/selection');column.classList.add('fn__none');assert(resolveCursor(anchor)===null,'margin followed a hidden column');column.classList.remove('fn__none');}
+        }finally{fixture.remove();}
+    });
+    await test('分栏调整手柄按相邻块匹配，重排、反向、隐藏和无效身份不串位',async()=>{
+        const fixture=documentSpaceFixture();try{
+            const editor=fixture.querySelector('.protyle-wysiwyg'),columns=[...editor.querySelectorAll('.p')],row=document.createElement('div');row.className='sb';row.dataset.type='NodeSuperBlock';row.dataset.nodeId='20261030165150-space06';row.dataset.sbLayout='col';row.style.cssText='display:flex';editor.prepend(row);
+            for(const column of columns){column.style.cssText='width:140px;flex:none;margin:0';cursorTextRoot(column).textContent='Column';}
+            const divider=()=>{const e=document.createElement('span');e.className='sb__resize';e.contentEditable='false';e.style.cssText='display:block;width:2px;flex:none;margin-right:16px';return e;},first=divider(),second=divider();row.append(columns[0],first,columns[1],second,columns[2]);const r=first.getBoundingClientRect(),anchor=componentRoundTrip({x:r.left+1,y:r.top+r.height*.5});
+            for(const reverse of [false,true]){row.replaceChildren(columns[2],second,...(reverse?[columns[1],first,columns[0]]:[columns[0],first,columns[1]]));const b=first.getBoundingClientRect(),actual=resolveCursor(anchor);assert(actual&&near(actual.x,b.left+1)&&near(actual.y,b.top+b.height*.5),'divider followed its old sibling index');}
+            first.style.opacity='0';assert(resolveCursor(anchor)===null,'transparent divider drawn');first.style.opacity='1';columns[0].removeAttribute('data-node-id');assert(resolveCursor(anchor)===null,'invalid neighbor identity drawn');const b=first.getBoundingClientRect();assert(captureCursor({x:b.left+1,y:b.top+b.height*.5})===null,'invalid divider identity captured');
+        }finally{fixture.remove();}
+    });
     await test('段落空白跟随字符换行、字号和滚动，不使用整块比例',async()=>{
         const fixture=documentSpaceFixture();
         try {
