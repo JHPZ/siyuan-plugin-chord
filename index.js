@@ -95,7 +95,7 @@ function validComponentEdge(edge) {
 
 function validComponentAnchor(value) {
     const scope=value.scope;
-    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av'].includes(scope.kind) &&
+    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av','calendar'].includes(scope.kind) &&
         typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
         (scope.kind!=='av' || [scope.row,scope.column].every(value=>typeof value==='string' && /^[a-f0-9]{16}$/.test(value))) &&
         (scope.group===undefined || scope.kind==='av' && typeof scope.group==='string' && /^[a-f0-9]{16}$/.test(scope.group)) &&
@@ -500,6 +500,9 @@ function componentKey(element) {
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
     if(element.closest('[data-type="NodeAttributeView"]')){
         for(const name of ['data-av-id','data-av-type','data-col-id','data-field-id','data-group-id','data-id']){const value=element.getAttribute(name);if(value)values.push([name,componentHash(value)]);}
+        for(const name of ['data-calendar-action','data-calendar-day','data-calendar-week','data-calendar-add','data-calendar-item','data-calendar-resize','data-calendar-move','data-calendar-undated-toggle','data-calendar-undated-row','data-calendar-undated-open']){
+            const value=element.getAttribute(name);if(value!==null)values.push([name,componentHash(['data-calendar-day','data-calendar-week','data-calendar-add'].includes(name) ? componentCalendarDate(value):value)]);
+        }
         if(element.matches('.av__colsticky,.av__gallery-field'))values.push(['fields',[...element.querySelectorAll('[data-col-id],[data-field-id]')].map(cell=>cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id')).sort().join('|')]);
     }
     if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
@@ -555,6 +558,43 @@ function componentFollow(root,route) {
 
 const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
 const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id],.av__gallery-field,.av__firstcol,.av__row[data-id],.av__gallery-item[data-id],.av__row--header,.av__row--footer,.av__group-title,.av__body[data-group-id]';
+const COMPONENT_CALENDAR_REGIONS='.av__calendar,.av__calendar-day,.av__calendar-week,.av__calendar-week-row,.av__calendar-week-number,.av__calendar-days,.av__calendar-events,.av__calendar-weekdays > div,.av__calendar-item,.av__calendar-field,.av__calendar-undated-item[data-calendar-undated-row]';
+
+function componentCalendarDate(value) {
+    if(!/^-?\d{1,16}$/.test(value || ''))return '';
+    const date=new Date(+value);
+    return Number.isFinite(date.getTime()) ? [date.getFullYear(),date.getMonth()+1,date.getDate()].join('-'):'';
+}
+
+function componentCalendarRegion(element) {
+    const calendar=element.closest('.av__calendar'),av=calendar?.closest('[data-type="NodeAttributeView"]');if(!av)return null;
+    const root=element.closest(COMPONENT_CALENDAR_REGIONS);if(!root || !calendar.contains(root))return null;
+    const view=av.querySelector('.av__header[data-current-view-id]')?.getAttribute('data-current-view-id');
+    if(!DOCUMENT_ID.test(view || ''))return null;
+    const week=root.closest('.av__calendar-week') || root.closest('.av__calendar-week-row')?.querySelector('.av__calendar-week');
+    const segment=week ? componentCalendarDate(week.getAttribute('data-calendar-week')):'undated';
+    const item=root.closest('.av__calendar-item,.av__calendar-undated-item');let identity;
+    if(item){
+        const row=item.getAttribute('data-calendar-item') || item.getAttribute('data-calendar-undated-row') || item.getAttribute('data-id'),field=root.matches('.av__calendar-field') ? root.getAttribute('data-field-id') || root.getAttribute('data-col-id'):'';
+        if(!DOCUMENT_ID.test(row || '') || field && !DOCUMENT_ID.test(field) || !segment)return null;
+        identity=['event',row,segment,field];
+    }else if(root.matches('.av__calendar-day')){
+        const date=componentCalendarDate(root.getAttribute('data-calendar-day'));if(!date)return null;identity=['date',date];
+    }else if(root.parentElement?.matches('.av__calendar-weekdays') && !root.matches('.av__calendar-week-label')){
+        const days=[...calendar.querySelectorAll('[data-calendar-day]')].map(day=>+day.getAttribute('data-calendar-day')).filter(Number.isFinite);
+        const index=[...root.parentElement.children].filter(child=>!child.matches('.av__calendar-week-label')).indexOf(root);
+        if(!days.length || index<0 || index>6)return null;
+        identity=['weekday',(new Date(Math.min(...days)).getDay()+index)%7];
+    }else if(week){if(!segment)return null;identity=[root.className.split(' ').find(name=>/^av__calendar-(week|week-row|week-number|days|events)$/.test(name)),segment];}
+    else identity=[root.matches('.av__calendar-week-label') ? 'week-label':'calendar'];
+    return {av,root,identity:[view,...identity]};
+}
+
+function componentCalendarScope(region,plugin) {
+    if(![region.av.getAttribute('data-node-id'),region.av.getAttribute('data-av-id')].every(value=>DOCUMENT_ID.test(value || '')))return null;
+    const base=componentAVScope(region.av,plugin);
+    return base ? {kind:'calendar',key:componentHash(JSON.stringify([base.key,...region.identity])),...(base.pane ? {pane:base.pane}:{})}:null;
+}
 
 function componentAVRegion(element) {
     const av=element.closest('[data-type="NodeAttributeView"]');if(!av || element===av)return null;
@@ -585,6 +625,8 @@ function componentAVScope(av,plugin) {
 
 function componentScope(element,plugin) {
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
+    const calendar=componentCalendarRegion(element);
+    if(calendar){const scope=componentCalendarScope(calendar,plugin);return scope ? {root:calendar.root,scope}:null;}
     const region=componentAVRegion(element);
     if(region){
         const {av,root,part,row,column,group}=region;
@@ -624,6 +666,13 @@ function componentScope(element,plugin) {
 }
 
 function componentRoots(scope,plugin) {
+    if(scope.kind==='calendar'){
+        let roots=[...document.querySelectorAll(COMPONENT_CALENDAR_REGIONS)].filter(root=>{
+            const region=componentCalendarRegion(root);return region?.root===root && componentCalendarScope(region,plugin)?.key===scope.key;
+        });
+        if(roots.length>1 && scope.pane)roots=roots.filter(root=>componentHash(componentPane(root))===scope.pane);
+        roots=roots.filter(visibleElement);return roots.length===1 ? roots[0]:null;
+    }
     const selector={document:'.protyle',dock:'.dockPanel',dialog:'.b3-dialog',floating:COMPONENT_FLOATING,tab:'.layout-tab-container > [data-id]',global:'body'}[scope.kind];
     let roots=scope.kind==='av' ? [...document.querySelectorAll('[data-type="NodeAttributeView"]')]
         .filter(av=>componentAVScope(av,plugin)?.key===scope.key)

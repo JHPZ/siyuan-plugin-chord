@@ -94,7 +94,7 @@ function validComponentEdge(edge) {
 
 function validComponentAnchor(value) {
     const scope=value.scope;
-    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av'].includes(scope.kind) &&
+    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av','calendar'].includes(scope.kind) &&
         typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
         (scope.kind!=='av' || [scope.row,scope.column].every(value=>typeof value==='string' && /^[a-f0-9]{16}$/.test(value))) &&
         (scope.group===undefined || scope.kind==='av' && typeof scope.group==='string' && /^[a-f0-9]{16}$/.test(scope.group)) &&

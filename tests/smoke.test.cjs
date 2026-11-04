@@ -443,6 +443,16 @@ test('database cell scopes require bounded row and column hashes and strip priva
     }
 });
 
+test('calendar scopes retain only bounded hashes and optional pane identity',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    await kernel.methods.get('presenceHeartbeat')('calendar-scope-test',{generation:1});
+    const scope={kind:'calendar',key:'1234567890abcdef',pane:'abcdef1234567890',date:'private date',event:'private title'},edge={kind:'self',side:'start'};
+    const cursor={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.4,y:.5},x:.4,y:.5,ui:{version:3,kind:'component',scope,route:[],edges:{x:[edge,edge],y:[edge,edge]}}};
+    await update('calendar-scope-test',1,1,cursor);
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.scope)),{kind:scope.kind,key:scope.key,pane:scope.pane});
+    for(const bad of [{key:'raw date'},{key:'a'.repeat(17)},{pane:'private pane'},{part:'event'},{group:scope.key},{kind:'unknown-calendar'}])await assert.rejects(update('calendar-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
+});
+
 test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
     const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
     await heartbeat('component-user-test',{generation:1});
