@@ -569,7 +569,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
-            const key = JSON.stringify([client.editing.region?.kind, client.editing.region?.id, client.editing.documentId, client.editing.blockId]);
+            const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, client.editing.blockId]);
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(client);
         }

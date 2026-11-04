@@ -1181,7 +1181,8 @@ async function test(name, run) {
                 await expose(block,10);select(block,10);
                 const editing=captureEditing(), before=block.outerHTML;
                 assert(editing?.blockId===block.dataset.nodeId,'focused caret not captured');
-                const activity={name:'<b>Bob</b>',hue:210,editing};
+                const legacyEditing={...editing};delete legacyEditing.region;
+                const activity={name:'<b>Bob</b>',hue:210,editing:legacyEditing};
                 plugin.clients.push({name:activity.name});
                 plugin.updateCursors({tick:10,cursors:[],editing:[{name:'A',hue:120,editing},activity]});
                 await frame();
