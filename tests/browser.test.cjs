@@ -1189,6 +1189,27 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'cropped-away image pixel painted');
         }finally{image.remove();}
     });
+    await test('命令面板搜索字形随改宽和滚动定位，旧比例与不同查询不绘制',async()=>{
+        const fixture=document.createElement('div');fixture.dataset.key='dialog-commandpanel';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:30px;top:30px;width:600px;height:200px;z-index:100;background:white"><div class="b3-dialog__container"><div class="b3-dialog__header">命令面板</div><div class="search__header"><input aria-label="命令面板" class="b3-text-field b3-text-field--text"></div></div></div>';document.body.append(fixture);
+        const field=fixture.querySelector('input'),reference=document.createElement('div'),value='Command 中文 😀 é 👨‍👩‍👧‍👦 '+ 'tail '.repeat(12),css='font:18px/30px monospace;padding:6px 8px 6px 32px;border:0;box-sizing:border-box;width:580.59375px;height:42px;white-space:pre;';field.style.cssText=css;reference.style.cssText=css+'position:fixed;left:-10000px;top:0';field.value=value;reference.textContent=value;document.body.append(reference);
+        try{
+            const expected=offset=>{const segment=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value).containing(offset),r=document.createRange();r.setStart(reference.firstChild,segment.index);r.setEnd(reference.firstChild,segment.index+segment.segment.length);const g=r.getBoundingClientRect(),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();return {x:b.left+g.left-a.left+g.width*.5-field.scrollLeft,y:b.top+g.top-a.top+g.height*.5};};
+            const samples=[0,8,11,14,17].map(offset=>({offset,anchor:componentRoundTrip(expected(offset))}));assert(samples.every(s=>s.anchor.ui.version===3&&s.anchor.ui.textHash),'command search still uses control ratios');
+            field.style.width='400px';reference.style.width='400px';for(const s of samples){const p=expected(s.offset),a=resolveCursor(s.anchor);assert(a&&Math.hypot(a.x-p.x,a.y-p.y)<.02,'command search glyph drift');}
+            const legacy={...samples[0].anchor,ui:{version:2,kind:'dialog',key:'dialog-commandpanel',label:'命令面板',tag:'input',classes:'b3-text-field b3-text-field--text',path:[],page:{kind:'control',control:'barCommand',title:'命令面板'}},x:.1,y:.5};assert(resolveUIAnchor(legacy.ui)===field,'legacy fixture missing');assert(resolveCursor(legacy)===null,'legacy command ratio bypassed glyph identity');
+            field.scrollLeft=100;for(const s of samples){const p=expected(s.offset),b=field.getBoundingClientRect(),a=resolveCursor(s.anchor),visible=p.x>=b.left+32&&p.x<b.right-8;assert(visible?a&&Math.hypot(a.x-p.x,a.y-p.y)<.02:a===null,'command scroll clipping');}
+            field.value='other query';assert(samples.every(s=>resolveCursor(s.anchor)===null),'other command query inherited glyph');field.value=value;field.style.display='none';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden command field painted');
+        }finally{fixture.remove();reference.remove();}
+    });
+    await test('搜索输入框四周内边距留白按内容边界定位，不继承被裁掉的字形',async()=>{
+        const field=document.createElement('input'),header=document.createElement('div');header.className='search__header';header.style.cssText='position:fixed;left:30px;top:30px;z-index:100';field.className='b3-text-field';field.style.cssText='font:18px/30px monospace;width:500px;height:42px;padding:6px 8px 6px 32px;border:0;box-sizing:border-box';field.value='x'.repeat(100);header.append(field);document.body.append(header);
+        try{
+            const point=side=>{const r=field.getBoundingClientRect(),x=(r.left+32+r.right-8)*.5,y=(r.top+r.bottom)*.5;return side==='left'?{x:r.left+16,y}:side==='right'?{x:r.right-4,y}:side==='top'?{x,y:r.top+3}:{x,y:r.bottom-3};};
+            const samples=['left','right','top','bottom'].map(side=>({side,anchor:componentRoundTrip(point(side))}));assert(samples.every(s=>Object.values(s.anchor.ui.edges).flat().some(e=>e.kind==='field')),'padding has no content boundary');
+            for(const width of [300,650]){field.style.width=width+'px';for(const s of samples){const a=resolveCursor(s.anchor),p=point(s.side);assert(a&&Math.hypot(a.x-p.x,a.y-p.y)<.02,'padding drift '+s.side);}}
+            field.scrollLeft=200;field.value='other query';for(const s of samples){const a=resolveCursor(s.anchor),p=point(s.side);assert(a&&Math.hypot(a.x-p.x,a.y-p.y)<.02,'visible padding inherited query or scroll');}field.style.padding='0';assert(samples.every(s=>resolveCursor(s.anchor)===null),'removed padding painted on text');
+        }finally{header.remove();}
+    });
     await test('原生搜索字段按字素定位，单行居中、多行换行及隐私边界不误画',async()=>{
         const fixture=document.createElement('div');fixture.id='search-field-fixture';fixture.style.cssText='position:fixed;left:30px;top:30px;width:650px;height:400px;background:white;z-index:100';
         fixture.innerHTML='<textarea id="searchInput" class="search__input"></textarea><input id="searchAssetInput"><input type="password" class="search__input"><textarea data-private class="search__input"></textarea><input id="unregistered-secret">';document.body.append(fixture);

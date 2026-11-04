@@ -503,11 +503,12 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     await update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'start',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
     assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind:'paint',side:'start'});
     await assert.rejects(update('component-user-test',1,7,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
-    for(const [index,kind] of ['list-first','list-last'].entries()){
+    for(const [index,kind] of ['list-first','list-last','field'].entries()){
         await update('component-user-test',1,7+index,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind,side:'end',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
         assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind,side:'end'});
     }
     await assert.rejects(update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'list',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
+    await assert.rejects(update('component-user-test',1,10,{...cursor,ui:{...ui,edges:{...ui.edges,x:[{kind:'field',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
     for(const bad of [{scope:null},{scope:{kind:'global',key:'body'}},{route:Array(33).fill(step)},{route:[{...step,index:1}]},{route:[{...step,count:10001}]},
         {frame:[{...step,key:'<script>'}]},{textHash:'raw text'},{edges:{...ui.edges,x:[{kind:'selector',side:'start'},{kind:'self',side:'end'}]}},
         {edges:{...ui.edges,y:[{kind:'text',side:'start',offset:-1},{kind:'self',side:'end'}]}}]) {

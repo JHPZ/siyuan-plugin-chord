@@ -90,7 +90,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -546,11 +546,19 @@ function componentSourceField(element) {
 function componentTextField(element) {
     if(element.closest('[data-private]') || element.matches('input[type="password"]'))return false;
     if(componentSourceField(element))return true;
-    return element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label') && ['text','search','textarea'].includes(element.type) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    return element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field') && ['text','search','textarea'].includes(element.type) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {
     return field.value || field.getAttribute('placeholder') || '';
+}
+
+function componentFieldContent(field) {
+    if(!field.matches('input') || !componentTextField(field))return null;
+    const css=field.ownerDocument.defaultView.getComputedStyle(field),rect=field.getBoundingClientRect(),inset=side=>parseFloat(css['border'+side+'Width'])+parseFloat(css['padding'+side]);
+    const left=inset('Left'),right=inset('Right'),top=inset('Top'),bottom=inset('Bottom'),sx=rect.width/(parseFloat(css.width)+(css.boxSizing==='border-box' ? 0:left+right)),sy=rect.height/(parseFloat(css.height)+(css.boxSizing==='border-box' ? 0:top+bottom));
+    if(![left,right,top,bottom,sx,sy].every(Number.isFinite) || sx<=0 || sy<=0)return null;
+    return {left:rect.left+left*sx,right:rect.right-right*sx,top:rect.top+top*sy,bottom:rect.bottom-bottom*sy};
 }
 
 function componentFieldMeasure(field,run) {
@@ -579,8 +587,7 @@ function componentFieldMeasure(field,run) {
             const segment=segments.containing(offset),start=segment?.index ?? offset,end=segment ? start+segment.segment.length:offset+1;
             const range=doc.createRange();range.setStart(mirror.firstChild,start);range.setEnd(mirror.firstChild,end);const r=range.getBoundingClientRect();return r.height ? r:null;
         };
-        const scale=bounds.width/rect.width,clip=field.matches('input') ? {left:bounds.left+(parseFloat(css.borderLeftWidth)+parseFloat(css.paddingLeft))*scale,right:bounds.right-(parseFloat(css.borderRightWidth)+parseFloat(css.paddingRight))*scale}:null;
-        return run(mirror,character,position,clip);
+        return run(mirror,character,position);
     }finally{mirror.remove();}
 }
 function componentHit(doc,point) {
@@ -1048,8 +1055,9 @@ function componentGeometry(element,point) {
     let bounds=box ? box.bounds:element.getBoundingClientRect();
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
-    const children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
-    if(componentTextField(element) && !text.length)return null;
+    const field=componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
+    const children=box ? []:componentChildren(element),text=box || padding ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
+    if(componentTextField(element) && !text.length && !padding)return null;
     const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
@@ -1057,6 +1065,7 @@ function componentGeometry(element,point) {
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
+        if(field && !text.some(item=>point[axis]>=item.rect[start] && point[axis]<item.rect[end]))for(const [side,key] of [['start',start],['end',end]])entries.push({value:field[key],edge:{kind:'field',side}});
         const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || tree && (point.x<list.left || point.x>list.right));
         if(perimeter)for(const [side,key] of [['start',start],['end',end]])if(list[key]>=bounds[start] && list[key]<=bounds[end])entries.push({value:list[key],edge:{kind:'list',side}});
         // At coincident bounds, prefer the nearest end row over the resizable list box.
@@ -1129,7 +1138,7 @@ function resolveComponent(cursor,plugin) {
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
     const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
-    const fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character,position,clip)=>Object.assign(new Map(offsets.map(offset=>[offset,character(offset)])),{clip})):null;
+    const field=componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
         if(anchor.imagePoint){
@@ -1138,7 +1147,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         if(values.some(value=>!Number.isFinite(value)) || values[1]<values[0] ||
@@ -1146,9 +1155,9 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    if(fieldRects){
-        // Native single-line inputs clip glyphs at their padding, before hit testing leaves the control.
-        if(fieldRects.clip && anchor.edges.x.every(edge=>edge.kind==='text') && (point.x<fieldRects.clip.left || point.x>=fieldRects.clip.right))return null;
+    if(fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field')){
+        // Padding is visible whitespace; text underneath it is clipped by the native input.
+        if(fieldRects && field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
         const local=componentGeometry(element,point);
         if(!local || !['x','y'].every(axis=>anchor.edges[axis].every((edge,index)=>['kind','side','offset'].every(key=>edge[key]===local.edges[axis][index][key]))))return null;
     }
