@@ -593,6 +593,23 @@ async function test(name, run) {
             fixture.querySelector('.protyle-background').dataset.nodeId='20261104130000-otherdc';assert(resolveCursor(anchor)===null,'database pointer crossed documents');
         }finally{fixture.remove();}
     });
+    await test('原生搜索提示按结果文档和动作匹配，同名重排、替换与隐藏不串位',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:25px;top:25px;width:500px;height:310px;z-index:100;background:white';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261104143000-hintdoc"></div><div class="protyle-hint"><div class="hint-results"></div></div>';const list=fixture.querySelector('.hint-results');
+        const rows=['20261104143000-hint001','20261104143000-hint002'].map(id=>{const row=document.createElement('button');row.className='b3-list-item b3-list-item--two';row.style.cssText='display:block;position:relative;width:460px;height:70px;padding:4px;text-align:left';row.innerHTML='<div class="b3-list-item__first" data-node-id="'+id+'" style="height:30px;width:90%"><svg width="18" height="18"><use href="#iconFile"></use></svg><span class="b3-list-item__text">同名结果</span></div><div class="b3-list-item__meta" style="width:90%">相同路径/</div>';list.append(row);return row;});
+        const actions=['newSubDoc','newFileAtPath'].map(action=>{const row=document.createElement('button');row.className='b3-list-item';row.type='button';row.dataset.value='(('+action+' private-query))';row.style.cssText='display:block;width:460px;height:35px';row.textContent='同名动作';list.append(row);return row;});document.body.append(fixture);
+        try{
+            const samples=[];for(const root of [...rows.flatMap(row=>[row,row.firstElementChild,row.querySelector('span'),row.querySelector('.b3-list-item__meta')]),...actions]){const r=root.getBoundingClientRect(),offset=root.matches('button')?{x:r.width-2,y:r.height-2}:{x:4,y:r.height/2};samples.push({root,offset,anchor:componentRoundTrip({x:r.left+offset.x,y:r.top+offset.y})});}
+            const check=sample=>{const point=resolveCursor(sample.anchor),r=sample.root.getBoundingClientRect();assert(point&&near(point.x,r.left+sample.offset.x)&&near(point.y,r.top+sample.offset.y),'hint result moved to sibling or disappeared');};
+            for(const row of [...list.children])list.prepend(row);samples.forEach(check);
+            assert(!JSON.stringify(samples.map(sample=>sample.anchor)).includes('private-query'),'hint query leaked into wire');
+            const original=rows[0].firstElementChild.dataset.nodeId;rows[0].firstElementChild.dataset.nodeId='20261104143000-replace';assert(resolveCursor(samples[0].anchor)===null,'replacement same-name result inherited row whitespace');rows[0].firstElementChild.dataset.nodeId=original;
+            rows[0].style.opacity='0';assert(resolveCursor(samples[0].anchor)===null,'transparent search result painted');rows[0].style.opacity='1';samples.forEach(check);
+            const duplicate=rows[0].cloneNode(true);list.append(duplicate);assert(resolveCursor(samples[0].anchor)===null,'duplicate document result guessed');duplicate.remove();
+            const host=fixture.querySelector('.protyle-background');host.dataset.nodeId='20261104143000-otherdc';assert(resolveCursor(samples[0].anchor)===null,'binding hint crossed host documents');host.dataset.nodeId='20261104143000-hintdoc';
+            rows[0].remove();assert(resolveCursor(samples[0].anchor)===null,'missing result moved to same-name sibling');samples.slice(4).forEach(check);
+        }finally{fixture.remove();}
+    });
     await test('所有 DOM 组件的文字、边角和留白覆盖扫描：菜单、侧栏、设置、标签、图片与插件面板',async()=>{
         const fixture=document.createElement('div');fixture.id='component-inventory';
         fixture.style.cssText='position:fixed;left:12px;top:12px;width:'+Math.min(900,innerWidth-50)+'px;height:540px;background:white;z-index:100;overflow:auto;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding:6px';
