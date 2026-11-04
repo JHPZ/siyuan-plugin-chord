@@ -3,6 +3,15 @@ const COLLAB_ID = /^\d{14}-[a-z0-9]{7}$/;
 const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backlinks', 'graphView', 'globalGraph', 'globalSearch', 'dataHistory', 'riffCard', 'mainMenu', 'recentDocs'];
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
+function validRegion(region) {
+    return region && typeof region.id==='string' && (region.kind==='document' ? COLLAB_ID.test(region.id) : region.kind==='dock' && /^[\w-]{1,160}$/.test(region.id));
+}
+
+function cleanRegion(region) {
+    if(!validRegion(region))throw Error('Invalid region');
+    return {kind:region.kind,id:region.id};
+}
+
 function validPage(page, depth = 0) {
     if (!page || depth > 2 || typeof page.title !== 'string' || page.title.length > 160) return false;
     if (page.kind === 'workspace') return true;
@@ -39,9 +48,12 @@ function cleanPage(page) {
 function validUIAnchor(value) {
     if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
     if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
-    if(!['document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
+    if(!['file','document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
     for(const field of ['id','key','value','label','classes'])if(value[field]!==undefined && (typeof value[field]!=='string' || value[field].length>512))return false;
-    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-node-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.offset!==undefined && (!['file','document'].includes(value.kind) || !Number.isSafeInteger(value.offset) || value.offset<0 || value.offset>10000000))return false;
+    if(value.kind==='file')return typeof value.id==='string' && COLLAB_ID.test(value.id) && typeof value.key==='string' && (value.key==='' || COLLAB_ID.test(value.key)) &&
+        ['text','icon','toggle','switch','viewers','new','more-file','more-root'].includes(value.part) && (value.part==='text' ? value.offset!==undefined:value.offset===undefined);
     if(value.page!==undefined && !validPage(value.page))return false;
     if(value.kind==='document')return validPage(value.page) && value.page.kind==='document';
     if(value.kind==='status' && !['data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
@@ -53,7 +65,7 @@ function validUIAnchor(value) {
 function cleanUIAnchor(value) {
     if(!validUIAnchor(value))throw Error('Invalid UI anchor');
     const result={kind:value.kind,path:[...value.path],tag:value.tag};
-    for(const key of ['version','id','key','part','attribute','value','label','classes'])if(value[key]!==undefined)result[key]=value[key];
+    for(const key of ['version','id','key','part','attribute','value','label','classes','offset'])if(value[key]!==undefined)result[key]=value[key];
     if(value.page!==undefined)result.page=cleanPage(value.page);
     return result;
 }
@@ -89,64 +101,58 @@ function characterRect(node, offset) {
     return rect.width > 0 && rect.height > 0 ? rect : null;
 }
 
+function editorDocumentId(editor) {
+    return editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') ||
+        editor?.closest('.backlinkList__item[data-node-id]')?.getAttribute('data-node-id');
+}
+
 function cursorTextRoot(block) {
     return block.querySelector('[contenteditable="true"]') || block;
 }
 
-function captureDocumentCursor(point) {
-    if (!point || document.hidden) return null;
-    const hit = document.elementFromPoint(point.x, point.y);
-    if (!hit) return null;
-    const row = hit.closest(TREE_ROW);
-    const block = row || hit.closest('.protyle-wysiwyg [data-node-id]');
-    if (!block || block.closest(".fn__none")) return null;
-    const blockId = block.getAttribute("data-node-id");
-    const editor = block.closest(".protyle");
-    const documentId = row ? null : editor?.querySelector(".protyle-background[data-node-id]")?.getAttribute("data-node-id");
-    if (!DOCUMENT_ID.test(blockId) || (!row && !DOCUMENT_ID.test(documentId))) return null;
-    const rect = block.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    const clamp = (value) => Math.max(0, Math.min(1, value));
-    const cursor = { surface: row ? "tree" : "document", documentId, blockId, x: clamp((point.x - rect.left) / rect.width), y: clamp((point.y - rect.top) / rect.height) };
-    if (row) return cursor;
+function captureTextPoint(root, point) {
     const caret = document.caretPositionFromPoint?.(point.x, point.y);
     const range = caret ? null : document.caretRangeFromPoint?.(point.x, point.y);
     const node = caret?.offsetNode || range?.startContainer;
     const offset = caret?.offset ?? range?.startOffset;
-    const root = cursorTextRoot(block);
-    if (node?.nodeType !== 3 || !root.contains(node)) return cursor;
+    if (node?.nodeType !== 3 || !root.contains(node)) return null;
     // 锚定鼠标下的字符，避免不同窗口宽度导致整段比例定位漂移。
     for (const index of [offset - 1, offset]) {
-        if (index < 0 || index >= node.textContent.length) continue;
+        if (index < 0 || index >= node.textContent.length || /\s/.test(node.textContent[index])) continue;
         const character = characterRect(node, index);
         if (!character || point.x < character.left || point.x > character.right || point.y < character.top || point.y > character.bottom) continue;
         const prefix = document.createRange();
         prefix.selectNodeContents(root);
         prefix.setEnd(node, index);
-        cursor.text = { offset: prefix.toString().length, x: clamp((point.x - character.left) / character.width), y: clamp((point.y - character.top) / character.height) };
-        break;
+        return { offset: prefix.toString().length, x: (point.x - character.left) / character.width, y: (point.y - character.top) / character.height };
     }
-    return cursor;
+    return null;
+}
+
+function captureDocumentCursor(point) {
+    if (!point || document.hidden) return null;
+    const block = document.elementFromPoint(point.x, point.y)?.closest('.protyle-wysiwyg [data-node-id]');
+    if (!block || block.closest('.fn__none')) return null;
+    const blockId = block.getAttribute('data-node-id');
+    const documentId = editorDocumentId(block.closest('.protyle'));
+    if (!DOCUMENT_ID.test(blockId) || !DOCUMENT_ID.test(documentId)) return null;
+    const text = captureTextPoint(cursorTextRoot(block), point), region=cursorRegion(block);
+    return text && region ? { surface:'document', documentId, blockId, x:text.x, y:text.y, text, region } : null;
 }
 
 function resolveDocumentCursor(cursor) {
-    let blocks;
-    if (cursor.surface === "tree") {
-        blocks = document.querySelectorAll(`${TREE_ROW}[data-node-id="${cursor.blockId}"]`);
-    } else {
-        blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
-            .filter((editor) => !editor.closest(".fn__none") && editor.querySelector(".protyle-background[data-node-id]")?.getAttribute("data-node-id") === cursor.documentId)
-            .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)]);
-    }
+    // Old row/block fractions can point at unrelated content after reflow.
+    if (cursor.surface !== 'document' || !cursor.text) return null;
+    const blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
+            .filter((editor) => !editor.closest(".fn__none") && editorDocumentId(editor) === cursor.documentId)
+            .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)])
+            .filter(block=>!block.closest('.fn__none') && matchesRegion(block,cursor.region));
+    if(blocks.length!==1)return null;
     for (const block of blocks) {
-        if (block.closest(".fn__none")) continue;
-        let rect = block.getBoundingClientRect();
-        let relative = cursor;
-        if (cursor.text) {
-            const character = characterAt(cursorTextRoot(block), cursor.text.offset);
-            rect = character && characterRect(character.node, character.offset);
-            relative = cursor.text;
-        }
+        if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
+        const character = characterAt(cursorTextRoot(block), cursor.text.offset);
+        if (!character || /\s/.test(character.node.textContent[character.offset])) continue;
+        const rect = characterRect(character.node, character.offset), relative = cursor.text;
         if (!rect?.width || !rect.height) continue;
         const x = rect.left + rect.width * relative.x;
         const y = rect.top + rect.height * relative.y;
@@ -157,6 +163,8 @@ function resolveDocumentCursor(cursor) {
 }
 
 function validCursor(cursor) {
+    if(cursor?.region!==undefined && !validRegion(cursor.region))return false;
+    if(cursor?.state!==undefined && !['editing','typing'].includes(cursor.state))return false;
     if (cursor?.surface === 'ui') return cursor.documentId === null && cursor.blockId === null && validPage(cursor.page) && validUIAnchor(cursor.ui) &&
         [cursor.x,cursor.y,cursor.screen?.x,cursor.screen?.y].every((value)=>Number.isFinite(value) && value>=0 && value<=1);
     if (cursor?.page !== undefined && (!validPage(cursor.page) || ![cursor.screen?.x,cursor.screen?.y].every((value)=>Number.isFinite(value) && value>=0 && value<=1))) return false;
@@ -168,7 +176,7 @@ function validCursor(cursor) {
 }
 
 function validSelection(selection) {
-    return selection && typeof selection.documentId === "string" && DOCUMENT_ID.test(selection.documentId) &&
+    return selection && (selection.region===undefined || validRegion(selection.region)) && typeof selection.documentId === "string" && DOCUMENT_ID.test(selection.documentId) &&
         [selection.anchor, selection.focus].every((point) => point && typeof point.blockId === "string" && DOCUMENT_ID.test(point.blockId) &&
             Number.isSafeInteger(point.offset) && point.offset >= 0 && point.offset <= 10000000);
 }
@@ -188,7 +196,8 @@ function captureSelection() {
     const [anchor, focus] = endpoints;
     const editor = anchor.block.closest('.protyle');
     if (focus.block.closest('.protyle') !== editor) return null;
-    const value = { documentId: editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id'),
+    const region=cursorRegion(editor);if(!region)return null;
+    const value = { region, documentId: editorDocumentId(editor),
         anchor: { blockId: anchor.blockId, offset: anchor.offset }, focus: { blockId: focus.blockId, offset: focus.offset } };
     return validSelection(value) ? value : null;
 }
@@ -206,7 +215,7 @@ function selectionPosition(block, offset) {
 function resolveSelection(selection) {
     const ranges = [];
     for (const editor of document.querySelectorAll('.protyle:not(.fn__none)')) {
-        if (editor.closest('.fn__none') || editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') !== selection.documentId) continue;
+        if (editor.closest('.fn__none') || !matchesRegion(editor,selection.region) || editorDocumentId(editor) !== selection.documentId) continue;
         const points = [selection.anchor, selection.focus].map((point) => {
             const block = editor.querySelector(`.protyle-wysiwyg [data-node-id="${point.blockId}"]`);
             return block && !block.closest('.fn__none') ? selectionPosition(block, point.offset) : null;
@@ -224,7 +233,7 @@ function resolveSelection(selection) {
 }
 
 function validEditing(editing) {
-    return editing && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
+    return editing && (editing.region===undefined || validRegion(editing.region)) && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
 }
 
 function captureEditing() {
@@ -236,8 +245,9 @@ function captureEditing() {
     const block = element?.closest?.('.protyle-wysiwyg [data-node-id]');
     if (!block || block.closest('.fn__none') || !active.contains(node)) return null;
     const editing = { blockId: block.getAttribute('data-node-id'),
-        documentId: block.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') };
-    return validEditing(editing) ? editing : null;
+        documentId: editorDocumentId(block.closest('.protyle')) };
+    const region=cursorRegion(block);
+    return validEditing(editing) && region ? {...editing,region}:null;
 }
 
 const textLabel = (element) => (element?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
@@ -256,6 +266,21 @@ function dockPage(target) {
         }
     }
     return null;
+}
+
+function cursorRegion(element) {
+    if(element.closest('.b3-dialog'))return null;
+    const dock=dockPage(element);
+    if(dock)return {kind:'dock',id:dock.id};
+    if(element.closest('.dockPanel'))return null;
+    const id=element.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+    return DOCUMENT_ID.test(id || '') ? {kind:'document',id}:null;
+}
+
+function matchesRegion(element, region) {
+    const local=cursorRegion(element);
+    // Legacy editor anchors are only safe in the main document, never in previews or docks.
+    return !!local && (region ? local.kind===region.kind && local.id===region.id : local.kind==='document');
 }
 
 function currentPage(plugin, includeDialog = true) {
@@ -321,9 +346,13 @@ function uiClasses(element) {
     return [...element.classList].filter(name=>!/(?:--(?:focus|active|selected|hover)$|^fn__none$|^ariaLabel$)/.test(name)).sort().join(' ');
 }
 
+const CURSOR_CONTROL = 'button,input,select,textarea,[role="button"],.block__icon,.toolbar__item,.b3-switch,.b3-select,.b3-slider,.b3-text-field,[data-statusbar-entry],[data-topbar-entry],.protyle-title__icon';
+const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize';
+const FILE_PARTS = {text:'.b3-list-item__text',icon:'.b3-list-item__icon',toggle:'.b3-list-item__arrow',switch:'.b3-list-item__switch',viewers:'.collab-presence-users',new:'[data-type="new"]','more-file':'[data-type="more-file"]','more-root':'[data-type="more-root"]'};
+
 function uiFingerprint(element) {
     const result={tag:element.tagName.toLowerCase(),classes:uiClasses(element)};
-    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-type','data-name','id','data-id']) {
+    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-node-id','data-type','data-name','id','data-id']) {
         const value=element.getAttribute(attribute);
         if(value && value.length<=512){result.attribute=attribute;result.value=value;break;}
     }
@@ -333,12 +362,32 @@ function uiFingerprint(element) {
     return result;
 }
 
-function uiAnchor(hit, plugin) {
-    let element=hit.closest('button,input,select,textarea,[role="button"],.block__icon,.b3-list-item') || hit;
+function uiAnchor(hit, plugin, point) {
+    if(hit.closest(CURSOR_EXCLUDED))return null;
+    let element=hit.closest(CURSOR_CONTROL);
     const make=(kind,fields={})=>({element,ui:{version:2,kind,path:[],...uiFingerprint(element),...fields}});
+    if(hit.closest('.sy__file')) {
+        const row=hit.closest('li[data-type="navigation-file"],li[data-type="navigation-root"]');
+        const id=row?.closest('ul[data-url]')?.getAttribute('data-url'),key=row?.getAttribute('data-node-id') || '';
+        const part=Object.keys(FILE_PARTS).find(part=>row?.contains(hit.closest(FILE_PARTS[part])));
+        if(!DOCUMENT_ID.test(id || '') || (key && !DOCUMENT_ID.test(key)) || (!key && row.getAttribute('data-type')==='navigation-file') || !part)return null;
+        element=hit.closest(FILE_PARTS[part]);
+        if(part==='text') {
+            const text=captureTextPoint(element,point);
+            return text ? {...make('file',{id,key,part,offset:text.offset}),text}:null;
+        }
+        return make('file',{id,key,part});
+    }
     const editor=hit.closest('.protyle');
-    if(editor) {
+    if(editor && !hit.closest('.dockPanel')) {
         const id=editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+        const title=hit.closest('.protyle-title__input');
+        if(title) {
+            element=title;
+            const text=captureTextPoint(title,point);
+            return text ? {...make('document',{page:{kind:'document',id,title:''},offset:text.offset}),text}:null;
+        }
+        if(!element || !editor.contains(element))return null;
         return make('document',{page:{kind:'document',id,title:''}});
     }
     const head=hit.closest('[data-type="tab-header"]');
@@ -356,12 +405,8 @@ function uiAnchor(hit, plugin) {
     if(entry){element=entry;return make('status',{id:entry.getAttribute('data-statusbar-entry') || entry.getAttribute('data-topbar-entry'),attribute:entry.hasAttribute('data-statusbar-entry') ? 'data-statusbar-entry':'data-topbar-entry'});}
     const setting=hit.closest('.config__side [data-name]');
     if(setting){element=setting;return make('settings-nav',{id:setting.getAttribute('data-name')});}
-    const identified=hit.closest('[id]');
-    if(identified && !identified.matches('body,.protyle,[data-type="wnd"],.b3-dialog__container,#status,.dock') && !identified.contains(document.querySelector('.config__panel'))) {
-        element=identified;
-        const page=element.closest('.protyle') ? currentPage(plugin):undefined;
-        return make('id',{id:identified.id,...(page ? {page}:{})});
-    }
+    if(!element)return null;
+    if(element.id && element.closest('.toolbar,#status'))return make('id',{id:element.id});
     const root=element.closest('.config__tab-container, .b3-dialog__container, .dockPanel, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
     const page=plugin ? currentPage(plugin):{kind:'workspace',title:''};
     if(root.classList.contains('config__tab-container'))return make('settings',{page:{...page,kind:'settings',section:root.getAttribute('data-name') || page.section}});
@@ -373,33 +418,39 @@ function uiAnchor(hit, plugin) {
     return make(root===document.body ? 'body':root.classList.contains('toolbar') ? 'toolbar':'layout',{page});
 }
 
-function resolveUIAnchor(anchor, plugin) {
+function resolveUIAnchor(anchor, plugin, region) {
     // Old child-index anchors cannot identify a control after either window changes layout.
     if(anchor.version!==2)return null;
     const visible=items=>[...items].filter(visibleElement);
+    const unique=items=>items.length===1 ? items[0]:null;
+    if(anchor.kind==='file') {
+        const rows=visible(document.querySelectorAll('.sy__file li[data-type="navigation-file"],.sy__file li[data-type="navigation-root"]'))
+            .filter(row=>row.closest('ul[data-url]')?.getAttribute('data-url')===anchor.id && (row.getAttribute('data-node-id') || '')===anchor.key);
+        const row=unique(rows);
+        return row ? unique(visible(row.querySelectorAll(FILE_PARTS[anchor.part]))):null;
+    }
     if(anchor.kind==='id') {
         const element=document.getElementById(anchor.id);
         if(anchor.page && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
         return visibleElement(element) ? element:null;
     }
-    if(anchor.kind==='dock')return visible(document.querySelectorAll('.dock__item[data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
-    if(anchor.kind==='status')return visible(document.querySelectorAll('['+anchor.attribute+']')).find(item=>item.getAttribute(anchor.attribute)===anchor.id) || null;
-    if(anchor.kind==='settings-nav')return visible(document.querySelectorAll('.config__side [data-name]')).find(item=>item.getAttribute('data-name')===anchor.id) || null;
-    if(anchor.kind==='tab-control')return visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
+    if(anchor.kind==='dock')return unique(visible(document.querySelectorAll('.dock__item[data-type]')).filter(item=>item.getAttribute('data-type')===anchor.id));
+    if(anchor.kind==='status')return unique(visible(document.querySelectorAll('['+anchor.attribute+']')).filter(item=>item.getAttribute(anchor.attribute)===anchor.id));
+    if(anchor.kind==='settings-nav')return unique(visible(document.querySelectorAll('.config__side [data-name]')).filter(item=>item.getAttribute('data-name')===anchor.id));
+    if(anchor.kind==='tab-control')return unique(visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).filter(item=>item.getAttribute('data-type')===anchor.id));
     if(anchor.kind==='tab') {
         const heads=visible(document.querySelectorAll('[data-type="tab-header"]')).filter(head=>{
             const page=tabPage(head);
             return pageKey(page)===pageKey(anchor.page) && (page.kind!=='workspace' || page.title===anchor.page.title);
         });
-        if(!heads.length)return null;
-        const head=heads.find(item=>item.closest('.layout__wnd--active')) || heads[0];
+        const head=unique(heads);
+        if(!head)return null;
         return anchor.part==='tab' ? head:head.querySelector({label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'}[anchor.part]);
     }
     let roots=[];
     if(anchor.kind==='document') {
-        roots=visible(document.querySelectorAll('.protyle')).filter(editor=>editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id')===anchor.page.id);
-        const editor=roots.find(root=>root.closest('.layout__wnd--active')) || roots[0];
-        roots=editor ? [editor]:[];
+        roots=visible(document.querySelectorAll('.protyle')).filter(editor=>editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id')===anchor.page.id && matchesRegion(editor,region));
+        if(roots.length!==1)return null;
     } else if(anchor.kind==='settings') {
         roots=visible(document.querySelectorAll('.config__tab-container')).filter(root=>(root.getAttribute('data-name') || document.querySelector('.config__side .b3-list-item--focus')?.getAttribute('data-name'))===anchor.page.section);
     } else if(anchor.kind==='dialog') {
@@ -484,20 +535,37 @@ function captureCursor(point, plugin) {
     if (!point || document.hidden) return null;
     const hit=document.elementFromPoint(point.x,point.y);
     if (!hit) return null;
+    const active=document.activeElement;
+    const editable=document.hasFocus?.() && active?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') && !active.closest('[data-private]');
+    const state=editable ? (plugin?.typingTarget===active ? 'typing':'editing'):undefined;
+    const activity=state ? {state}:{};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
-    if (anchored) return {...anchored,screen,page};
+    if (anchored) return {...anchored,screen,page,...activity};
     if(hit.closest('.protyle-wysiwyg'))return null;
-    const target=uiAnchor(hit,plugin), rect=target.element.getBoundingClientRect();
+    const target=uiAnchor(hit,plugin,point);
+    if(!target)return null;
+    const rect=target.element.getBoundingClientRect();
     if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
-    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,
-        x:rect.width ? Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)) : 0,
-        y:rect.height ? Math.max(0,Math.min(1,(point.y-rect.top)/rect.height)) : 0};
+    const region=cursorRegion(hit);
+    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
+        x:target.text ? target.text.x : Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)),
+        y:target.text ? target.text.y : Math.max(0,Math.min(1,(point.y-rect.top)/rect.height))};
 }
 
 function resolveCursor(cursor, plugin) {
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
-    const element=resolveUIAnchor(cursor.ui,plugin),rect=element?.getBoundingClientRect();
+    const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
+    if(!element || element.closest(CURSOR_EXCLUDED))return null;
+    if(element.closest('.sy__file') && cursor.ui.kind!=='file')return null;
+    if(cursor.region && !matchesRegion(element,cursor.region))return null;
+    if(!['file','dock','tab','tab-control','settings-nav'].includes(cursor.ui.kind) && !element.matches(CURSOR_CONTROL) && !element.matches('.protyle-title__input'))return null;
+    let rect=element.getBoundingClientRect();
+    if(cursor.ui.offset!==undefined) {
+        const character=characterAt(element,cursor.ui.offset);
+        if(!character || /\s/.test(character.node.textContent[character.offset]))return null;
+        rect=characterRect(character.node,character.offset);
+    } else if(element.matches('.protyle-title__input'))return null;
     if(!rect?.width || !rect.height)return null;
     const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
     const hit=document.elementFromPoint(point.x,point.y);
@@ -875,6 +943,14 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.addEventListener('pointerdown',this.handleSceneActivity,{passive:true});
         document.addEventListener('click',this.handleSceneActivity,{passive:true});
         document.addEventListener('keydown',this.handleKey,{capture:true,passive:true});
+        this.handleTyping=(event)=>{
+            if(!event.target?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') || event.target.closest('[data-private]'))return;
+            this.typingTarget=event.target;this.typingAt=Date.now();
+            clearTimeout(this.typingTimer);
+            this.typingTimer=setTimeout(()=>{this.typingTarget=null;this.queueActivity();},1800);
+            this.queueActivity();
+        };
+        document.addEventListener('input',this.handleTyping,{capture:true,passive:true});
         this.bindFrames();
         this.startCursorTimer();
     }
@@ -890,8 +966,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 stopDocument();
                 try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});}catch{}
             };
-            // shortcut: browsers hide cross-origin frame events; show the frame centre until a cooperating embed can report positions.
-            const enter=()=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2});};
+            const enter=()=>this.handlePointerLeave();
             frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
             this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',load);frame.removeEventListener('pointerenter',enter);}});
         }
@@ -921,11 +996,13 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (this.stopped || !this.layoutReady || this.cursorSending) return;
         const cursor = captureCursor(this.pointer, this);
         const signature = JSON.stringify(cursor);
-        if (signature === this.lastCursorSignature) return;
+        const typingAt=cursor?.state==='typing' ? this.typingAt:undefined;
+        if (signature === this.lastCursorSignature && typingAt===this.lastCursorTypingAt) return;
         this.cursorSending = true;
         try {
             await this.kernel.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
             this.lastCursorSignature = signature;
+            this.lastCursorTypingAt=typingAt;
         } catch {
             this.remoteCursors = [];
             this.scheduleCursorRender(false);
@@ -991,15 +1068,16 @@ module.exports = class CollaborationPlugin extends Plugin {
                     path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
                     arrow.append(path);
                     const label = document.createElement("span");
-                    label.textContent = client.name;
                     marker.append(arrow, label);
                     this.cursorLayer.append(marker);
                     this.cursorMarkers.set(client.name, marker);
                 }
                 const label=marker.querySelector('span');
-                label.textContent=client.name;
+                label.textContent=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
                 marker.style.setProperty("--collab-cursor-hue", String(client.hue));
-                marker.style.transitionDuration = animate ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                const target=JSON.stringify([client.cursor.surface,client.cursor.documentId,client.cursor.blockId,client.cursor.region,client.cursor.ui]);
+                marker.style.transitionDuration = animate && marker.cursorTarget===target ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                marker.cursorTarget=target;
                 marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
                 const rect = marker.getBoundingClientRect();
                 const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
@@ -1032,7 +1110,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 // 编辑框在全局光标层上，不能穿过弹窗覆盖背景正文。
                 if (dialog && !dialog.contains(block)) continue;
                 const editor = block.closest('.protyle');
-                if (block.closest('.fn__none') || editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') !== editing.documentId) continue;
+                if (block.closest('.fn__none') || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
                 const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();
                 const left = Math.max(rect.left, clip.left, 0), top = Math.max(rect.top, clip.top, 0);
                 const right = Math.min(rect.right, clip.right, window.innerWidth), bottom = Math.min(rect.bottom, clip.bottom, window.innerHeight);
@@ -1282,6 +1360,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         clearInterval(this.cursorTimer);
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
+        clearTimeout(this.typingTimer);
         for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
         this.closePeople();
         for(const notice of this.shortcutNotices.values())clearTimeout(notice.timer);
@@ -1290,6 +1369,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.cursorMarkers.clear();
         this.editingMarkers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
+        document.removeEventListener('input',this.handleTyping,true);
         document.removeEventListener('selectionchange',this.handleSelectionActivity);
         document.removeEventListener('focusin',this.handleSceneActivity);
         document.removeEventListener('pointerdown',this.handleSceneActivity);

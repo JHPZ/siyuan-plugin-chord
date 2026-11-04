@@ -17,6 +17,8 @@
   "cancel": "Cancel",
   "connecting": "Connecting",
   "viewers": "${count} viewers. Show viewer list",
+  "cursorEditing": "Editing",
+  "cursorTyping": "Typing",
   "editingNames": "${names} editing",
   "tickLow": "Low · 3/sec",
   "tickMedium": "Medium · 10/sec",

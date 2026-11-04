@@ -16,6 +16,21 @@ function dockPage(target) {
     return null;
 }
 
+function cursorRegion(element) {
+    if(element.closest('.b3-dialog'))return null;
+    const dock=dockPage(element);
+    if(dock)return {kind:'dock',id:dock.id};
+    if(element.closest('.dockPanel'))return null;
+    const id=element.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+    return DOCUMENT_ID.test(id || '') ? {kind:'document',id}:null;
+}
+
+function matchesRegion(element, region) {
+    const local=cursorRegion(element);
+    // Legacy editor anchors are only safe in the main document, never in previews or docks.
+    return !!local && (region ? local.kind===region.kind && local.id===region.id : local.kind==='document');
+}
+
 function currentPage(plugin, includeDialog = true) {
     if(includeDialog) {
         if(document.querySelector('.collab-people'))return {kind:'participants',title:plugin.i18n.peopleTitle};
@@ -79,9 +94,13 @@ function uiClasses(element) {
     return [...element.classList].filter(name=>!/(?:--(?:focus|active|selected|hover)$|^fn__none$|^ariaLabel$)/.test(name)).sort().join(' ');
 }
 
+const CURSOR_CONTROL = 'button,input,select,textarea,[role="button"],.block__icon,.toolbar__item,.b3-switch,.b3-select,.b3-slider,.b3-text-field,[data-statusbar-entry],[data-topbar-entry],.protyle-title__icon';
+const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize';
+const FILE_PARTS = {text:'.b3-list-item__text',icon:'.b3-list-item__icon',toggle:'.b3-list-item__arrow',switch:'.b3-list-item__switch',viewers:'.collab-presence-users',new:'[data-type="new"]','more-file':'[data-type="more-file"]','more-root':'[data-type="more-root"]'};
+
 function uiFingerprint(element) {
     const result={tag:element.tagName.toLowerCase(),classes:uiClasses(element)};
-    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-type','data-name','id','data-id']) {
+    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-node-id','data-type','data-name','id','data-id']) {
         const value=element.getAttribute(attribute);
         if(value && value.length<=512){result.attribute=attribute;result.value=value;break;}
     }
@@ -91,12 +110,32 @@ function uiFingerprint(element) {
     return result;
 }
 
-function uiAnchor(hit, plugin) {
-    let element=hit.closest('button,input,select,textarea,[role="button"],.block__icon,.b3-list-item') || hit;
+function uiAnchor(hit, plugin, point) {
+    if(hit.closest(CURSOR_EXCLUDED))return null;
+    let element=hit.closest(CURSOR_CONTROL);
     const make=(kind,fields={})=>({element,ui:{version:2,kind,path:[],...uiFingerprint(element),...fields}});
+    if(hit.closest('.sy__file')) {
+        const row=hit.closest('li[data-type="navigation-file"],li[data-type="navigation-root"]');
+        const id=row?.closest('ul[data-url]')?.getAttribute('data-url'),key=row?.getAttribute('data-node-id') || '';
+        const part=Object.keys(FILE_PARTS).find(part=>row?.contains(hit.closest(FILE_PARTS[part])));
+        if(!DOCUMENT_ID.test(id || '') || (key && !DOCUMENT_ID.test(key)) || (!key && row.getAttribute('data-type')==='navigation-file') || !part)return null;
+        element=hit.closest(FILE_PARTS[part]);
+        if(part==='text') {
+            const text=captureTextPoint(element,point);
+            return text ? {...make('file',{id,key,part,offset:text.offset}),text}:null;
+        }
+        return make('file',{id,key,part});
+    }
     const editor=hit.closest('.protyle');
-    if(editor) {
+    if(editor && !hit.closest('.dockPanel')) {
         const id=editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+        const title=hit.closest('.protyle-title__input');
+        if(title) {
+            element=title;
+            const text=captureTextPoint(title,point);
+            return text ? {...make('document',{page:{kind:'document',id,title:''},offset:text.offset}),text}:null;
+        }
+        if(!element || !editor.contains(element))return null;
         return make('document',{page:{kind:'document',id,title:''}});
     }
     const head=hit.closest('[data-type="tab-header"]');
@@ -114,12 +153,8 @@ function uiAnchor(hit, plugin) {
     if(entry){element=entry;return make('status',{id:entry.getAttribute('data-statusbar-entry') || entry.getAttribute('data-topbar-entry'),attribute:entry.hasAttribute('data-statusbar-entry') ? 'data-statusbar-entry':'data-topbar-entry'});}
     const setting=hit.closest('.config__side [data-name]');
     if(setting){element=setting;return make('settings-nav',{id:setting.getAttribute('data-name')});}
-    const identified=hit.closest('[id]');
-    if(identified && !identified.matches('body,.protyle,[data-type="wnd"],.b3-dialog__container,#status,.dock') && !identified.contains(document.querySelector('.config__panel'))) {
-        element=identified;
-        const page=element.closest('.protyle') ? currentPage(plugin):undefined;
-        return make('id',{id:identified.id,...(page ? {page}:{})});
-    }
+    if(!element)return null;
+    if(element.id && element.closest('.toolbar,#status'))return make('id',{id:element.id});
     const root=element.closest('.config__tab-container, .b3-dialog__container, .dockPanel, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
     const page=plugin ? currentPage(plugin):{kind:'workspace',title:''};
     if(root.classList.contains('config__tab-container'))return make('settings',{page:{...page,kind:'settings',section:root.getAttribute('data-name') || page.section}});
@@ -131,33 +166,39 @@ function uiAnchor(hit, plugin) {
     return make(root===document.body ? 'body':root.classList.contains('toolbar') ? 'toolbar':'layout',{page});
 }
 
-function resolveUIAnchor(anchor, plugin) {
+function resolveUIAnchor(anchor, plugin, region) {
     // Old child-index anchors cannot identify a control after either window changes layout.
     if(anchor.version!==2)return null;
     const visible=items=>[...items].filter(visibleElement);
+    const unique=items=>items.length===1 ? items[0]:null;
+    if(anchor.kind==='file') {
+        const rows=visible(document.querySelectorAll('.sy__file li[data-type="navigation-file"],.sy__file li[data-type="navigation-root"]'))
+            .filter(row=>row.closest('ul[data-url]')?.getAttribute('data-url')===anchor.id && (row.getAttribute('data-node-id') || '')===anchor.key);
+        const row=unique(rows);
+        return row ? unique(visible(row.querySelectorAll(FILE_PARTS[anchor.part]))):null;
+    }
     if(anchor.kind==='id') {
         const element=document.getElementById(anchor.id);
         if(anchor.page && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
         return visibleElement(element) ? element:null;
     }
-    if(anchor.kind==='dock')return visible(document.querySelectorAll('.dock__item[data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
-    if(anchor.kind==='status')return visible(document.querySelectorAll('['+anchor.attribute+']')).find(item=>item.getAttribute(anchor.attribute)===anchor.id) || null;
-    if(anchor.kind==='settings-nav')return visible(document.querySelectorAll('.config__side [data-name]')).find(item=>item.getAttribute('data-name')===anchor.id) || null;
-    if(anchor.kind==='tab-control')return visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).find(item=>item.getAttribute('data-type')===anchor.id) || null;
+    if(anchor.kind==='dock')return unique(visible(document.querySelectorAll('.dock__item[data-type]')).filter(item=>item.getAttribute('data-type')===anchor.id));
+    if(anchor.kind==='status')return unique(visible(document.querySelectorAll('['+anchor.attribute+']')).filter(item=>item.getAttribute(anchor.attribute)===anchor.id));
+    if(anchor.kind==='settings-nav')return unique(visible(document.querySelectorAll('.config__side [data-name]')).filter(item=>item.getAttribute('data-name')===anchor.id));
+    if(anchor.kind==='tab-control')return unique(visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).filter(item=>item.getAttribute('data-type')===anchor.id));
     if(anchor.kind==='tab') {
         const heads=visible(document.querySelectorAll('[data-type="tab-header"]')).filter(head=>{
             const page=tabPage(head);
             return pageKey(page)===pageKey(anchor.page) && (page.kind!=='workspace' || page.title===anchor.page.title);
         });
-        if(!heads.length)return null;
-        const head=heads.find(item=>item.closest('.layout__wnd--active')) || heads[0];
+        const head=unique(heads);
+        if(!head)return null;
         return anchor.part==='tab' ? head:head.querySelector({label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'}[anchor.part]);
     }
     let roots=[];
     if(anchor.kind==='document') {
-        roots=visible(document.querySelectorAll('.protyle')).filter(editor=>editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id')===anchor.page.id);
-        const editor=roots.find(root=>root.closest('.layout__wnd--active')) || roots[0];
-        roots=editor ? [editor]:[];
+        roots=visible(document.querySelectorAll('.protyle')).filter(editor=>editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id')===anchor.page.id && matchesRegion(editor,region));
+        if(roots.length!==1)return null;
     } else if(anchor.kind==='settings') {
         roots=visible(document.querySelectorAll('.config__tab-container')).filter(root=>(root.getAttribute('data-name') || document.querySelector('.config__side .b3-list-item--focus')?.getAttribute('data-name'))===anchor.page.section);
     } else if(anchor.kind==='dialog') {
@@ -242,20 +283,37 @@ function captureCursor(point, plugin) {
     if (!point || document.hidden) return null;
     const hit=document.elementFromPoint(point.x,point.y);
     if (!hit) return null;
+    const active=document.activeElement;
+    const editable=document.hasFocus?.() && active?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') && !active.closest('[data-private]');
+    const state=editable ? (plugin?.typingTarget===active ? 'typing':'editing'):undefined;
+    const activity=state ? {state}:{};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
-    if (anchored) return {...anchored,screen,page};
+    if (anchored) return {...anchored,screen,page,...activity};
     if(hit.closest('.protyle-wysiwyg'))return null;
-    const target=uiAnchor(hit,plugin), rect=target.element.getBoundingClientRect();
+    const target=uiAnchor(hit,plugin,point);
+    if(!target)return null;
+    const rect=target.element.getBoundingClientRect();
     if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
-    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,
-        x:rect.width ? Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)) : 0,
-        y:rect.height ? Math.max(0,Math.min(1,(point.y-rect.top)/rect.height)) : 0};
+    const region=cursorRegion(hit);
+    return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
+        x:target.text ? target.text.x : Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)),
+        y:target.text ? target.text.y : Math.max(0,Math.min(1,(point.y-rect.top)/rect.height))};
 }
 
 function resolveCursor(cursor, plugin) {
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
-    const element=resolveUIAnchor(cursor.ui,plugin),rect=element?.getBoundingClientRect();
+    const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
+    if(!element || element.closest(CURSOR_EXCLUDED))return null;
+    if(element.closest('.sy__file') && cursor.ui.kind!=='file')return null;
+    if(cursor.region && !matchesRegion(element,cursor.region))return null;
+    if(!['file','dock','tab','tab-control','settings-nav'].includes(cursor.ui.kind) && !element.matches(CURSOR_CONTROL) && !element.matches('.protyle-title__input'))return null;
+    let rect=element.getBoundingClientRect();
+    if(cursor.ui.offset!==undefined) {
+        const character=characterAt(element,cursor.ui.offset);
+        if(!character || /\s/.test(character.node.textContent[character.offset]))return null;
+        rect=characterRect(character.node,character.offset);
+    } else if(element.matches('.protyle-title__input'))return null;
     if(!rect?.width || !rect.height)return null;
     const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
     const hit=document.elementFromPoint(point.x,point.y);

@@ -369,6 +369,14 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.addEventListener('pointerdown',this.handleSceneActivity,{passive:true});
         document.addEventListener('click',this.handleSceneActivity,{passive:true});
         document.addEventListener('keydown',this.handleKey,{capture:true,passive:true});
+        this.handleTyping=(event)=>{
+            if(!event.target?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') || event.target.closest('[data-private]'))return;
+            this.typingTarget=event.target;this.typingAt=Date.now();
+            clearTimeout(this.typingTimer);
+            this.typingTimer=setTimeout(()=>{this.typingTarget=null;this.queueActivity();},1800);
+            this.queueActivity();
+        };
+        document.addEventListener('input',this.handleTyping,{capture:true,passive:true});
         this.bindFrames();
         this.startCursorTimer();
     }
@@ -384,8 +392,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 stopDocument();
                 try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});}catch{}
             };
-            // shortcut: browsers hide cross-origin frame events; show the frame centre until a cooperating embed can report positions.
-            const enter=()=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2});};
+            const enter=()=>this.handlePointerLeave();
             frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
             this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',load);frame.removeEventListener('pointerenter',enter);}});
         }
@@ -415,11 +422,13 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (this.stopped || !this.layoutReady || this.cursorSending) return;
         const cursor = captureCursor(this.pointer, this);
         const signature = JSON.stringify(cursor);
-        if (signature === this.lastCursorSignature) return;
+        const typingAt=cursor?.state==='typing' ? this.typingAt:undefined;
+        if (signature === this.lastCursorSignature && typingAt===this.lastCursorTypingAt) return;
         this.cursorSending = true;
         try {
             await this.kernel.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
             this.lastCursorSignature = signature;
+            this.lastCursorTypingAt=typingAt;
         } catch {
             this.remoteCursors = [];
             this.scheduleCursorRender(false);
@@ -485,15 +494,16 @@ module.exports = class CollaborationPlugin extends Plugin {
                     path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
                     arrow.append(path);
                     const label = document.createElement("span");
-                    label.textContent = client.name;
                     marker.append(arrow, label);
                     this.cursorLayer.append(marker);
                     this.cursorMarkers.set(client.name, marker);
                 }
                 const label=marker.querySelector('span');
-                label.textContent=client.name;
+                label.textContent=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
                 marker.style.setProperty("--collab-cursor-hue", String(client.hue));
-                marker.style.transitionDuration = animate ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                const target=JSON.stringify([client.cursor.surface,client.cursor.documentId,client.cursor.blockId,client.cursor.region,client.cursor.ui]);
+                marker.style.transitionDuration = animate && marker.cursorTarget===target ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                marker.cursorTarget=target;
                 marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
                 const rect = marker.getBoundingClientRect();
                 const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
@@ -526,7 +536,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 // 编辑框在全局光标层上，不能穿过弹窗覆盖背景正文。
                 if (dialog && !dialog.contains(block)) continue;
                 const editor = block.closest('.protyle');
-                if (block.closest('.fn__none') || editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') !== editing.documentId) continue;
+                if (block.closest('.fn__none') || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
                 const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();
                 const left = Math.max(rect.left, clip.left, 0), top = Math.max(rect.top, clip.top, 0);
                 const right = Math.min(rect.right, clip.right, window.innerWidth), bottom = Math.min(rect.bottom, clip.bottom, window.innerHeight);
@@ -776,6 +786,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         clearInterval(this.cursorTimer);
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
+        clearTimeout(this.typingTimer);
         for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
         this.closePeople();
         for(const notice of this.shortcutNotices.values())clearTimeout(notice.timer);
@@ -784,6 +795,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.cursorMarkers.clear();
         this.editingMarkers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
+        document.removeEventListener('input',this.handleTyping,true);
         document.removeEventListener('selectionchange',this.handleSelectionActivity);
         document.removeEventListener('focusin',this.handleSceneActivity);
         document.removeEventListener('pointerdown',this.handleSceneActivity);

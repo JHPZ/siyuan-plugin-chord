@@ -26,64 +26,58 @@ function characterRect(node, offset) {
     return rect.width > 0 && rect.height > 0 ? rect : null;
 }
 
+function editorDocumentId(editor) {
+    return editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') ||
+        editor?.closest('.backlinkList__item[data-node-id]')?.getAttribute('data-node-id');
+}
+
 function cursorTextRoot(block) {
     return block.querySelector('[contenteditable="true"]') || block;
 }
 
-function captureDocumentCursor(point) {
-    if (!point || document.hidden) return null;
-    const hit = document.elementFromPoint(point.x, point.y);
-    if (!hit) return null;
-    const row = hit.closest(TREE_ROW);
-    const block = row || hit.closest('.protyle-wysiwyg [data-node-id]');
-    if (!block || block.closest(".fn__none")) return null;
-    const blockId = block.getAttribute("data-node-id");
-    const editor = block.closest(".protyle");
-    const documentId = row ? null : editor?.querySelector(".protyle-background[data-node-id]")?.getAttribute("data-node-id");
-    if (!DOCUMENT_ID.test(blockId) || (!row && !DOCUMENT_ID.test(documentId))) return null;
-    const rect = block.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    const clamp = (value) => Math.max(0, Math.min(1, value));
-    const cursor = { surface: row ? "tree" : "document", documentId, blockId, x: clamp((point.x - rect.left) / rect.width), y: clamp((point.y - rect.top) / rect.height) };
-    if (row) return cursor;
+function captureTextPoint(root, point) {
     const caret = document.caretPositionFromPoint?.(point.x, point.y);
     const range = caret ? null : document.caretRangeFromPoint?.(point.x, point.y);
     const node = caret?.offsetNode || range?.startContainer;
     const offset = caret?.offset ?? range?.startOffset;
-    const root = cursorTextRoot(block);
-    if (node?.nodeType !== 3 || !root.contains(node)) return cursor;
+    if (node?.nodeType !== 3 || !root.contains(node)) return null;
     // 锚定鼠标下的字符，避免不同窗口宽度导致整段比例定位漂移。
     for (const index of [offset - 1, offset]) {
-        if (index < 0 || index >= node.textContent.length) continue;
+        if (index < 0 || index >= node.textContent.length || /\s/.test(node.textContent[index])) continue;
         const character = characterRect(node, index);
         if (!character || point.x < character.left || point.x > character.right || point.y < character.top || point.y > character.bottom) continue;
         const prefix = document.createRange();
         prefix.selectNodeContents(root);
         prefix.setEnd(node, index);
-        cursor.text = { offset: prefix.toString().length, x: clamp((point.x - character.left) / character.width), y: clamp((point.y - character.top) / character.height) };
-        break;
+        return { offset: prefix.toString().length, x: (point.x - character.left) / character.width, y: (point.y - character.top) / character.height };
     }
-    return cursor;
+    return null;
+}
+
+function captureDocumentCursor(point) {
+    if (!point || document.hidden) return null;
+    const block = document.elementFromPoint(point.x, point.y)?.closest('.protyle-wysiwyg [data-node-id]');
+    if (!block || block.closest('.fn__none')) return null;
+    const blockId = block.getAttribute('data-node-id');
+    const documentId = editorDocumentId(block.closest('.protyle'));
+    if (!DOCUMENT_ID.test(blockId) || !DOCUMENT_ID.test(documentId)) return null;
+    const text = captureTextPoint(cursorTextRoot(block), point), region=cursorRegion(block);
+    return text && region ? { surface:'document', documentId, blockId, x:text.x, y:text.y, text, region } : null;
 }
 
 function resolveDocumentCursor(cursor) {
-    let blocks;
-    if (cursor.surface === "tree") {
-        blocks = document.querySelectorAll(`${TREE_ROW}[data-node-id="${cursor.blockId}"]`);
-    } else {
-        blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
-            .filter((editor) => !editor.closest(".fn__none") && editor.querySelector(".protyle-background[data-node-id]")?.getAttribute("data-node-id") === cursor.documentId)
-            .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)]);
-    }
+    // Old row/block fractions can point at unrelated content after reflow.
+    if (cursor.surface !== 'document' || !cursor.text) return null;
+    const blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
+            .filter((editor) => !editor.closest(".fn__none") && editorDocumentId(editor) === cursor.documentId)
+            .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)])
+            .filter(block=>!block.closest('.fn__none') && matchesRegion(block,cursor.region));
+    if(blocks.length!==1)return null;
     for (const block of blocks) {
-        if (block.closest(".fn__none")) continue;
-        let rect = block.getBoundingClientRect();
-        let relative = cursor;
-        if (cursor.text) {
-            const character = characterAt(cursorTextRoot(block), cursor.text.offset);
-            rect = character && characterRect(character.node, character.offset);
-            relative = cursor.text;
-        }
+        if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
+        const character = characterAt(cursorTextRoot(block), cursor.text.offset);
+        if (!character || /\s/.test(character.node.textContent[character.offset])) continue;
+        const rect = characterRect(character.node, character.offset), relative = cursor.text;
         if (!rect?.width || !rect.height) continue;
         const x = rect.left + rect.width * relative.x;
         const y = rect.top + rect.height * relative.y;
@@ -94,6 +88,8 @@ function resolveDocumentCursor(cursor) {
 }
 
 function validCursor(cursor) {
+    if(cursor?.region!==undefined && !validRegion(cursor.region))return false;
+    if(cursor?.state!==undefined && !['editing','typing'].includes(cursor.state))return false;
     if (cursor?.surface === 'ui') return cursor.documentId === null && cursor.blockId === null && validPage(cursor.page) && validUIAnchor(cursor.ui) &&
         [cursor.x,cursor.y,cursor.screen?.x,cursor.screen?.y].every((value)=>Number.isFinite(value) && value>=0 && value<=1);
     if (cursor?.page !== undefined && (!validPage(cursor.page) || ![cursor.screen?.x,cursor.screen?.y].every((value)=>Number.isFinite(value) && value>=0 && value<=1))) return false;
@@ -105,7 +101,7 @@ function validCursor(cursor) {
 }
 
 function validSelection(selection) {
-    return selection && typeof selection.documentId === "string" && DOCUMENT_ID.test(selection.documentId) &&
+    return selection && (selection.region===undefined || validRegion(selection.region)) && typeof selection.documentId === "string" && DOCUMENT_ID.test(selection.documentId) &&
         [selection.anchor, selection.focus].every((point) => point && typeof point.blockId === "string" && DOCUMENT_ID.test(point.blockId) &&
             Number.isSafeInteger(point.offset) && point.offset >= 0 && point.offset <= 10000000);
 }
@@ -125,7 +121,8 @@ function captureSelection() {
     const [anchor, focus] = endpoints;
     const editor = anchor.block.closest('.protyle');
     if (focus.block.closest('.protyle') !== editor) return null;
-    const value = { documentId: editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id'),
+    const region=cursorRegion(editor);if(!region)return null;
+    const value = { region, documentId: editorDocumentId(editor),
         anchor: { blockId: anchor.blockId, offset: anchor.offset }, focus: { blockId: focus.blockId, offset: focus.offset } };
     return validSelection(value) ? value : null;
 }
@@ -143,7 +140,7 @@ function selectionPosition(block, offset) {
 function resolveSelection(selection) {
     const ranges = [];
     for (const editor of document.querySelectorAll('.protyle:not(.fn__none)')) {
-        if (editor.closest('.fn__none') || editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') !== selection.documentId) continue;
+        if (editor.closest('.fn__none') || !matchesRegion(editor,selection.region) || editorDocumentId(editor) !== selection.documentId) continue;
         const points = [selection.anchor, selection.focus].map((point) => {
             const block = editor.querySelector(`.protyle-wysiwyg [data-node-id="${point.blockId}"]`);
             return block && !block.closest('.fn__none') ? selectionPosition(block, point.offset) : null;
@@ -161,7 +158,7 @@ function resolveSelection(selection) {
 }
 
 function validEditing(editing) {
-    return editing && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
+    return editing && (editing.region===undefined || validRegion(editing.region)) && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
 }
 
 function captureEditing() {
@@ -173,6 +170,7 @@ function captureEditing() {
     const block = element?.closest?.('.protyle-wysiwyg [data-node-id]');
     if (!block || block.closest('.fn__none') || !active.contains(node)) return null;
     const editing = { blockId: block.getAttribute('data-node-id'),
-        documentId: block.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') };
-    return validEditing(editing) ? editing : null;
+        documentId: editorDocumentId(block.closest('.protyle')) };
+    const region=cursorRegion(block);
+    return validEditing(editing) && region ? {...editing,region}:null;
 }

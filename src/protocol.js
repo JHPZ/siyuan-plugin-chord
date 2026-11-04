@@ -2,6 +2,15 @@ const COLLAB_ID = /^\d{14}-[a-z0-9]{7}$/;
 const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backlinks', 'graphView', 'globalGraph', 'globalSearch', 'dataHistory', 'riffCard', 'mainMenu', 'recentDocs'];
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
+function validRegion(region) {
+    return region && typeof region.id==='string' && (region.kind==='document' ? COLLAB_ID.test(region.id) : region.kind==='dock' && /^[\w-]{1,160}$/.test(region.id));
+}
+
+function cleanRegion(region) {
+    if(!validRegion(region))throw Error('Invalid region');
+    return {kind:region.kind,id:region.id};
+}
+
 function validPage(page, depth = 0) {
     if (!page || depth > 2 || typeof page.title !== 'string' || page.title.length > 160) return false;
     if (page.kind === 'workspace') return true;
@@ -38,9 +47,12 @@ function cleanPage(page) {
 function validUIAnchor(value) {
     if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
     if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
-    if(!['document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
+    if(!['file','document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
     for(const field of ['id','key','value','label','classes'])if(value[field]!==undefined && (typeof value[field]!=='string' || value[field].length>512))return false;
-    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-node-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.offset!==undefined && (!['file','document'].includes(value.kind) || !Number.isSafeInteger(value.offset) || value.offset<0 || value.offset>10000000))return false;
+    if(value.kind==='file')return typeof value.id==='string' && COLLAB_ID.test(value.id) && typeof value.key==='string' && (value.key==='' || COLLAB_ID.test(value.key)) &&
+        ['text','icon','toggle','switch','viewers','new','more-file','more-root'].includes(value.part) && (value.part==='text' ? value.offset!==undefined:value.offset===undefined);
     if(value.page!==undefined && !validPage(value.page))return false;
     if(value.kind==='document')return validPage(value.page) && value.page.kind==='document';
     if(value.kind==='status' && !['data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
@@ -52,7 +64,7 @@ function validUIAnchor(value) {
 function cleanUIAnchor(value) {
     if(!validUIAnchor(value))throw Error('Invalid UI anchor');
     const result={kind:value.kind,path:[...value.path],tag:value.tag};
-    for(const key of ['version','id','key','part','attribute','value','label','classes'])if(value[key]!==undefined)result[key]=value[key];
+    for(const key of ['version','id','key','part','attribute','value','label','classes','offset'])if(value[key]!==undefined)result[key]=value[key];
     if(value.page!==undefined)result.page=cleanPage(value.page);
     return result;
 }

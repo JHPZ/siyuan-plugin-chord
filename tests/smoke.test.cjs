@@ -77,9 +77,10 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         const node = {
             tagName: tag.toUpperCase(), children: [], textContent: "", parentElement: null,
             style: { setProperty: (name, value) => properties.set(name, value), removeProperty: (name) => properties.delete(name) },
-            classList: { add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name) },
+            classList: { [Symbol.iterator]: () => classes.values(), add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name) },
             setAttribute: (name, value) => attributes.set(name, value),
             getAttribute: (name) => attributes.get(name) ?? null,
+            hasAttribute: (name) => attributes.has(name),
             removeAttribute: (name) => attributes.delete(name),
             append(...nodes) { nodes.forEach((child) => { child.parentElement = node; node.children.push(child); }); },
             before(child) { child.parentElement = node.parentElement; node.parentElement.children.splice(node.parentElement.children.indexOf(node), 0, child); },
@@ -121,6 +122,12 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         const icon = element("span"); icon.className = "b3-list-item__icon";
         const text = element("span"); text.className = "b3-list-item__text"; row.append(toggle, icon, text);
         rows.push(row); return row;
+    }
+    function cursorControl(row) {
+        row.setAttribute('data-statusbar-entry','test-control');
+        row.closest=selector=>selector.includes('[data-statusbar-entry]') ? row:null;
+        row.matches=selector=>selector.includes('[data-statusbar-entry]');
+        return row;
     }
     async function renderFrames() {
         for (let round = 0; frames.size && round < 5; round++) {
@@ -197,7 +204,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
     const layout = plugin.onLayoutReady();
     if (!options.deferLayout) await layout;
     await flush();
-    return { plugin, commands, menus, messages, timers, handlers, events, button, attrs, document, rows, addRow, renderFrames, storage, frames, opened, layout, listeners, windowListeners, completeOpen: () => completeOpen() };
+    return { plugin, commands, menus, messages, timers, handlers, events, button, attrs, document, rows, addRow, cursorControl, renderFrames, storage, frames, opened, layout, listeners, windowListeners, completeOpen: () => completeOpen() };
 }
 
 test("refresh reuses identity and late old-instance requests cannot overwrite it", async () => {
@@ -516,6 +523,43 @@ test('UI position and page protocol strips private fields and rejects executable
     await kernel.plugin.lifecycle.onunload();
 });
 
+test('file targets validate notebook identity, part and character offsets and strip private fields',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate');
+    await kernel.methods.get('presenceHeartbeat')('file-user',{generation:1});
+    const ui={version:2,kind:'file',path:[],tag:'span',id:'20261030165150-book001',key:'',part:'text',offset:3,secret:'private'};
+    const cursor={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.5,y:.5},x:.5,y:.5,ui};
+    await update('file-user',1,1,cursor);
+    const clean=(await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.ui;
+    assert.equal(clean.id,ui.id);assert.equal(clean.key,'');assert.equal(clean.offset,3);assert.equal(clean.secret,undefined);
+    for(const bad of [{id:'invalid'},{key:'invalid'},{part:'row'},{offset:-1},{offset:1.5},{offset:10000001},{offset:'3'},{offset:undefined},{part:'icon'}]) {
+        await assert.rejects(update('file-user',1,2,{...cursor,ui:{...ui,...bad}}),/Invalid UI cursor/);
+    }
+    await update('file-user',1,2,{...cursor,ui:{...ui,key:'20261030165150-file001',part:'icon',offset:undefined}});
+    assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.ui.part,'icon');
+    await kernel.plugin.lifecycle.onunload();
+});
+
+test('regions are validated for cursor, selection and editing; typing expires without a client reset',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    await kernel.methods.get('presenceHeartbeat')('region-user',{generation:1});
+    const cursor={surface:'document',documentId:'20261030165150-doc0001',blockId:'20261030165150-block01',x:.5,y:.5,text:{offset:1,x:.5,y:.5},region:{kind:'dock',id:'backlink',private:'secret'},state:'typing'};
+    await update('region-user',1,1,cursor);
+    assert.equal((await snapshot()).cursors[0].cursor.state,'typing');
+    assert.deepEqual(Object.keys((await snapshot()).cursors[0].cursor.region).sort(),['id','kind']);
+    for(const region of [null,{kind:'body',id:'x'},{kind:'document',id:'bad'},{kind:'dock',id:'x'.repeat(161)}]) {
+        await assert.rejects(update('region-user',1,2,{...cursor,region}),/Invalid region/);
+        await assert.rejects(kernel.methods.get('editingUpdate')('region-user',1,1,{...cursor,region}),/Invalid region/);
+        await assert.rejects(kernel.methods.get('selectionUpdate')('region-user',1,1,{documentId:cursor.documentId,anchor:{blockId:cursor.blockId,offset:0},focus:{blockId:cursor.blockId,offset:1},region}),/Invalid region/);
+    }
+    await assert.rejects(update('region-user',1,2,{...cursor,state:'anything'}),/Invalid cursor state/);
+    const flushCursor=[...kernel.timers.values()].find(timer=>timer.delay===100).callback;
+    kernel.advance(1900);await update('region-user',1,2,cursor);kernel.advance(1900);await flushCursor();
+    assert.equal((await snapshot()).cursors[0].cursor.state,'typing','fresh input must renew typing');
+    kernel.advance(101);await flushCursor();
+    assert.equal((await snapshot()).cursors[0].cursor.state,'editing','lost client reset left typing stuck');
+    await kernel.plugin.lifecycle.onunload();
+});
+
 test('late heartbeat results cannot replace a newer participant page',async()=>{
     const frontend=await createFrontend(await createKernel()),plugin=frontend.plugin;
     const revision=plugin.presenceRevision;
@@ -546,7 +590,7 @@ test('pointer bursts coalesce and idle timers send zero position updates',async(
     let now=10000;
     const kernel=await createKernel(),frontend=await createFrontend(kernel,'zh-CN',{now:()=>now});
     const row=frontend.addRow('20261030165150-skkm1a3');
-    row.closest=selector=>selector.startsWith('.sy__file') ? row : null;
+    frontend.cursorControl(row);
     row.getBoundingClientRect=()=>({left:0,top:0,width:400,height:40});
     frontend.document.elementFromPoint=()=>row;
     for(let i=0;i<100;i++)frontend.listeners.get('pointermove')({pointerType:'mouse',clientX:i,clientY:20});
@@ -608,7 +652,7 @@ test("pointer updates are throttled and leave clears the remote marker", async (
     let now = Date.now();
     const frontend = await createFrontend(kernel, "zh-CN", { now: () => now });
     const row = frontend.addRow("20261030165150-skkm1a3");
-    row.closest = (selector) => selector.startsWith(".sy__file") ? row : null;
+    frontend.cursorControl(row);
     row.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 40 });
     frontend.document.elementFromPoint = () => row;
     frontend.listeners.get("pointermove")({ clientX: 100, clientY: 20, pointerType: "mouse" });
@@ -632,12 +676,33 @@ test("pointer updates are throttled and leave clears the remote marker", async (
     assert.throws(() => frontend.plugin.updateCursors({ tick: 10, cursors: [{ name: "bad", hue: 0, cursor: { x: NaN } }] }), /Invalid cursor response/);
 });
 
+test('moving into blank space clears a pointer after an in-flight send at every tick rate',async()=>{
+    for(const tick of [3,10,30]) {
+        let now=10000,release;
+        const kernel=await createKernel(),frontend=await createFrontend(kernel,'zh-CN',{now:()=>now}),plugin=frontend.plugin;
+        plugin.tick=tick;
+        const row=frontend.cursorControl(frontend.addRow('20261030165150-skkm1a3'));
+        row.getBoundingClientRect=()=>({left:0,top:0,width:400,height:40});frontend.document.elementFromPoint=()=>row;
+        const update=kernel.methods.get('cursorUpdate');let first=true;
+        kernel.methods.set('cursorUpdate',async(...args)=>{if(first){first=false;await new Promise(resolve=>release=resolve);}return update(...args);});
+        const run=()=>{const timer=plugin.activityTimer,callback=frontend.timers.get(timer).callback;frontend.timers.delete(timer);return callback();};
+        frontend.listeners.get('pointermove')({clientX:100,clientY:20,pointerType:'mouse'});
+        const sending=run();frontend.document.elementFromPoint=()=>null;
+        frontend.listeners.get('pointermove')({clientX:500,clientY:200,pointerType:'mouse'});
+        release();await sending;
+        assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors.length,1);
+        now+=1000/tick;await run();
+        assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors.length,0,'blank movement lost during send');
+        await plugin.onunload();
+    }
+});
+
 test("reconnection and long suspension resend unchanged anchors once", async () => {
     const kernel = await createKernel();
     let now = Date.now();
     const frontend = await createFrontend(kernel, "zh-CN", { now: () => now });
     const row = frontend.addRow("20261030165150-skkm1a3");
-    row.closest = (selector) => selector.startsWith(".sy__file") ? row : null;
+    frontend.cursorControl(row);
     row.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 40 });
     frontend.document.elementFromPoint = () => row;
     frontend.plugin.pointer = { x: 100, y: 20 };
@@ -680,8 +745,10 @@ test("remote glowing pointers follow local scrolling, stay text-only and exclude
     const row = first.addRow("20261030165150-skkm1a3");
     let top = 80;
     row.getBoundingClientRect = () => ({ left: 10, top, width: 200, height: 40 });
+    first.cursorControl(row);
     first.document.elementFromPoint = () => row;
-    const cursor = { surface: "tree", documentId: null, blockId: "20261030165150-skkm1a3", x: 0.5, y: 0.5 };
+    const cursor = { surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.5,y:.5},x:.5,y:.5,
+        ui:{version:2,kind:'status',id:'test-control',attribute:'data-statusbar-entry',path:[],tag:'li'} };
     const update = kernel.methods.get("cursorUpdate");
     await update(first.plugin.sessionId, first.plugin.generation, 1, cursor);
     await update(second.plugin.sessionId, second.plugin.generation, 1, cursor);
@@ -913,7 +980,7 @@ test('presence never registers editing guards or lock RPCs, even when disconnect
     assert.equal(kernel.methods.has('editSnapshot'), false);
     assert.equal(frontend.plugin.editing, undefined);
     assert.equal(frontend.plugin.history, undefined);
-    const events = ['beforeinput', 'input', 'paste', 'cut', 'drop', 'dragstart', 'compositionstart', 'contextmenu'];
+    const events = ['beforeinput', 'paste', 'cut', 'drop', 'dragstart', 'compositionstart', 'contextmenu'];
     const check = () => {
         for (const event of events) {
             assert.equal(frontend.listeners.has(event), false, event);

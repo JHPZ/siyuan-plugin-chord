@@ -3,6 +3,15 @@ const COLLAB_ID = /^\d{14}-[a-z0-9]{7}$/;
 const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backlinks', 'graphView', 'globalGraph', 'globalSearch', 'dataHistory', 'riffCard', 'mainMenu', 'recentDocs'];
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
+function validRegion(region) {
+    return region && typeof region.id==='string' && (region.kind==='document' ? COLLAB_ID.test(region.id) : region.kind==='dock' && /^[\w-]{1,160}$/.test(region.id));
+}
+
+function cleanRegion(region) {
+    if(!validRegion(region))throw Error('Invalid region');
+    return {kind:region.kind,id:region.id};
+}
+
 function validPage(page, depth = 0) {
     if (!page || depth > 2 || typeof page.title !== 'string' || page.title.length > 160) return false;
     if (page.kind === 'workspace') return true;
@@ -39,9 +48,12 @@ function cleanPage(page) {
 function validUIAnchor(value) {
     if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
     if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
-    if(!['document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
+    if(!['file','document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
     for(const field of ['id','key','value','label','classes'])if(value[field]!==undefined && (typeof value[field]!=='string' || value[field].length>512))return false;
-    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-node-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
+    if(value.offset!==undefined && (!['file','document'].includes(value.kind) || !Number.isSafeInteger(value.offset) || value.offset<0 || value.offset>10000000))return false;
+    if(value.kind==='file')return typeof value.id==='string' && COLLAB_ID.test(value.id) && typeof value.key==='string' && (value.key==='' || COLLAB_ID.test(value.key)) &&
+        ['text','icon','toggle','switch','viewers','new','more-file','more-root'].includes(value.part) && (value.part==='text' ? value.offset!==undefined:value.offset===undefined);
     if(value.page!==undefined && !validPage(value.page))return false;
     if(value.kind==='document')return validPage(value.page) && value.page.kind==='document';
     if(value.kind==='status' && !['data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
@@ -53,7 +65,7 @@ function validUIAnchor(value) {
 function cleanUIAnchor(value) {
     if(!validUIAnchor(value))throw Error('Invalid UI anchor');
     const result={kind:value.kind,path:[...value.path],tag:value.tag};
-    for(const key of ['version','id','key','part','attribute','value','label','classes'])if(value[key]!==undefined)result[key]=value[key];
+    for(const key of ['version','id','key','part','attribute','value','label','classes','offset'])if(value[key]!==undefined)result[key]=value[key];
     if(value.page!==undefined)result.page=cleanPage(value.page);
     return result;
 }
@@ -74,9 +86,11 @@ let settingsWrite = Promise.resolve();
 const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 
 function normalizeCursor(value) {
+    if(value?.state!==undefined && !['editing','typing'].includes(value.state))throw Error('Invalid cursor state');
+    const metadata={...(value?.region!==undefined ? {region:cleanRegion(value.region)}:{}),...(value?.state!==undefined ? {state:value.state}:{})};
     if (value?.surface === 'ui') {
         if (value.documentId !== null || value.blockId !== null || !validUIAnchor(value.ui) || ![value.x,value.y,value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid UI cursor');
-        return {surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:cleanUIAnchor(value.ui),screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
+        return {...metadata,surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:cleanUIAnchor(value.ui),screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
     }
     if (value === null) return null;
     if (!value || !["document", "tree"].includes(value.surface) || typeof value.blockId !== "string" || !BLOCK_ID.test(value.blockId) ||
@@ -84,7 +98,7 @@ function normalizeCursor(value) {
         ![value.x, value.y].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 1)) {
         throw new Error("Invalid cursor anchor");
     }
-    const cursor = { surface: value.surface, documentId: value.documentId, blockId: value.blockId, x: value.x, y: value.y };
+    const cursor = { ...metadata, surface: value.surface, documentId: value.documentId, blockId: value.blockId, x: value.x, y: value.y };
     if (value.text !== undefined) {
         if (value.surface !== "document" || !value.text || !Number.isSafeInteger(value.text.offset) || value.text.offset < 0 || value.text.offset > 10000000 ||
             ![value.text.x, value.text.y].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 1)) throw new Error("Invalid cursor text anchor");
@@ -103,13 +117,13 @@ function normalizeSelection(value) {
         !point || typeof point.blockId !== "string" || !BLOCK_ID.test(point.blockId) || !Number.isSafeInteger(point.offset) || point.offset < 0 || point.offset > 10000000)) {
         throw new Error("Invalid text selection");
     }
-    return { documentId: value.documentId, anchor: { blockId: value.anchor.blockId, offset: value.anchor.offset }, focus: { blockId: value.focus.blockId, offset: value.focus.offset } };
+    return { ...(value.region!==undefined ? {region:cleanRegion(value.region)}:{}), documentId: value.documentId, anchor: { blockId: value.anchor.blockId, offset: value.anchor.offset }, focus: { blockId: value.focus.blockId, offset: value.focus.offset } };
 }
 
 function normalizeEditing(value) {
     if (value === null) return null;
     if (!value || ![value.documentId, value.blockId].every((id) => typeof id === 'string' && BLOCK_ID.test(id))) throw new Error("Invalid editing activity");
-    return { documentId: value.documentId, blockId: value.blockId };
+    return { ...(value.region!==undefined ? {region:cleanRegion(value.region)}:{}), documentId: value.documentId, blockId: value.blockId };
 }
 
 function cursorSnapshot() {
@@ -127,6 +141,7 @@ async function flushCursors() {
             client.editing = null;
             cursorDirty = true;
         }
+        if(client.cursor?.state==='typing' && Date.now()-client.cursorSeen>=2000) {client.cursor.state='editing';cursorDirty=true;}
         if (client.cursor && Date.now() - client.lastSeen >= SESSION_TIMEOUT) {
             client.cursor = null;
             cursorDirty = true;
@@ -250,6 +265,7 @@ plugin.lifecycle.onload = async () => {
         client.cursorSequence = sequence;
         if (JSON.stringify(client.cursor ?? null) !== JSON.stringify(cursor)) cursorDirty = true;
         client.cursor = cursor;
+        client.cursorSeen = Date.now();
         return true;
     }, "Update a frontend's content-relative pointer position.");
     await rpc.bind("selectionUpdate", async (id, generation, sequence, value) => {

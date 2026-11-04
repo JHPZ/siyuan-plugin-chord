@@ -17,6 +17,8 @@
   "cancel": "取消",
   "connecting": "连接中",
   "viewers": "${count} 人正在查看，点击查看名单",
+  "cursorEditing": "编辑中",
+  "cursorTyping": "打字中",
   "editingNames": "${names} 正在编辑",
   "tickLow": "低 · 3 次/秒",
   "tickMedium": "中 · 10 次/秒",
