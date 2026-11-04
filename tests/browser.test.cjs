@@ -1189,6 +1189,49 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'cropped-away image pixel painted');
         }finally{image.remove();}
     });
+    await test('原生搜索字段按字素定位，单行居中、多行换行及隐私边界不误画',async()=>{
+        const fixture=document.createElement('div');fixture.id='search-field-fixture';fixture.style.cssText='position:fixed;left:30px;top:30px;width:650px;height:400px;background:white;z-index:100';
+        fixture.innerHTML='<textarea id="searchInput" class="search__input"></textarea><input id="searchAssetInput"><input type="password" class="search__input"><textarea data-private class="search__input"></textarea><input id="unregistered-secret">';document.body.append(fixture);
+        const reference=document.createElement('div');reference.style.cssText='position:fixed;left:-10000px;top:0';document.body.append(reference);
+        const value='alpha  中文 😀 é 👨‍👩‍👧‍👦 '+ 'words '.repeat(12);
+        try{
+            for(const field of [fixture.children[0],fixture.children[1]]){
+                const single=field.tagName==='INPUT',css='font:18px/30px monospace;padding:5px 8px;border:1px solid black;box-sizing:border-box;letter-spacing:0;white-space:'+(single?'pre':'pre-wrap')+';overflow-wrap:'+(single?'normal':'break-word')+';';
+                field.style.cssText=css+'display:block;width:400px;height:'+(single?64:170)+'px';reference.style.cssText=css+'position:fixed;left:-10000px;top:0;width:400px;height:'+(single?64:170)+'px';
+                if(single)reference.style.lineHeight='52px';field.value=value;reference.textContent=value;assert(typeof componentTextField==='function'&&componentTextField(field),'field eligibility '+JSON.stringify({type:field.type,security:getComputedStyle(field).getPropertyValue('-webkit-text-security'),html:field.outerHTML}));
+                field.focus();field.setSelectionRange(2,5);field.scrollLeft=0;field.scrollTop=0;
+                const expected=offset=>{const segment=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value).containing(offset),r=document.createRange();r.setStart(reference.firstChild,segment.index);r.setEnd(reference.firstChild,segment.index+segment.segment.length);const g=r.getBoundingClientRect(),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();return {x:b.left+g.left-a.left+g.width*.5-field.scrollLeft,y:b.top+g.top-a.top+g.height*.5-field.scrollTop};};
+                const samples=[0,7,10,13,16,19].map(offset=>({offset,anchor:componentRoundTrip(expected(offset))}));
+                for(const width of [320,530]){field.style.width=width+'px';reference.style.width=width+'px';for(const {offset,anchor}of samples){const p=expected(offset),actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-p.x,actual.y-p.y)<.02,'search glyph box ratio '+JSON.stringify({single,offset,p,actual}));assert(anchor.ui.textHash,'search text hash missing');assert(!JSON.stringify(anchor).includes('alpha'),'raw search query on wire');}}
+                if(single){const offset=7,p=expected(offset),anchor=componentRoundTrip(p),b=field.getBoundingClientRect();field.style.width=(p.x-b.left+8)+'px';reference.style.width=field.style.width;assert(resolveCursor(anchor)===null,'glyph hidden by native input padding painted');field.style.width='200px';reference.style.width='200px';field.scrollLeft=100;assert(field.scrollLeft>0,'native input horizontal scroll unchanged');for(const {offset,anchor}of samples){const p=expected(offset),b=field.getBoundingClientRect(),actual=resolveCursor(anchor),visible=p.x>b.left+9&&p.x<b.right-9;assert(visible?actual&&Math.hypot(actual.x-p.x,actual.y-p.y)<.02:actual===null,'single-line scroll clipping '+JSON.stringify({offset,p,actual}));}}
+                field.value='different query';assert(samples.every(s=>resolveCursor(s.anchor)===null),'different search query inherited pointer');field.value=value;
+                assert(document.activeElement===field,'measurement stole focus');field.setSelectionRange(2,5);componentRoundTrip(expected(10));assert(field.selectionStart===2&&field.selectionEnd===5,'measurement changed native selection');
+                const old=samples[0].anchor;field.setAttribute('data-private','');assert(resolveCursor(old)===null,'newly private field painted');field.removeAttribute('data-private');
+                field.style.display='none';assert(resolveCursor(old)===null,'hidden field painted');
+            }
+            for(const field of [...fixture.children].slice(2)){field.value='TOP_SECRET';assert(!componentNearText(field,{x:0,y:0}),'private or unknown field value measured');assert(componentTextHash(field)===componentHash(field.textContent),'private input value entered content hash');}
+            assert(!document.querySelector('.collab-text-measure'),'field measurement leaked');
+        }finally{fixture.remove();reference.remove();}
+    });
+    await test('单行输入的原生内边距遮住字形时不把光标画到空白上',async()=>{
+        const field=document.createElement('input'),reference=document.createElement('div');field.type='search';field.id='padding-search-fixture';field.value='x'.repeat(60);
+        const css='font:20px/32px monospace;padding:5px 32px 5px 44px;border:0;box-sizing:border-box;width:500px;height:42px;white-space:pre;';field.style.cssText=css+'position:fixed;left:30px;top:30px;z-index:100;background:white';reference.style.cssText=css+'position:fixed;left:-10000px;top:0';reference.textContent=field.value;document.body.append(field,reference);
+        try{
+            const r=rectAt(reference,15),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect(),point={x:b.left+r.left-a.left+r.width*.5,y:b.top+r.top-a.top+r.height*.5},anchor=componentRoundTrip(point);
+            field.style.width=(point.x-b.left+16)+'px';field.scrollLeft=0;assert(resolveCursor(anchor)===null,'clipped glyph painted in input padding');
+            field.style.width='500px';assert(resolveCursor(anchor),'unclipped glyph did not recover');
+        }finally{field.remove();reference.remove();}
+    });
+    await test('搜索占位文字按实际字形定位，敏感文本样式不读取值',async()=>{
+        const field=document.createElement('input'),reference=document.createElement('div');field.type='search';field.id='placeholder-search-fixture';field.placeholder='查找 中文 😀';
+        const css='font:20px/28px monospace;padding:6px;border:0;box-sizing:border-box;width:300px;height:40px;white-space:pre;';field.style.cssText=css+'position:fixed;left:30px;top:30px;z-index:100;background:white';reference.style.cssText=css+'position:fixed;left:-10000px;top:0';reference.textContent=field.placeholder;document.body.append(field,reference);
+        try{
+            const point=offset=>{const r=rectAt(reference,offset),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();return {x:b.left+r.left-a.left+r.width*.5,y:b.top+r.top-a.top+r.height*.5};};
+            const samples=[0,3,6].map(offset=>({offset,anchor:componentRoundTrip(point(offset))}));field.style.width='420px';for(const {offset,anchor}of samples){const p=point(offset),a=resolveCursor(anchor);assert(a&&Math.hypot(a.x-p.x,a.y-p.y)<.02,'placeholder followed box instead of glyph');assert(anchor.ui.textHash,'placeholder content identity missing');}
+            field.placeholder='另一个占位文字';assert(samples.every(s=>resolveCursor(s.anchor)===null),'different placeholder inherited text');field.placeholder=reference.textContent;
+            field.value='visible';field.style.webkitTextSecurity='disc';Object.defineProperty(field,'value',{configurable:true,get(){throw Error('masked field value read');}});assert(!componentTextField(field),'masked field eligible');assert(!componentNearText(field,{x:0,y:0}),'masked field measured');assert(componentTextHash(field)===componentHash(''),'masked field entered content hash');
+        }finally{field.remove();reference.remove();}
+    });
     await test('源码字符随输入框改宽换行，空白和内容变化分别校验',async()=>{
         const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:380px;background:white;z-index:100';
         fixture.innerHTML='<div class="protyle-background" data-node-id="20261030165150-field01"></div><div class="protyle-wysiwyg"><div data-node-id="20261030165150-field02" data-type="NodeMathBlock">x</div></div><div class="protyle-util" style="position:absolute;left:0;top:0"><textarea></textarea></div>';

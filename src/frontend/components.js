@@ -22,24 +22,44 @@ function componentSourceField(element) {
     return element.matches('textarea') && popup && componentRenderTargets.get(popup)?.field===element && !!componentRenderTarget(popup);
 }
 
+function componentTextField(element) {
+    if(element.closest('[data-private]') || element.matches('input[type="password"]'))return false;
+    if(componentSourceField(element))return true;
+    return element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label') && ['text','search','textarea'].includes(element.type) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+}
+
+function componentFieldText(field) {
+    return field.value || field.getAttribute('placeholder') || '';
+}
+
 function componentFieldMeasure(field,run) {
     if(typeof Intl.Segmenter!=='function')return null;
-    const doc=field.ownerDocument,css=doc.defaultView.getComputedStyle(field),bounds=field.getBoundingClientRect(),mirror=doc.createElement('div');
-    mirror.className='collab-text-measure';mirror.setAttribute('aria-hidden','true');mirror.textContent=field.value+'\u200b';
+    const doc=field.ownerDocument,css=doc.defaultView.getComputedStyle(field),bounds=field.getBoundingClientRect(),mirror=doc.createElement('div'),value=componentFieldText(field);
+    mirror.className='collab-text-measure';mirror.setAttribute('aria-hidden','true');mirror.textContent=value+'\u200b';
     for(const name of ['box-sizing','width','height','padding-top','padding-right','padding-bottom','padding-left','border-top-width','border-right-width','border-bottom-width','border-left-width','border-style','overflow-x','overflow-y','scrollbar-gutter','font-family','font-size','font-style','font-weight','font-stretch','font-variant','font-feature-settings','font-variation-settings','font-kerning','line-height','letter-spacing','word-spacing','tab-size','white-space','word-break','overflow-wrap','text-indent','text-align','text-transform','direction','writing-mode','text-orientation'])mirror.style.setProperty(name,css.getPropertyValue(name));
+    if(!field.value && field.getAttribute('placeholder')){
+        const placeholder=doc.defaultView.getComputedStyle(field,'::placeholder');
+        for(const name of ['font-family','font-size','font-style','font-weight','font-stretch','font-variant','font-feature-settings','font-variation-settings','font-kerning','letter-spacing','word-spacing','text-transform'])mirror.style.setProperty(name,placeholder.getPropertyValue(name));
+    }
+    if(field.matches('input')){
+        const inset=['padding-top','padding-bottom','border-top-width','border-bottom-width'].reduce((sum,name)=>sum+parseFloat(css.getPropertyValue(name)),0);
+        mirror.style.lineHeight=(parseFloat(css.height)-(css.boxSizing==='border-box' ? inset:0))+'px';
+        mirror.style.whiteSpace='pre';mirror.style.overflowWrap='normal';mirror.style.wordBreak='normal';mirror.style.overflow='hidden';
+    }
     mirror.style.cssText+=';position:fixed;left:'+bounds.left+'px;top:'+bounds.top+'px;margin:0;opacity:0;pointer-events:auto;z-index:2147483647;transform-origin:0 0;';
     doc.body.append(mirror);
     try{
         const rect=mirror.getBoundingClientRect();if(!rect.width || !rect.height)return null;
         mirror.style.transform='scale('+bounds.width/rect.width+','+bounds.height/rect.height+')';mirror.scrollTop=field.scrollTop;mirror.scrollLeft=field.scrollLeft;
-        const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(field.value);
-        const position=offset=>offset>=0 && offset<field.value.length ? segments.containing(offset).index:offset===field.value.length ? offset:-1;
+        const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value);
+        const position=offset=>offset>=0 && offset<value.length ? segments.containing(offset).index:offset===value.length ? offset:-1;
         const character=offset=>{
-            if(!Number.isInteger(offset) || offset<0 || offset>field.value.length)return null;
+            if(!Number.isInteger(offset) || offset<0 || offset>value.length)return null;
             const segment=segments.containing(offset),start=segment?.index ?? offset,end=segment ? start+segment.segment.length:offset+1;
             const range=doc.createRange();range.setStart(mirror.firstChild,start);range.setEnd(mirror.firstChild,end);const r=range.getBoundingClientRect();return r.height ? r:null;
         };
-        return run(mirror,character,position);
+        const scale=bounds.width/rect.width,clip=field.matches('input') ? {left:bounds.left+(parseFloat(css.borderLeftWidth)+parseFloat(css.paddingLeft))*scale,right:bounds.right-(parseFloat(css.borderRightWidth)+parseFloat(css.paddingRight))*scale}:null;
+        return run(mirror,character,position,clip);
     }finally{mirror.remove();}
 }
 function componentHit(doc,point) {
@@ -192,7 +212,7 @@ function componentBacklinkContext(element) {
 }
 
 function componentTextHash(element) {
-    if(componentSourceField(element))return componentHash(element.value);
+    if(componentTextField(element))return componentHash(componentFieldText(element));
     if(element.matches('#searchAssetPreview,#searchAssetPreview > p'))return componentHash(element.innerText);
     const text=element.matches('.block__logo--counter') && element.closest('.sy__backlink,.sy__backlink--bottom') ? [...element.childNodes].filter(node=>node.nodeType!==1 || !node.matches('.counter')).map(node=>node.textContent).join(''):element.textContent;
     return componentHash(text);
@@ -377,7 +397,7 @@ function componentCharacter(element,offset) {
 }
 
 function componentNearText(element,point) {
-    if(componentSourceField(element))return componentFieldMeasure(element,(mirror,character,position)=>{
+    if(componentTextField(element))return componentFieldMeasure(element,(mirror,character,position)=>{
         const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y),node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
         if(node!==mirror.firstChild)return null;
         const candidates=[...new Set([position(offset-1),position(offset)])].map(offset=>({offset,rect:character(offset)})).filter(item=>item.rect);
@@ -508,7 +528,7 @@ function componentGeometry(element,point) {
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     const children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
-    if(componentSourceField(element) && !text.length)return null;
+    if(componentTextField(element) && !text.length)return null;
     const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
@@ -588,7 +608,7 @@ function resolveComponent(cursor,plugin) {
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
     const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
-    const fieldRects=offsets.length && componentSourceField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
+    const fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character,position,clip)=>Object.assign(new Map(offsets.map(offset=>[offset,character(offset)])),{clip})):null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
         if(anchor.imagePoint){
@@ -606,6 +626,8 @@ function resolveComponent(cursor,plugin) {
     }
     if(box)Object.assign(point,box.toParent(point));
     if(fieldRects){
+        // Native single-line inputs clip glyphs at their padding, before hit testing leaves the control.
+        if(fieldRects.clip && anchor.edges.x.every(edge=>edge.kind==='text') && (point.x<fieldRects.clip.left || point.x>=fieldRects.clip.right))return null;
         const local=componentGeometry(element,point);
         if(!local || !['x','y'].every(axis=>anchor.edges[axis].every((edge,index)=>['kind','side','offset'].every(key=>edge[key]===local.edges[axis][index][key]))))return null;
     }
