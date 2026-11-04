@@ -47,7 +47,7 @@ flowchart LR
 
 PDF 原生浮动工具栏的作用域使用所属 PDF.js 模型的文件指纹，不借用当前活动页或上次弹窗页面；查找栏的 wrapContainers 仅表示响应式换行，不参与组件身份。已确认模型中的 findbar/findInput 属于公开搜索，复用字素、占位文字和 field 内边距定位。已识别公开字段的旧 v3 self 整框比例锚点与旧 v2 控件锚点均拒绝绘制，避免滚动后继承不可见文字的位置。
 
-同一受检 PDF.js 模型中的原生 number 页码框也复用字段测量，其组件 key 含文件指纹哈希。仅在原生 appearance:none 外观下测量数字；badInput 时浏览器不暴露完整显示字符串，内部文字和内容间隙隐藏，仍可见的内边距单独定位。未注册数字表单不读取值。PDF 外层的 pdf__outer--maximized、sidebarOpen 只改变布局，不参与控件路径身份。原生 flex 可把输入内容区压至零宽；此时 field 两边坐标重合仍允许定位外侧 padding，使用外向边界并在本地重捕获时认可同坐标 field 边界，文字继续受内容区裁剪，不能借此落到 padding。
+同一受检 PDF.js 模型中的原生 number 页码框也复用字段测量，其组件 key 含文件指纹哈希。仅在原生 appearance:none 外观下测量数字；badInput 时浏览器不暴露完整显示字符串，内部文字和内容间隙隐藏，仍可见的内边距单独定位。未注册数字表单不读取值。原生页码 loading 类在 background-image 为 none 时仅是加载状态，不参与组件身份；带背景图的主题状态仍区分，避免把未测量图形当作原有留白。PDF 外层的 pdf__outer--maximized、sidebarOpen 只改变布局，不参与控件路径身份。原生 flex 可把输入内容区压至零宽；此时 field 两边坐标重合仍允许定位外侧 padding，使用外向边界并在本地重捕获时认可同坐标 field 边界，文字继续受内容区裁剪，不能借此落到 padding。
 
 原生弹窗的标题 ID 为 dialog-title-UUID，每次创建都会变化；仅当该元素是 b3-dialog__header、ID 符合 UUID 形状且被所属弹窗的 role=dialog 容器通过 aria-labelledby 引用时，忽略这个临时 ID。标题仍受弹窗自身身份、标题文字、组件路径和实际可见性约束；其他稳定 ID 和未被引用的 ID 继续匹配，避免把不同控件当成同一目标。
 
