@@ -209,6 +209,43 @@ async function test(name, run) {
         const cover=document.createElement('div');cover.className='occluder';document.body.append(cover);
         assert(resolveCursor(anchor)===null,'covered editor displayed cursor');cover.remove();
     });
+    await test('悬浮工具栏、面包屑和文档顶部按所在文档捕获，跨文档隐藏',async()=>{
+        const fixture=document.createElement('div');fixture.id='shared-layout-id';
+        fixture.style.cssText='position:fixed;left:20px;top:20px;width:900px;background:white;z-index:100;display:flex;gap:20px';
+        const ids=['20261030165150-uiroot1','20261030165150-uiroot2'];
+        const windows=ids.map((id,index)=>{
+            const wnd=document.createElement('div');wnd.className=index ? 'layout__wnd--active':'layout__wnd';
+            wnd.innerHTML='<div class="protyle" style="width:400px"><div class="protyle-background" data-node-id="'+id+'"></div><div class="protyle-breadcrumb"><button data-type="doc">文档</button><span class="protyle-breadcrumb__space" style="display:inline-block;width:100px;height:24px"></span></div><div class="protyle-toolbar"><button data-type="b">粗体</button></div><div class="protyle-content"><div class="protyle-title">同名文档</div><button data-topbar-entry="document-plugin">文档插件</button></div></div>';
+            fixture.append(wnd);return wnd;
+        });document.body.append(fixture);
+        const editor=windows[0].querySelector('.protyle'),root=editor.querySelector('.protyle-background');
+        const plugin={i18n:{pageDocument:'文档'},currentDocument:()=>ids[1]};
+        try {
+            for(const selector of ['.protyle-toolbar button','.protyle-breadcrumb button','.protyle-breadcrumb__space','.protyle-title','[data-topbar-entry]']) {
+                const element=editor.querySelector(selector),r=element.getBoundingClientRect();
+                const anchor=captureCursor({x:r.left+3,y:r.top+3},plugin);
+                assert(anchor?.ui.kind==='document'&&anchor.ui.page.id===ids[0]&&validCursor(anchor),'control lost its owning document: '+selector);
+                assert(resolveCursor(anchor,plugin),'same document control missing: '+selector);
+                root.dataset.nodeId=ids[1];
+                assert(resolveCursor(anchor,plugin)===null,'control appeared in another document: '+selector);
+                root.dataset.nodeId=ids[0];editor.classList.add('fn__none');
+                assert(resolveCursor(anchor,plugin)===null,'hidden document control appeared: '+selector);
+                editor.classList.remove('fn__none');
+                fixture.prepend(windows[1]);
+                const moved=element.getBoundingClientRect(),point=resolveCursor(anchor,plugin);
+                assert(point&&near(point.x,moved.left+3)&&near(point.y,moved.top+3),'split pane matched the active wrong document: '+selector);
+            }
+            const button=editor.querySelector('.protyle-toolbar button'),r=button.getBoundingClientRect();
+            const anchor=captureCursor({x:r.left+3,y:r.top+3},plugin);
+            editor.querySelector('.protyle-toolbar').classList.add('fn__none');
+            assert(resolveCursor(anchor,plugin)===null,'closed floating toolbar left a cursor');
+            editor.querySelector('.protyle-toolbar').classList.remove('fn__none');
+            const cover=document.createElement('div');cover.className='occluder';cover.style.zIndex='101';document.body.append(cover);
+            assert(resolveCursor(anchor,plugin)===null,'document control cursor leaked through modal');cover.remove();
+            root.removeAttribute('data-node-id');
+            assert(captureCursor({x:r.left+3,y:r.top+3},plugin)===null,'unknown document used a global anchor');
+        } finally {fixture.remove();}
+    });
     await test('侧栏、状态栏和顶栏按功能定位，布局改变后命中同一控件',async()=>{
         const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:180px;background:white;z-index:100';
         fixture.innerHTML='<div><span class="dock__item" data-type="outline" style="display:inline-block;width:60px;height:40px"><svg width="24" height="24"><rect width="24" height="24"/></svg></span><span class="dock__item" data-type="file" style="display:inline-block;width:50px;height:40px">文档</span></div><div data-statusbar-entry="counter" style="width:140px">字符 12</div><button data-topbar-entry="barSync">同步</button>';
@@ -423,6 +460,37 @@ async function test(name, run) {
                 await plugin.refreshInBackground();
                 plugin.updateCursors({tick:10,cursors:[],editing:[]});
                 assert(saved===editing.documentId && block.outerHTML===before,'rendering modified activity or note');
+            });
+            await test('集市和多层弹窗遮挡背景编辑框，关闭后自动恢复', async () => {
+                await expose(block,10);select(block,10);
+                const editing=captureEditing(), editor=block.closest('.protyle'), before=editor.outerHTML;
+                const dialog=document.createElement('div'), nested=document.createElement('div');
+                dialog.className=nested.className='b3-dialog occluder';
+                dialog.innerHTML='<div class="config__panel">集市</div>';
+                const copy=editor.cloneNode(true);
+                plugin.updateCursors({tick:10,cursors:[],editing:[{name:'A',hue:120,editing}]});await frame();
+                assert(plugin.editingMarkers.has(block),'baseline frame missing');
+                try {
+                    document.body.append(dialog);await frame();
+                    assert(plugin.editingMarkers.size===0,'background frame leaked into marketplace');
+                    dialog.classList.add('fn__none');await frame();
+                    assert(plugin.editingMarkers.has(block),'hidden dialog suppressed document frame');
+                    dialog.classList.remove('fn__none');await frame();
+                    assert(plugin.editingMarkers.size===0,'reopened dialog retained background frame');
+                    dialog.replaceChildren(copy);await frame();
+                    const dialogBlock=copy.querySelector('[data-node-id="'+editing.blockId+'"]');
+                    assert(plugin.editingMarkers.size===1&&plugin.editingMarkers.has(dialogBlock),'dialog editor frame missing or background frame leaked');
+                    document.body.append(nested);await frame();
+                    assert(plugin.editingMarkers.size===0,'second dialog leaked lower editor frame');
+                    nested.remove();await frame();
+                    assert(plugin.editingMarkers.size===1&&plugin.editingMarkers.has(dialogBlock),'closing second dialog did not restore first editor frame');
+                    dialog.remove();await frame();
+                    assert(plugin.editingMarkers.size===1&&plugin.editingMarkers.has(block),'closing dialog did not restore document frame');
+                    assert(editor.outerHTML===before,'dialog visibility changed note content');
+                } finally {
+                    nested.remove();dialog.remove();
+                    plugin.updateCursors({tick:10,cursors:[],editing:[]});await frame();
+                }
             });
             await test('编辑状态只读焦点，切块与离开编辑区清空，发送失败可重试', async () => {
                 const sent=[], realUpdate=plugin.kernel.rpc.call;

@@ -39,10 +39,11 @@ function cleanPage(page) {
 function validUIAnchor(value) {
     if(!value || !Array.isArray(value.path) || value.path.length>12 || !value.path.every(index=>Number.isSafeInteger(index)&&index>=0&&index<=10000) || typeof value.tag!=='string' || !/^[a-z][a-z0-9-]{0,39}$/.test(value.tag))return false;
     if(value.version!==2)return ['settings','dialog','layout','toolbar','body'].includes(value.kind);
-    if(!['id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
+    if(!['document','id','dock','tab','tab-control','status','settings-nav','settings','dialog','panel','layout','toolbar','body'].includes(value.kind))return false;
     for(const field of ['id','key','value','label','classes'])if(value[field]!==undefined && (typeof value[field]!=='string' || value[field].length>512))return false;
     if(value.attribute!==undefined && !['id','data-type','data-name','data-id','data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
     if(value.page!==undefined && !validPage(value.page))return false;
+    if(value.kind==='document')return validPage(value.page) && value.page.kind==='document';
     if(value.kind==='status' && !['data-statusbar-entry','data-topbar-entry'].includes(value.attribute))return false;
     if(value.kind==='tab')return validPage(value.page) && ['tab','label','icon','close'].includes(value.part);
     if(['id','dock','tab-control','status','settings-nav','panel'].includes(value.kind))return typeof value.id==='string' && value.id.length>0;
@@ -335,6 +336,11 @@ function uiFingerprint(element) {
 function uiAnchor(hit, plugin) {
     let element=hit.closest('button,input,select,textarea,[role="button"],.block__icon,.b3-list-item') || hit;
     const make=(kind,fields={})=>({element,ui:{version:2,kind,path:[],...uiFingerprint(element),...fields}});
+    const editor=hit.closest('.protyle');
+    if(editor) {
+        const id=editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+        return make('document',{page:{kind:'document',id,title:''}});
+    }
     const head=hit.closest('[data-type="tab-header"]');
     if(head) {
         const parts={label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'};
@@ -390,7 +396,11 @@ function resolveUIAnchor(anchor, plugin) {
         return anchor.part==='tab' ? head:head.querySelector({label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'}[anchor.part]);
     }
     let roots=[];
-    if(anchor.kind==='settings') {
+    if(anchor.kind==='document') {
+        roots=visible(document.querySelectorAll('.protyle')).filter(editor=>editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id')===anchor.page.id);
+        const editor=roots.find(root=>root.closest('.layout__wnd--active')) || roots[0];
+        roots=editor ? [editor]:[];
+    } else if(anchor.kind==='settings') {
         roots=visible(document.querySelectorAll('.config__tab-container')).filter(root=>(root.getAttribute('data-name') || document.querySelector('.config__side .b3-list-item--focus')?.getAttribute('data-name'))===anchor.page.section);
     } else if(anchor.kind==='dialog') {
         roots=visible(document.querySelectorAll('.b3-dialog__container')).filter(root=>{
@@ -477,7 +487,7 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page};
-    if(hit.closest('.protyle-content, .protyle-wysiwyg'))return null;
+    if(hit.closest('.protyle-wysiwyg'))return null;
     const target=uiAnchor(hit,plugin), rect=target.element.getBoundingClientRect();
     if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return null;
     return {surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,
@@ -1009,6 +1019,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderEditing() {
         const groups = new Map(), visible = new Set();
+        const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
             const key = client.editing.documentId + '/' + client.editing.blockId;
@@ -1018,6 +1029,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         for (const clients of groups.values()) {
             const { editing, hue } = clients[0];
             for (const block of document.querySelectorAll('.protyle-wysiwyg [data-node-id="' + editing.blockId + '"]')) {
+                // 编辑框在全局光标层上，不能穿过弹窗覆盖背景正文。
+                if (dialog && !dialog.contains(block)) continue;
                 const editor = block.closest('.protyle');
                 if (block.closest('.fn__none') || editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') !== editing.documentId) continue;
                 const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();

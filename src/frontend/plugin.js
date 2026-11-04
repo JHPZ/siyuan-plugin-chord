@@ -513,6 +513,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderEditing() {
         const groups = new Map(), visible = new Set();
+        const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
             const key = client.editing.documentId + '/' + client.editing.blockId;
@@ -522,6 +523,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         for (const clients of groups.values()) {
             const { editing, hue } = clients[0];
             for (const block of document.querySelectorAll('.protyle-wysiwyg [data-node-id="' + editing.blockId + '"]')) {
+                // 编辑框在全局光标层上，不能穿过弹窗覆盖背景正文。
+                if (dialog && !dialog.contains(block)) continue;
                 const editor = block.closest('.protyle');
                 if (block.closest('.fn__none') || editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') !== editing.documentId) continue;
                 const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();

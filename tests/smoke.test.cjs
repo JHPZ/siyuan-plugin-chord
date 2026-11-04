@@ -499,6 +499,13 @@ test('UI position and page protocol strips private fields and rejects executable
     await update('page-test-user',1,2,{...cursor,ui});
     const cleaned=(await snapshot()).cursors[0].cursor.ui;
     assert.equal(cleaned.page.id,ui.page.id);assert.equal(cleaned.page.secret,undefined);assert.equal(cleaned.secret,undefined);
+    const documentUI={...ui,kind:'document'};
+    await update('page-test-user',1,3,{...cursor,ui:documentUI});
+    const documentAnchor=(await snapshot()).cursors[0].cursor.ui;
+    assert.equal(documentAnchor.kind,'document');assert.equal(documentAnchor.page.id,ui.page.id);assert.equal(documentAnchor.page.secret,undefined);
+    for(const page of [undefined,{kind:'workspace',title:''},{kind:'document',id:'invalid',title:''}]) {
+        await assert.rejects(update('page-test-user',1,4,{...cursor,ui:{...documentUI,page}}),/Invalid UI cursor/);
+    }
     for(const invalid of [{...ui,part:'script'},{...ui,page:{kind:'document',id:'invalid',title:''}},{...ui,attribute:'onclick'},{...ui,kind:'status',id:'counter',attribute:'data-type'}]) {
         await assert.rejects(update('page-test-user',1,3,{...cursor,ui:invalid}),/Invalid UI cursor/);
     }
