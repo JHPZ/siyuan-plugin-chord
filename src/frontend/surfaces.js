@@ -25,7 +25,14 @@ function dockPage(target) {
 }
 
 function cursorRegion(element) {
-    if(element.closest('.b3-dialog'))return null;
+    const preview=element.closest('.search__preview'),dialog=element.closest('.b3-dialog');
+    if(preview){
+        const key=dialog?.getAttribute('data-key') || dialog?.parentElement?.getAttribute('data-key');
+        const host=dialog ? key==='dialog-globalsearch' : !!preview.closest('.layout-tab-container > [data-id]');
+        return host && preview.matches('.protyle') && ['searchPreview','searchUnRefPreview'].includes(preview.id) ?
+            {kind:'dock',id:'search-'+componentHash(JSON.stringify([dialog ? 'dialog':'tab',preview.id]))}:null;
+    }
+    if(dialog)return null;
     const backlink=componentBacklinkContext(element),editor=element.closest('.protyle');
     if(backlink && editor && backlink.panel.contains(editor))return backlink.identity ? {kind:'dock',id:'backlink-'+componentHash(JSON.stringify(backlink.identity))}:null;
     const dock=dockPage(element);
