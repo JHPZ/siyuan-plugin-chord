@@ -686,6 +686,11 @@ async function test(name, run) {
         try{const item=fixture.querySelector('.backlinkList__item'),context=item.lastElementChild,r=item.getBoundingClientRect(),point={x:r.left+2,y:r.top+2};assert(document.elementFromPoint(point.x,point.y)===item,'fixture did not expose row gutter');const anchor=componentRoundTrip(point),check=()=>{const actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-point.x,actual.y-point.y)<.01,'source corner depended on expanded context');};context.remove();check();item.append(context);context.style.height='200px';check();}
         finally{if(previous)dockModels.set('backlink',previous);else dockModels.delete('backlink');fixture.remove();dock.remove();}
     });
+    await test('页底反链外框边角和底部留白不随上下文高度缩放',async()=>{
+        const fixture=document.createElement('div');fixture.className='sy__backlink sy__backlink--bottom dockPanel';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;padding:0 0 16px;background:white;z-index:100';fixture.innerHTML='<div class="block__icons backlinkList__header" style="height:40px;margin:0 24px">反向链接</div><div class="backlinkList" style="height:160px;margin:0 24px"></div><div class="block__icons backlinkMList__header" style="height:40px;margin:0 24px">提及</div><div class="backlinkMList" style="height:80px;margin:0 24px"></div>';document.body.append(fixture);const tab={model:{backlink:{element:fixture,type:'bottom',blockId:'20261104190000-target1'}}};testTabs.push(tab);
+        try{const point=side=>{const r=fixture.getBoundingClientRect();return {x:side==='top'?r.left+2:r.right-2,y:side==='top'?r.top+2:r.bottom-2};},samples=['top','bottom'].map(side=>({side,anchor:componentRoundTrip(point(side))}));for(const height of ['80px','240px','0px']){fixture.querySelector('.backlinkList').style.height=height;for(const {side,anchor}of samples){const actual=resolveCursor(anchor),expected=point(side);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.001,'footer perimeter scaled with context height: '+side);}}}
+        finally{fixture.remove();testTabs.splice(testTabs.indexOf(tab),1);}
+    });
     await test('树外围留白与原生半像素命中独立于分支重排',async()=>{
         const fixture=document.createElement('div');fixture.className='sy__tag';fixture.style.cssText='position:fixed;left:25px;top:25px;width:300px;background:white;z-index:100';
         fixture.innerHTML='<ul class="b3-list" style="padding:0;margin:0"></ul>';const list=fixture.firstElementChild;
@@ -1031,6 +1036,8 @@ async function test(name, run) {
                 openTab:options=>{if(!navigation.allow)throw Error('Unexpected navigation');navigation.opened.push(options);},
                 openSetting:()=>{const config=document.querySelector('.config__panel');if(config)config.dataset.opened='true';},
                 getActiveTab:()=>navigation.tab,
+                getAllTabs:()=>testTabs,
+                getModelByDockType:type=>dockModels.get(type),
                 globalCommand:command=>{navigation.commands.push(command);return true;}
             });
             ${frontendSource}
@@ -1209,6 +1216,12 @@ async function test(name, run) {
                 await plugin.refreshInBackground();
                 plugin.updateCursors({tick:10,cursors:[],editing:[]});
                 assert(saved===editing.documentId && block.outerHTML===before,'rendering modified activity or note');
+            });
+            await test('不同反链分区同时编辑相同块时分别显示光晕与名字',async()=>{
+                const fixture=document.createElement('div');fixture.className='sy__backlink sy__backlink--bottom dockPanel';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;background:white;z-index:100';
+                for(const section of ['backlinkList','backlinkMList'])fixture.insertAdjacentHTML('beforeend','<div class="'+section+'"><div class="backlinkList__item" data-node-id="20261104190000-source1"><div class="protyle" style="position:relative;width:400px"><div class="protyle-wysiwyg"><div data-node-id="20261104190000-repeat1">重复来源块</div></div></div></div></div>');document.body.append(fixture);const tab={model:{backlink:{element:fixture,type:'bottom',blockId:'20261104190000-target1'}}};testTabs.push(tab);const names=['A','region-peer'];plugin.clients.push({name:names[1]});
+                try{const editors=[...fixture.querySelectorAll('.protyle')],editing=editors.map((editor,index)=>({name:names[index],hue:120+index*90,editing:{documentId:'20261104190000-source1',blockId:'20261104190000-repeat1',region:cursorRegion(editor)}}));plugin.updateCursors({tick:10,cursors:[],editing});await frame();for(const [index,editor]of editors.entries()){const markers=editor.querySelectorAll('.collab-editing');assert(markers.length===1&&markers[0].textContent===names[index]+' 正在编辑','same block merged participants across regions: '+[...fixture.querySelectorAll('.collab-editing')].map(marker=>marker.textContent).join('|'));}fixture.firstElementChild.style.display='none';plugin.renderEditing();assert(!editors[0].querySelector('.collab-editing')&&editors[1].querySelector('.collab-editing'),'hidden first region swallowed visible peer');}
+                finally{plugin.updateCursors({tick:10,cursors:[],editing:[]});fixture.remove();testTabs.splice(testTabs.indexOf(tab),1);plugin.clients=plugin.clients.filter(client=>client.name!==names[1]);}
             });
             await test('编辑光晕遵循原生层级，浮动工具栏、菜单与面板部分重叠时盖住边框和标签',async()=>{
                 await expose(block,10);select(block,10);
