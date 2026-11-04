@@ -139,6 +139,7 @@ function componentTreeRegion(element) {
     if(!row?.matches('li[data-treetype]') || !panel.contains(row)){
         if(!panel.matches('.sy__outline'))return null;
         let model;try{model=getModelByDockType('outline');}catch{}
+        if(model?.parent?.panelElement!==panel){try{model=getAllTabs().map(tab=>tab.model).find(item=>item?.parent?.panelElement===panel);}catch{model=null;}}
         const title=panel.querySelector(':scope > .b3-list-item'),content=title?.nextElementSibling;
         const root=title?.contains(element) ? title:content?.contains(element) ? content:null;
         return root ? {panel,root,identity:model?.parent?.panelElement===panel && DOCUMENT_ID.test(model.blockId || '') ? ['outline','document',model.blockId,root===title ? 'title':'content']:null}:null;
@@ -256,7 +257,7 @@ function componentScope(element,plugin) {
     const panel=element.closest('.layout-tab-container > [data-id]');
     if(panel){
         let tab;try{tab=getAllTabs().find(item=>item.panelElement===panel);}catch{}
-        if(tab?.headElement){const page=tabPage(tab.headElement);return make(panel,'tab',pageKey(page)+'|'+(page.kind==='custom' ? page.title:'')+'|'+graphContext(tab.model));}
+        if(tab?.headElement){const page=tabPage(tab.headElement);return make(panel,'tab',pageKey(page)+'|'+(page.kind==='custom' ? page.title:'')+'|'+graphContext(tab.model)+'|'+uiClasses(panel));}
     }
     return make(document.body,'global','workspace-ui');
 }
