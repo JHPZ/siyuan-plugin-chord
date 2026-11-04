@@ -98,6 +98,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.finishRestore = null;
         }
         if (this.stopped) return;
+        componentRangeStyle(document);
         this.layoutReady = true;
         await this.refreshInBackground();
         if (this.stopped) return;
@@ -833,6 +834,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     async onunload() {
         this.stopped = true;
+        clearRangeStyles();
         this.finishRestore?.();
         clearTimeout(this.restoreTimer);
         clearInterval(this.heartbeatTimer);

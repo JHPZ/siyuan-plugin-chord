@@ -115,3 +115,5 @@ AI 菜单的已保存动作条目使用原生 data-id 的有界哈希参与组�
 公开搜索字段（textarea.search__input、input[type=search]、searchAssetInput、switch-doc__search、search__label）复用源码字形测量，并直接使用组件锚点；旧控件比例锚点不再绕过字形判断。单行按原生内容高度居中、不换行并复制水平滚动，占位文字使用 ::placeholder 字体；接收端检查输入内边距裁剪。密码、data-private 和文本遮掩字段不读取值。未知表单仍不读取值，尚未完成逐字段验收。
 
 search__header 中的 b3-text-field 输入框也属于公开搜索字段，涵盖命令面板。公开单行输入新增 field 内容区边界，使用本地 computed style 的宽高、边框、内边距和缩放计算；四周留白在 self 外框与 field 内容边界之间定位，不借用被裁剪字形。命中字形时不加入 field 边界，以免亚像素重合边界替代文字。padding 锚点不依赖查询内容，字形和正文行尾仍校验内容哈希及本地重捕获；接收端 text 边界只能解析在原生内容区内。协议仅新增 field 边界类型（kind/side），清理所有额外属性；旧客户端会拒绝该边界，更新后恢复显示。
+
+原生 input.b3-slider[type=range] 使用本端公开数值计算圆点位置，协议只增加 range-thumb/range-track 边界种类，不发送数值或 CSS。Blink 的滑块伪元素计算样式会返回整个输入框尺寸，因此把原有伪元素规则映射到同控件隐藏且固定定位的 before/after 测量伪元素，保留 CSS 级联、媒体条件和 transform 过渡。frameBox 复用宿主坐标变换；圆点内部独立于底下轨道，圆点列上下留白继续引用圆点边界，端点圆点侵入内边距时按剩余可见边界定位。设置外层的动态 aria-label 用所属滑块 ID 的哈希替代身份。测量样式在插件卸载时清理，不替换原生输入事件或撤销。当前支持 appearance:none、横向自动宽度轨道及圆点平移/正向轴缩放；自定义宽度轨道、垂直与旋转圆点等布局尚待扩展。

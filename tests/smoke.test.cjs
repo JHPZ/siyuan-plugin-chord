@@ -503,7 +503,7 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     await update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'start',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
     assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind:'paint',side:'start'});
     await assert.rejects(update('component-user-test',1,7,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
-    for(const [index,kind] of ['list-first','list-last','field'].entries()){
+    for(const [index,kind] of ['list-first','list-last','field','range-thumb','range-track'].entries()){
         await update('component-user-test',1,7+index,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind,side:'end',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
         assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind,side:'end'});
     }

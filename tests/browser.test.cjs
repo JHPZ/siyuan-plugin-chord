@@ -1187,6 +1187,23 @@ async function test(name, run) {
             testTabs.length=0;Object.defineProperty(field,'value',{configurable:true,get(){throw Error('unregistered numeric field read');}});assert(!componentTextField(field)&&componentNearText(field,point(0))===null,'unknown numeric field measured');
         }finally{testTabs.length=0;fixture.remove();reference.remove();}
     });
+    await test('原生滑块圆点、轨道和留白跟随值与尺寸，旧比例不绘制',async()=>{
+        const fixture=document.createElement('div');fixture.id='range-fixture';fixture.style.cssText='position:fixed;left:30px;top:30px;width:450px;height:160px;background:white;z-index:100';fixture.innerHTML='<div class="config-range__desktop" aria-label="20"><input id="range-control" class="b3-slider" type="range" min="0" max="100" value="20"></div><style>#range-control{appearance:none;width:200px;height:16px;padding:0 4px;border:0;margin:0;box-sizing:content-box}#range-control::-webkit-slider-runnable-track{appearance:none;height:2px;background:gray}#range-control::-webkit-slider-thumb{appearance:none;width:10px;height:10px;border:0;padding:0;margin-top:-4px;transform:scale(1);transition:transform 100ms linear}#range-control:focus::-webkit-slider-thumb{transform:scale(1.5)}#range-fixture:has(#range-control:focus) #range-reference{transform:scale(1.5)!important}</style><style media="print">#range-control::-webkit-slider-thumb{width:90px;height:90px}</style><i id="range-reference" style="position:fixed;left:-10000px;width:10px;height:10px;transform:scale(1);transition:transform 100ms linear"></i>';document.body.append(fixture);
+        const input=fixture.querySelector('input'),reference=fixture.querySelector('i'),center=()=>{const r=input.getBoundingClientRect(),ratio=input.valueAsNumber/100;return {x:r.left+9+(r.width-18)*(getComputedStyle(input).direction==='rtl'?1-ratio:ratio),y:r.top+8};},point=(u,v,scale=1)=>{const c=center();return {x:c.x+(u-.5)*10*scale,y:c.y+(v-.5)*10*scale};};
+        try{
+            const samples=[.25,.5,.75].flatMap(u=>[.25,.5,.75].map(v=>({u,v,anchor:componentRoundTrip(point(u,v))})));assert(samples.every(s=>s.anchor.ui.version===3&&Object.values(s.anchor.ui.edges).flat().every(e=>e.kind==='range-thumb')),'thumb still shares control or underlying track');
+            const r=input.getBoundingClientRect(),left=componentRoundTrip({x:(r.left+4+center().x-5)/2,y:center().y}),padding=componentRoundTrip({x:r.left+2,y:center().y}),above=componentRoundTrip({x:center().x,y:r.top+1.5}),below=componentRoundTrip({x:center().x,y:r.bottom-1.5});
+            input.value='80';input.parentElement.setAttribute('aria-label','80');for(const sample of samples){const expected=point(sample.u,sample.v),actual=resolveCursor(sample.anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.02,'range pointer lost native thumb');}assert(resolveCursor(left)&&resolveCursor(padding),'changed value lost visible track or padding');
+            input.style.width='320px';for(const sample of samples){const expected=point(sample.u,sample.v),actual=resolveCursor(sample.anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.02,'thumb width drift');}
+            input.style.direction='rtl';for(const sample of samples){const expected=point(sample.u,sample.v),actual=resolveCursor(sample.anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.02,'RTL thumb drift');}input.style.direction='ltr';
+            getComputedStyle(reference).transform;input.focus();let frames=0,maxDrift=0,animatedFrames=0;await new Promise((resolve,reject)=>{let start;const tick=now=>{try{start??=now;const scale=new DOMMatrix(getComputedStyle(reference).transform).a;if(scale>1.001&&scale<1.499)animatedFrames++;for(const sample of samples){const expected=point(sample.u,sample.v,scale),actual=resolveCursor(sample.anchor);assert(actual,'animated thumb disappeared');maxDrift=Math.max(maxDrift,Math.hypot(actual.x-expected.x,actual.y-expected.y));}frames++;if(now-start<140)requestAnimationFrame(tick);else resolve();}catch(error){reject(error);}};requestAnimationFrame(tick);});assert(frames>2&&animatedFrames>0&&maxDrift<.05,'thumb transition diverged from independent reference '+maxDrift);document.getElementById('results').dataset.rangeAnimation=JSON.stringify({frames,animatedFrames,maxDrift});
+            input.value='0';for(const sample of samples){const expected=point(sample.u,sample.v,new DOMMatrix(getComputedStyle(reference).transform).a),actual=resolveCursor(sample.anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.02,'endpoint thumb borrowed padding boundary '+JSON.stringify({expected,actual,edges:sample.anchor.ui.edges,range:componentRange(input)}));}const scale=new DOMMatrix(getComputedStyle(reference).transform).a;assert(resolveCursor(left)===null,'vanished track gap painted');const visiblePadding=resolveCursor(padding),paddingWidth=Math.max(0,Math.min(4,9-5*scale));assert(visiblePadding&&Math.hypot(visiblePadding.x-input.getBoundingClientRect().left-paddingWidth*.5,visiblePadding.y-center().y)<.02,'remaining endpoint padding drifted');for(const [anchor,y]of [[above,input.getBoundingClientRect().top+(8-5*scale)*.5],[below,input.getBoundingClientRect().bottom-(8-5*scale)*.5]]){const p=resolveCursor(anchor);assert(p&&Math.hypot(p.x-center().x,p.y-y)<.02,'endpoint thumb-column whitespace lost padding boundary');}
+            const old={...samples[0].anchor,ui:{...samples[0].anchor.ui,edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:[{kind:'self',side:'start'},{kind:'self',side:'end'}]}}};assert(resolveCursor(old)===null,'legacy component range ratios painted');
+            input.style.display='none';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden range painted');input.style.display='';
+            input.style.appearance='auto';assert(captureCursor(center())===null,'unknown native range guessed');input.style.appearance='none';
+            input.setAttribute('data-private','');Object.defineProperty(input,'valueAsNumber',{configurable:true,get(){throw Error('private range read');}});assert(componentRange(input)===null&&captureCursor({x:40,y:40})===null,'private range measured');delete input.valueAsNumber;input.removeAttribute('data-private');
+        }finally{fixture.remove();clearRangeStyles();}
+    });
     await test('原生关系图按节点身份与场景坐标定位，缩放平移、节点移动和缺失不误画',async()=>{
         const fixture=document.createElement('div'),dock=document.createElement('button');fixture.className='dockPanel sy__graph';dock.className='dock__item';dock.dataset.type='graph';
         fixture.style.cssText='position:fixed;left:30px;top:30px;width:420px;height:280px;z-index:100;background:white';fixture.innerHTML='<div class="graph__svg" style="width:100%;height:100%"><canvas width="420" height="280" style="width:100%;height:100%"></canvas></div>';
@@ -1394,6 +1411,7 @@ async function test(name, run) {
             module.exports.testPage=currentPage;
             return module.exports;
         })();
+        const rangeStyle=document.createElement('style');rangeStyle.textContent='input.b3-slider::-webkit-slider-thumb{width:10px;height:10px}';document.head.append(rangeStyle);
         const plugin=new NativePlugin();let offline=false;
         Object.assign(plugin,{name:'chord-native-test',i18n:${JSON.stringify(JSON.parse(fs.readFileSync(path.join(root,'i18n/zh-CN.json'),'utf8')))},
             eventBus:{on(name,handler){editorEvents.set(name,handler);},off(name,handler){assert(editorEvents.get(name)===handler,"wrong editor event cleanup");editorEvents.delete(name);}},kernel:{rpc:{bind:async(name,handler)=>subscriptions.set(name,handler),unbind:async name=>subscriptions.delete(name),
@@ -1407,6 +1425,7 @@ async function test(name, run) {
         const input=cursorTextRoot(block), original=input.innerHTML;
         try {
             await plugin.onload();await plugin.onLayoutReady();
+            assert(document.querySelectorAll('.collab-range-measure').length===1,'range measurement style not owned by plugin');
             assert(editorEvents.get("open-noneditableblock")===plugin.handleRenderTarget,"render event not registered");
             await test('顶栏直接显示人数，点击后打开原生人员弹窗，退出清理状态',async()=>{
                 assert(plugin.topBar.textContent==='1 人在线','online count is not visible');
@@ -1664,8 +1683,8 @@ async function test(name, run) {
             }
             assert(commands.length===1&&commands[0].langKey==='checkOnline','personal history command remains');
             assert(!messages.length,'display failure showed an editing permission notice');
-        } finally {await plugin.onunload();}
-        assert(!document.querySelector('.collab-cursor-layer')&&!subscriptions.size&&!editorEvents.size,'display leaked after unload');
+        } finally {await plugin.onunload();rangeStyle.remove();}
+        assert(!document.querySelector('.collab-cursor-layer,.collab-range-measure')&&!subscriptions.size&&!editorEvents.size,'display leaked after unload');
     });
     document.title = results.some(result=>result.startsWith('FAIL')) ? 'FAIL Cursor browser regression' : 'PASS Cursor browser regression';
     document.getElementById('results').dataset.complete = 'true';

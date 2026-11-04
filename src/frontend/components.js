@@ -1,6 +1,57 @@
 // Component identities are bounded hashes; input values and document text never enter the wire format.
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
 const componentRenderTargets=new WeakMap();
+const componentRangeStyles=new Map();
+
+function clearRangeStyles() {
+    for(const style of componentRangeStyles.values())style.remove();
+    componentRangeStyles.clear();
+}
+
+function componentRangeStyle(doc) {
+    if(!doc.head || !doc.styleSheets)return null;
+    const extract=rule=>{
+        if(rule.styleSheet){const rules=[...rule.styleSheet.cssRules].map(extract).filter(Boolean);let text=rules.join('\n');if(!text)return '';if(rule.media.mediaText)text='@media '+rule.media.mediaText+'{'+text+'}';if(rule.supportsText)text='@supports ('+rule.supportsText+'){'+text+'}';if(rule.layerName!==null && rule.layerName!==undefined)text='@layer '+rule.layerName+'{'+text+'}';return text;}
+        if(rule.selectorText){
+            if(!rule.selectorText.includes('::-webkit-slider-'))return '';
+            let text=rule.cssText.replaceAll('::-webkit-slider-thumb',':where(input.b3-slider[type="range"])::before').replaceAll('::-webkit-slider-runnable-track',':where(input.b3-slider[type="range"])::after');
+            const width=rule.style.getPropertyValue('width');
+            if(width && rule.selectorText.includes('::-webkit-slider-runnable-track'))text=text.slice(0,-1)+';--collab-range-auto:'+(width==='auto' ? 1:0)+(rule.style.getPropertyPriority('width') ? ' !important':'')+'}';
+            return text;
+        }
+        if(rule.cssRules){const rules=[...rule.cssRules].map(extract).filter(Boolean);return rules.length ? rule.cssText.slice(0,rule.cssText.indexOf('{')+1)+rules.join('\n')+'}':'';}
+        return '';
+    };
+    let rules;
+    try{rules=[...doc.styleSheets].filter(sheet=>!sheet.disabled && sheet.ownerNode?.className!=='collab-range-measure').flatMap(sheet=>{const rules=[...sheet.cssRules].map(extract).filter(Boolean);return sheet.media.mediaText && rules.length ? ['@media '+sheet.media.mediaText+'{'+rules.join('\n')+'}']:rules;});}catch{return null;}
+    if(!rules.length)return null;
+    // Generated, hidden pseudos expose native thumb transitions without changing the input box.
+    const css=':where(input.b3-slider[type="range"])::after{--collab-range-auto:1}\n'+rules.join('\n')+'\n:where(input.b3-slider[type="range"])::before,:where(input.b3-slider[type="range"])::after{content:"" !important;position:fixed !important;left:0 !important;top:0 !important;visibility:hidden !important;pointer-events:none !important}';
+    let style=componentRangeStyles.get(doc);
+    if(!style){style=doc.createElement('style');style.className='collab-range-measure';componentRangeStyles.set(doc,style);}
+    if(style.textContent!==css)style.textContent=css;
+    if(!style.isConnected)doc.head.append(style);
+    return style;
+}
+
+function componentRange(element) {
+    if(!element.matches('input.b3-slider[type="range"]') || element.closest('[data-private]'))return null;
+    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element);
+    // shortcut: horizontal native tracks use auto width; extend the map before accepting other track layouts.
+    if(css.appearance!=='none' || css.writingMode!=='horizontal-tb' || !componentRangeStyle(doc))return null;
+    const box=frameBox(element);if(!box)return null;
+    const thumb=view.getComputedStyle(element,'::before'),track=view.getComputedStyle(element,'::after');
+    const size=(style,axis)=>{const sides=axis==='width' ? ['Left','Right']:['Top','Bottom'];return parseFloat(style[axis])+(style.boxSizing==='border-box' ? 0:sides.reduce((sum,side)=>sum+parseFloat(style['padding'+side])+parseFloat(style['border'+side+'Width']),0));};
+    const width=size(thumb,'width'),height=size(thumb,'height'),trackHeight=size(track,'height'),content=box.content,trackWidth=content.right-content.left;
+    const min=Number.isFinite(parseFloat(element.min)) ? parseFloat(element.min):0,max=Number.isFinite(parseFloat(element.max)) ? parseFloat(element.max):100,value=element.valueAsNumber;
+    if(![width,height,trackHeight,trackWidth,value].every(Number.isFinite) || width<=0 || height<=0 || trackHeight<=0 || trackWidth<width || track.getPropertyValue('--collab-range-auto').trim()!=='1' || track.transform!=='none' || thumb.display==='none' || track.display==='none')return null;
+    const ratio=max>min ? Math.max(0,Math.min(1,(value-min)/(max-min))):0,left=content.left+(trackWidth-width)*(css.direction==='rtl' ? 1-ratio:ratio)+parseFloat(thumb.marginLeft),top=(content.top+content.bottom-trackHeight)/2;
+    const matrix=new view.DOMMatrix(thumb.transform==='none' ? undefined:thumb.transform),origin=thumb.transformOrigin.split(' ').map((value,index)=>value.endsWith('%') ? parseFloat(value)*(index ? height:width)/100:parseFloat(value));
+    if(!matrix.is2D || matrix.b!==0 || matrix.c!==0 || matrix.a<=0 || matrix.d<=0 || !origin.slice(0,2).every(Number.isFinite))return null;
+    const points=[[0,0],[width,0],[0,height],[width,height]].map(([x,y])=>{const p=matrix.transformPoint({x:x-origin[0],y:y-origin[1]});return {x:left+origin[0]+p.x,y:top+parseFloat(thumb.marginTop)+origin[1]+p.y};});
+    const painted={left:Math.min(...points.map(p=>p.x)),right:Math.max(...points.map(p=>p.x)),top:Math.min(...points.map(p=>p.y)),bottom:Math.max(...points.map(p=>p.y))};
+    return {box,thumb:painted,content:{left:Math.max(box.bounds.left,Math.min(content.left,painted.left)),right:Math.min(box.bounds.right,Math.max(content.right,painted.right)),top:Math.max(box.bounds.top,Math.min(content.top,painted.top)),bottom:Math.min(box.bounds.bottom,Math.max(content.bottom,painted.bottom))},track:{left:content.left,right:content.right,top,bottom:top+trackHeight}};
+}
 
 function rememberRenderTarget({detail}) {
     const {protyle,toolbar,blockElement,renderElement}=detail || {},popup=toolbar?.subElement;
@@ -133,6 +184,7 @@ function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('.config-range__desktop')){const field=element.querySelector(':scope > input.b3-slider[type="range"][id]');if(field)values.push(['range-control',componentHash(field.id)]);}
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     if(pdfNumber)values.push(['pdf-file',componentHash(pdfNumber.pdfObject.pdfDocument.fingerprints[0])]);
     if(element.matches('#searchAssetPreview,#searchAssetList [data-type="search-item"]'))values.push(['asset',componentHash(componentAssetPath(element) || '')]);
@@ -535,13 +587,16 @@ function componentPaintRect(element) {
 }
 
 function componentGeometry(element,point) {
-    const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
+    const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
+    if(slider && !range)return null;
+    const box=range?.box || (element.matches('iframe') ? frameBox(element):null);if(element.matches('iframe') && !box)return null;
     if(box)point=box.toLocal(point);
+    const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
     let bounds=box ? box.bounds:element.getBoundingClientRect();
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     const field=componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
-    const children=box ? []:componentChildren(element),text=box || padding ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
+    const children=box ? []:componentChildren(element),text=box || padding ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=range?.content || box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     if(componentTextField(element) && !text.length && !padding)return null;
     const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
@@ -549,7 +604,11 @@ function componentGeometry(element,point) {
         const column=axis==='x' && element.matches('.sb[data-sb-layout="col"]');
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
-        if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
+        if(frame && !onThumb && !(range && axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right))for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
+        if(range)for(const part of onThumb || axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right ? ['thumb']:['thumb','track']){
+            const rect=range[part];if(axis==='y' && (point.x<rect.left || point.x>rect.right))continue;
+            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'range-'+part,side}});
+        }
         // A collapsed content box still has visible padding on each outward side.
         if(field && !text.some(item=>point[axis]>=item.rect[start] && point[axis]<item.rect[end]))for(const [side,key] of point[axis]>=field[end] ? [['end',end],['start',start]]:[['start',start],['end',end]])entries.push({value:field[key],edge:{kind:'field',side}});
         const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || tree && (point.x<list.left || point.x>list.right));
@@ -623,7 +682,9 @@ function resolveComponent(cursor,plugin) {
     if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') ||
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
     if(componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field'))return null;
-    const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
+    const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
+    if(slider && (!range || !Object.values(anchor.edges).flat().some(edge=>['range-thumb','range-track','frame','frame-box'].includes(edge.kind))))return null;
+    const box=range?.box || (element.matches('iframe') ? frameBox(element):null);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
     const point={};
@@ -634,7 +695,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -643,7 +704,7 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    if(fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field')){
+    if(range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field')){
         // Padding is visible whitespace; text underneath it is clipped by the native input.
         if(fieldRects && field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
         const local=componentGeometry(element,point);
