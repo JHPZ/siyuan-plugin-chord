@@ -600,8 +600,13 @@ async function test(name, run) {
         const actions=['newSubDoc','newFileAtPath'].map(action=>{const row=document.createElement('button');row.className='b3-list-item';row.type='button';row.dataset.value='(('+action+' private-query))';row.style.cssText='display:block;width:460px;height:35px';row.textContent='同名动作';list.append(row);return row;});document.body.append(fixture);
         try{
             const samples=[];for(const root of [...rows.flatMap(row=>[row,row.firstElementChild,row.querySelector('span'),row.querySelector('.b3-list-item__meta')]),...actions]){const r=root.getBoundingClientRect(),offset=root.matches('button')?{x:r.width-2,y:r.height-2}:{x:4,y:r.height/2};samples.push({root,offset,anchor:componentRoundTrip({x:r.left+offset.x,y:r.top+offset.y})});}
-            const check=sample=>{const point=resolveCursor(sample.anchor),r=sample.root.getBoundingClientRect();assert(point&&near(point.x,r.left+sample.offset.x)&&near(point.y,r.top+sample.offset.y),'hint result moved to sibling or disappeared');};
+            let phase='reorder';const check=sample=>{const point=resolveCursor(sample.anchor),r=sample.root.getBoundingClientRect();assert(point&&near(point.x,r.left+sample.offset.x)&&near(point.y,r.top+sample.offset.y),'hint result '+phase+' '+sample.root.className+': '+JSON.stringify({point,expected:{x:r.left+sample.offset.x,y:r.top+sample.offset.y}}));};
             for(const row of [...list.children])list.prepend(row);samples.forEach(check);
+            const label=rows[0].querySelector('.b3-list-item__text'),labelSample=samples.find(sample=>sample.root===label);
+            phase='insert highlight';label.innerHTML='<mark>同名</mark>结果';samples.forEach(check);
+            const lr=label.getBoundingClientRect(),marked=componentRoundTrip({x:lr.left+labelSample.offset.x,y:lr.top+labelSample.offset.y});assert(marked.ui.textHash,'highlight text did not retain character geometry');
+            phase='move highlight';label.innerHTML='同<mark>名结</mark>果';check({...labelSample,anchor:marked});phase='full highlight';label.innerHTML='<mark>同名结果</mark>';check({...labelSample,anchor:marked});
+            label.querySelector('mark').style.opacity='0';assert(resolveCursor(marked)===null,'transparent highlight text painted');label.innerHTML='同名结果';check({...labelSample,anchor:marked});
             assert(!JSON.stringify(samples.map(sample=>sample.anchor)).includes('private-query'),'hint query leaked into wire');
             const original=rows[0].firstElementChild.dataset.nodeId;rows[0].firstElementChild.dataset.nodeId='20261104143000-replace';assert(resolveCursor(samples[0].anchor)===null,'replacement same-name result inherited row whitespace');rows[0].firstElementChild.dataset.nodeId=original;
             rows[0].style.opacity='0';assert(resolveCursor(samples[0].anchor)===null,'transparent search result painted');rows[0].style.opacity='1';samples.forEach(check);

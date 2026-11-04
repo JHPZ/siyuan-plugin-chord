@@ -8,6 +8,7 @@ function componentHash(value) {
 function componentChildren(element) {
     return [...element.children].filter(child=>{
         if(child.matches('style,script,.collab-cursor-layer,.collab-editing-layer,.collab-presence-users,.fn__none,[hidden]'))return false;
+        if(element.matches('.protyle-hint .b3-list-item__text') && child.matches('mark'))return false;
         const style=child.ownerDocument.defaultView.getComputedStyle(child);
         // Transparent controls still occupy space and remain stable references for surrounding gaps.
         return style.display!=='none';
@@ -50,7 +51,7 @@ function componentKey(element) {
     }
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
     const label=!privateText && !values.length ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
-        (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') ? textLabel(element):'')):'';
+        (!element.children.length || element.matches('.b3-list-item,.b3-menu__item,.protyle-hint .b3-list-item__text') ? textLabel(element):'')):'';
     const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
@@ -308,6 +309,7 @@ function frameToParent(frame,point) {
 }
 
 function componentBox(hit,point) {
+    if(hit.matches('.protyle-hint .b3-list-item__text > mark'))hit=hit.parentElement;
     if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
     while(hit.parentElement){
         const rect=hit.getBoundingClientRect();
@@ -363,7 +365,8 @@ function captureComponent(hit,plugin,point) {
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
-    const target=hit!==original ? componentRoute(hit,original):undefined;
+    const highlight=original.matches('.protyle-hint .b3-list-item__text > mark') && hit===original.parentElement;
+    const target=hit!==original && !highlight ? componentRoute(hit,original):undefined;
     if(target===null)return null;
     const geometry=componentGeometry(hit,point);if(!geometry)return null;
     const {x,y,...fields}=geometry;
@@ -405,8 +408,9 @@ function resolveComponent(cursor,plugin) {
     if(box)Object.assign(point,box.toParent(point));
     const hit=element.ownerDocument.elementFromPoint(point.x,point.y);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
+    const highlight=target===element && element.matches('.protyle-hint .b3-list-item__text') && hit?.matches('mark') && hit.parentElement===element;
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || !visibleElement(hit) || hit!==target && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || !visibleElement(hit) || hit!==target && !highlight && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
