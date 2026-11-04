@@ -500,7 +500,7 @@ function resolvePDF(element,anchor) {
 }
 
 // Component identities are bounded hashes; input values and document text never enter the wire format.
-const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code';
+const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
 function componentHit(doc,point) {
     const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
     if(!item || hit.closest('[data-private]') || Number(doc.defaultView.getComputedStyle(hit).opacity)>.01)return hit;
@@ -540,10 +540,22 @@ function componentSearchField(element) {
     try{const {itemID,keyID}=JSON.parse(field.getAttribute('data-av-search-match'));return [itemID,keyID].every(value=>DOCUMENT_ID.test(value || '')) ? [itemID,keyID]:null;}catch{return null;}
 }
 
+function componentAssetPath(element) {
+    const preview=element.closest('#searchAssetPreview'),item=element.closest('#searchAssetList [data-type="search-item"]');
+    if(!preview && !item)return undefined;
+    const panel=(preview || item).closest('#searchAssets'),list=panel?.querySelector('#searchAssetList');if(!list)return null;
+    const selected=preview ? [...list.querySelectorAll('.b3-list-item--focus[data-type="search-item"]')]:[item];
+    if(selected.length!==1 || !visibleElement(selected[0]) || !DOCUMENT_ID.test(selected[0].getAttribute('data-id') || ''))return null;
+    const labels=selected[0].querySelectorAll('.b3-list-item__meta[aria-label]'),path=labels.length===1 && labels[0].getAttribute('aria-label');
+    if(!path || !path.startsWith('assets/') || path.length>8192 || /[\x00-\x1f]/.test(path))return null;
+    return [...list.querySelectorAll('[data-type="search-item"] .b3-list-item__meta[aria-label]')].filter(e=>e.getAttribute('aria-label')===path).length===1 ? path:null;
+}
+
 function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('#searchAssetPreview,#searchAssetList [data-type="search-item"]'))values.push(['asset',componentHash(componentAssetPath(element) || '')]);
     if(element.matches('.search__list [data-av-search-match],.search__list .search__av-content > .fn__code'))values.push(['search-field',componentHash(JSON.stringify(componentSearchField(element)))]);
     const tree=componentTreeRegion(element);
     if(tree?.root===element)values.push(['tree',componentHash(JSON.stringify(tree.identity))]);
@@ -834,7 +846,9 @@ function componentNearText(element,point) {
     if(node.parentElement.closest('.b3-menu__item,.b3-list-item')!==element.closest('.b3-menu__item,.b3-list-item'))return null;
     if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
-    return [prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
+    const candidates=[prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
+    const inside=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
+    return inside ? [inside]:candidates;
 }
 
 function componentImageRect(image) {
@@ -963,7 +977,7 @@ function componentGeometry(element,point) {
 }
 
 function captureComponent(hit,plugin,point) {
-    if(hit.closest('[data-private]') || componentSearchField(hit)===null)return null;
+    if(hit.closest('[data-private]') || componentSearchField(hit)===null || componentAssetPath(hit)===null)return null;
     const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
     if(hit.matches('canvas') && !graph)return null;
     let original=hit;hit=componentBox(hit,point);
@@ -1028,7 +1042,7 @@ function resolveComponent(cursor,plugin) {
     const highlight=target===element && element.matches(COMPONENT_HIGHLIGHT_TEXT) && hit?.matches('mark') && hit.parentElement===element;
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || componentSearchField(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || componentSearchField(target)===null || componentAssetPath(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);

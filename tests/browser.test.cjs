@@ -455,6 +455,44 @@ async function test(name, run) {
             const editor=panes[1].editor;editor.id='unidentifiedPreview';assert(cursorRegion(editor)===null,'unknown search preview became main document');editor.id='searchPreview';const host=panes[1].host;host.className='';assert(cursorRegion(editor)===null,'unhosted preview became main document');host.className='layout-tab-container';
         }finally{fixture.remove();document.getSelection().removeAllRanges();}
     });
+    await test('资源搜索的同名同内容文件按路径隔离行、预览文字和留白，重排及重建索引仍匹配原文件',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='dialog-globalsearch';fixture.style.cssText='position:fixed;left:140px;top:30px;width:600px;height:480px;z-index:100;background:white';
+        fixture.innerHTML='<div id="searchAssets"><div id="searchAssetList" class="search__list b3-list"></div><div id="searchAssetPreview" class="search__preview b3-typography" style="height:300px;padding:8px"><p style="white-space:pre-wrap">相同资源文字<br>最后一行。</p></div></div>';
+        const list=fixture.querySelector('#searchAssetList'),preview=fixture.querySelector('#searchAssetPreview');
+        const rows=['a','b'].map((name,i)=>{const e=document.createElement('div');e.dataset.type='search-item';e.dataset.id='20261104221000-asset0'+i;e.className='b3-list-item'+(i?'':' b3-list-item--focus');e.style.cssText='display:flex;height:30px';e.innerHTML='<span class="b3-list-item__text" style="width:300px">相同资源文字</span><span class="b3-list-item__meta" aria-label="assets/'+name+'/same.txt">same.txt</span>';list.append(e);return e;});
+        document.body.append(fixture);
+        try{
+            const p=preview.firstElementChild,g=rectAt(p,2),box=p.getBoundingClientRect(),area=preview.getBoundingClientRect();
+            const anchors=[{x:g.left+g.width/2,y:g.top+g.height/2},{x:box.right-3,y:g.top+g.height/2},{x:area.right-3,y:area.bottom-3}].map(point=>componentRoundTrip(point));
+            const r=rows[0].lastElementChild.getBoundingClientRect(),row=componentRoundTrip({x:r.left+5,y:r.top+5});
+            rows[0].classList.remove('b3-list-item--focus');rows[1].classList.add('b3-list-item--focus');preview.replaceChildren(p.cloneNode(true));
+            assert(anchors.every(a=>resolveCursor(a)===null),'same-content other asset inherited preview text or blank');
+            assert(resolveCursor(row),'changing preview hid an unchanged result row');
+            rows[1].classList.remove('b3-list-item--focus');rows[0].classList.add('b3-list-item--focus');preview.replaceChildren(p.cloneNode(true));assert(anchors.every(a=>resolveCursor(a)),'restored original asset missing');
+            list.prepend(rows[1]);rows[0].dataset.id='20261104221000-reindex';const moved=rows[0].lastElementChild.getBoundingClientRect(),actual=resolveCursor(row);assert(actual&&near(actual.x,moved.left+5)&&near(actual.y,moved.top+5),'row matched list order or transient index ID');
+            rows[0].classList.add('fn__none');assert(resolveCursor(row)===null&&anchors.every(a=>resolveCursor(a)===null),'hidden selected asset borrowed another row');rows[0].classList.remove('fn__none');
+            rows[0].classList.remove('b3-list-item--focus');assert(anchors.every(a=>resolveCursor(a)===null),'unidentified preview accepted');rows[0].classList.add('b3-list-item--focus');rows[1].classList.add('b3-list-item--focus');assert(anchors.every(a=>resolveCursor(a)===null),'ambiguous preview accepted');rows[1].classList.remove('b3-list-item--focus');
+            rows[0].lastElementChild.setAttribute('aria-label','assets/c/same.txt');assert(resolveCursor(row)===null&&anchors.every(a=>resolveCursor(a)===null),'replaced path inherited cursor');
+            rows[0].lastElementChild.setAttribute('aria-label','assets/a/same.txt');preview.classList.add('fn__none');assert(anchors.every(a=>resolveCursor(a)===null),'hidden preview drew');preview.classList.remove('fn__none');
+            rows[0].dataset.id='invalid';assert(anchors.every(a=>resolveCursor(a)===null)&&captureCursor({x:g.left+g.width/2,y:g.top+g.height/2})===null,'invalid native resource identity accepted');rows[0].dataset.id='20261104221000-reindex';
+            rows[0].lastElementChild.removeAttribute('aria-label');assert(anchors.every(a=>resolveCursor(a)===null),'missing resource path accepted');rows[0].lastElementChild.setAttribute('aria-label','assets/a/same.txt');
+            rows[1].lastElementChild.setAttribute('aria-label','assets/a/same.txt');assert(resolveCursor(row)===null&&anchors.every(a=>resolveCursor(a)===null),'duplicate resource path accepted');
+            assert(!JSON.stringify(anchors).includes('assets/'),'resource paths entered wire format');
+        }finally{fixture.remove();}
+    });
+    await test('资源预览高亮是原生装饰，查询变化和宽度变化仍跟随本地文字与留白',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='dialog-globalsearch';fixture.style.cssText='position:fixed;left:140px;top:30px;width:600px;height:400px;z-index:100;background:white';
+        fixture.innerHTML='<div id="searchAssets"><div id="searchAssetList" class="search__list"><div class="b3-list-item b3-list-item--focus" data-type="search-item" data-id="20261104221000-asset00"><span class="b3-list-item__meta" aria-label="assets/a/same.txt">same.txt</span></div></div><div id="searchAssetPreview" class="search__preview b3-typography" style="height:280px;padding:8px"><p style="white-space:pre-wrap"><mark>相同</mark>资源文字<br>最后一行。</p></div></div>';
+        document.body.append(fixture);
+        try{const p=fixture.querySelector('p'),g=rectAt(p,0),r=p.getBoundingClientRect();const text=componentRoundTrip({x:g.left+g.width/2,y:g.top+g.height/2}),gap=componentRoundTrip({x:g.right+(r.right-g.right)*.7,y:g.top+g.height/2});p.innerHTML='相同<mark>资源</mark>文字<br>最后一行。';fixture.style.width='420px';const after=rectAt(p,0),resolved=resolveCursor(text);assert(resolved&&near(resolved.x,after.left+after.width/2)&&near(resolved.y,after.top+after.height/2),'highlight query moved or hid a glyph');assert(resolveCursor(gap),'query decoration hid unchanged blank');}
+        finally{fixture.remove();}
+    });
+    await test('组件字形跨行后只跟随自身边界，不借用原同排相邻字符',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='wrapped-components';fixture.style.cssText='position:fixed;left:140px;top:30px;width:420px;height:400px;z-index:100;background:white';
+        fixture.innerHTML='<p style="font:20px/30px monospace;word-break:break-all;white-space:pre-wrap;width:360px">abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ</p>';document.body.append(fixture);
+        try{const p=fixture.firstElementChild,g=rectAt(p,19),point={x:g.left+g.width*.45,y:g.top+g.height*.5},anchor=componentRoundTrip(point);p.style.width=(g.width*19+.1)+'px';const after=rectAt(p,19),previous=rectAt(p,18),actual=resolveCursor(anchor);assert(after.top>previous.top,'fixture did not wrap chosen glyph');assert(actual&&near(actual.x,after.left+after.width*.45)&&near(actual.y,after.top+after.height*.5),'glyph borrowed a neighbor across line break');}
+        finally{fixture.remove();}
+    });
     await test('侧栏、状态栏和顶栏按功能定位，布局改变后命中同一控件',async()=>{
         const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:180px;background:white;z-index:100';
         fixture.innerHTML='<div><span class="dock__item" data-type="outline" style="display:inline-block;width:60px;height:40px"><svg width="24" height="24"><rect width="24" height="24"/></svg></span><span class="dock__item" data-type="file" style="display:inline-block;width:50px;height:40px">文档</span></div><div data-statusbar-entry="counter" style="width:140px">字符 12</div><button data-topbar-entry="barSync">同步</button>';
