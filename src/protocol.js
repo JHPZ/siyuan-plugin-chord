@@ -87,14 +87,14 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' || edge.kind==='list' || edge.kind==='frame' || edge.kind==='frame-box' ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
 
 function validComponentAnchor(value) {
     const scope=value.scope;
-    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av','calendar'].includes(scope.kind) &&
+    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av','calendar','tree'].includes(scope.kind) &&
         typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
         (scope.kind!=='av' || [scope.row,scope.column].every(value=>typeof value==='string' && /^[a-f0-9]{16}$/.test(value))) &&
         (scope.group===undefined || scope.kind==='av' && typeof scope.group==='string' && /^[a-f0-9]{16}$/.test(scope.group)) &&

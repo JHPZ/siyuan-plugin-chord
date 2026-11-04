@@ -313,7 +313,7 @@ function captureCursor(point, plugin) {
         x:target.text ? target.text.x : Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)),
         y:target.text ? target.text.y : Math.max(0,Math.min(1,(point.y-rect.top)/rect.height))};
     const local=resolveCursor(cursor,plugin);
-    return local && Math.hypot(local.x-point.x,local.y-point.y)<1 ? cursor:fallback();
+    return local && Math.hypot(local.x-point.x,local.y-point.y)<.001 ? cursor:fallback();
 }
 
 function resolveCursor(cursor, plugin) {

@@ -615,6 +615,77 @@ async function test(name, run) {
             rows[0].remove();assert(resolveCursor(samples[0].anchor)===null,'missing result moved to same-name sibling');samples.slice(4).forEach(check);
         }finally{fixture.remove();}
     });
+    await test('标签完整路径和书签组身份独立于计数、嵌套列表顺序及同名叶节点',async()=>{
+        for(const kind of ['tag','bookmark']){
+            const fixture=document.createElement('div'),dock=document.createElement('div'),previous=dockModels.get(kind);
+            fixture.className='sy__'+kind+' dockPanel';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;height:300px;z-index:100;background:white';dock.className='dock__item';dock.dataset.type=kind;
+            const attribute=kind==='tag'?'data-label':'data-bookmark';
+            fixture.innerHTML='<ul class="b3-list" style="padding:4px 0 10px;margin:0"></ul>';const list=fixture.firstElementChild;
+            for(const name of ['甲','乙'])list.insertAdjacentHTML('beforeend','<li class="b3-list-item" data-treetype="'+kind+'" '+attribute+'="private-root-'+name+'" style="display:flex;align-items:center;height:34px"><span class="b3-list-item__toggle"><svg class="b3-list-item__arrow b3-list-item__arrow--open" width="16" height="16"><rect width="16" height="16"/></svg></span><span class="b3-list-item__text" style="width:130px">'+name+'</span><span class="counter">2</span></li><ul style="margin:0;padding-left:20px"><li class="b3-list-item" data-treetype="'+kind+'" '+(kind==='tag'?'data-label="private-root-'+name+'/同名"':'data-node-id="20261104170000-child0'+(name==='甲'?'1':'2')+'"')+' style="display:flex;align-items:center;height:34px"><span class="b3-list-item__text" style="width:130px">同名</span><span class="counter">1</span></li></ul>');
+            document.body.append(fixture,dock);dockModels.set(kind,{parent:{panelElement:fixture}});
+            const groups=[...list.children].filter(e=>e.tagName==='LI'),nested=groups.map(e=>e.nextElementSibling),leaf=nested.map(e=>e.firstElementChild),point=(e,blank)=>{const r=e.getBoundingClientRect();return {x:blank?r.right-3:r.left+4,y:r.top+12};};
+            try{
+                const samples=[...groups,...leaf].flatMap(row=>[{root:row,blank:true},{root:row.querySelector('.b3-list-item__text'),blank:false}]).map(s=>({...s,anchor:componentRoundTrip(point(s.root,s.blank))}));
+                const lr=list.getBoundingClientRect(),tailPoint={x:lr.left+lr.width/2,y:lr.bottom-2},tail=componentRoundTrip(tailPoint),arrow=groups[0].querySelector('svg'),arrowAnchor=componentRoundTrip(point(arrow,false));
+                assert(samples.every(s=>!JSON.stringify(s.anchor).includes('private-root-')),'tree identity leaked raw paths');
+                for(const i of [1,0]){list.append(groups[i],nested[i]);}
+                const check=s=>{const p=resolveCursor(s.anchor),q=point(s.root,s.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,kind+' nested group followed sibling order '+JSON.stringify({html:s.root.outerHTML,p,q,anchor:s.anchor}));};samples.forEach(check);const tailResolved=resolveCursor(tail);assert(tailResolved&&Math.hypot(tailResolved.x-tailPoint.x,tailResolved.y-tailPoint.y)<.6,'tree list perimeter followed previous group');
+                const counter=groups[0].lastElementChild,counterAnchor=componentRoundTrip(point(counter,false));counter.textContent='3';samples.forEach(check);assert(resolveCursor(counterAnchor)===null,'changed count glyph inherited old character');
+                const owner=kind==='tag'?leaf[0]:groups[0],old=owner.getAttribute(attribute);owner.setAttribute(attribute,'private-replacement');for(const s of samples.filter(s=>owner.contains(s.root)))assert(resolveCursor(s.anchor)===null,'same-name replacement inherited tree pointer');owner.setAttribute(attribute,old);samples.forEach(check);
+                nested[0].style.display='none';arrow.classList.remove('b3-list-item__arrow--open');assert(resolveCursor(arrowAnchor),'visible tree toggle disappeared after collapsing its children');for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'collapsed tree branch inherited same-name leaf');nested[0].style.display='';arrow.classList.add('b3-list-item__arrow--open');samples.forEach(check);
+                leaf[0].style.opacity='0';for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'transparent tree leaf painted');leaf[0].style.opacity='';
+                if(kind==='bookmark'){
+                    nested[1].append(leaf[0]);samples.forEach(check);nested[0].append(leaf[0]);samples.forEach(check);
+                }
+                const duplicate=leaf[0].cloneNode(true);nested[1].append(duplicate);for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'ambiguous tree row guessed');duplicate.remove();samples.forEach(check);
+            }finally{if(previous)dockModels.set(kind,previous);else dockModels.delete(kind);fixture.remove();dock.remove();}
+        }
+    });
+    await test('树外围留白与原生半像素命中独立于分支重排',async()=>{
+        const fixture=document.createElement('div');fixture.className='sy__tag';fixture.style.cssText='position:fixed;left:25px;top:25px;width:300px;background:white;z-index:100';
+        fixture.innerHTML='<ul class="b3-list" style="padding:0;margin:0"></ul>';const list=fixture.firstElementChild;
+        for(const name of ['a','b']){
+            list.insertAdjacentHTML('beforeend','<li data-treetype="tag" data-label="'+name+'" class="b3-list-item" style="height:28px;margin:0 8px 1px">'+name+'</li><ul style="padding:0;margin:0"><li data-treetype="tag" data-label="'+name+'/leaf" class="b3-list-item" style="height:28px;margin:0 8px 1px"><span class="b3-list-item__text" style="display:block;height:28px">同名</span></li></ul>');
+        }
+        document.body.append(fixture);
+        try{
+            const groups=[...list.children],label=groups[1].querySelector('span'),r=label.getBoundingClientRect(),point={x:r.left+50,y:r.top-.5};
+            assert(document.elementFromPoint(point.x,point.y)===label,'fixture did not reproduce native half-pixel hit');
+            const half=componentRoundTrip(point),cornerPoint={x:list.getBoundingClientRect().left+2,y:list.getBoundingClientRect().top+2},corner=componentRoundTrip(cornerPoint);
+            list.append(groups[2],groups[3],groups[0],groups[1]);
+            const target=label.getBoundingClientRect(),resolved=resolveCursor(half),blank=resolveCursor(corner);
+            assert(resolved&&Math.hypot(resolved.x-point.x,resolved.y-(target.top-.5))<.01,'half-pixel hit followed its previous branch');
+            assert(blank&&Math.hypot(blank.x-cornerPoint.x,blank.y-cornerPoint.y)<.01,'tree outer gutter followed a branch');
+            const branch=groups[3],br=branch.getBoundingClientRect(),branchPoint={x:br.left+2,y:br.top+2},branchAnchor=componentRoundTrip(branchPoint),extra=branch.firstElementChild.cloneNode(true);extra.dataset.label='extra-leaf';branch.append(extra);
+            const grown=resolveCursor(branchAnchor);assert(grown&&Math.hypot(grown.x-branchPoint.x,grown.y-branchPoint.y)<.01,'single-row branch corner stretched with a new row');extra.remove();
+            groups[1].style.display='none';const collapsed=resolveCursor(corner);assert(collapsed&&Math.hypot(collapsed.x-cornerPoint.x,collapsed.y-cornerPoint.y)<.01,'tree corner drifted when its contents shrank');
+        }finally{fixture.remove();}
+    });
+    await test('工具栏边缘的亚像素命中不被旧控件比例坐标截断',async()=>{
+        const button=document.createElement('button');button.dataset.topbarEntry='subpixel-control';button.textContent='按钮';button.style.cssText='position:fixed;left:25.375px;top:25px;width:100px;height:32px;z-index:100';document.body.append(button);
+        try{
+            const r=button.getBoundingClientRect(),point={x:r.left-.125,y:r.top+16};assert(document.elementFromPoint(point.x,point.y)===button,'fixture did not reproduce native toolbar edge');
+            const anchor=componentRoundTrip(point),local=resolveCursor(anchor);assert(local&&Math.hypot(local.x-point.x,local.y-point.y)<.001,'legacy clamping moved the pointer');
+        }finally{button.remove();}
+    });
+    await test('AI 保存动作的文字、编辑按钮和留白按稳定身份匹配',async()=>{
+        const fixture=document.createElement('div');fixture.id='ai-actions-fixture';fixture.className='b3-menu';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;height:240px;z-index:100;background:white';
+        fixture.innerHTML='<div class="b3-list" style="padding:10px;height:210px;box-sizing:border-box"><div class="b3-menu__separator" style="height:8px"></div></div>';document.body.append(fixture);
+        const list=fixture.firstElementChild;for(const id of ['first','second','third'])list.insertAdjacentHTML('beforeend','<div class="b3-list-item b3-list-item--narrow ariaLabel" data-type="saved" data-id="private-action-'+id+'" aria-label="private-prompt-'+id+'" style="height:42px;display:flex;align-items:center"><span class="b3-list-item__text">同名动作</span><span style="flex:1;height:26px"></span><span class="b3-list-item__action" data-type="edit" style="width:30px;height:26px">E</span></div>');
+        const rows=[...list.querySelectorAll('[data-type="saved"]')],point=e=>{const r=e.getBoundingClientRect();return {x:r.left+4,y:r.top+r.height/2};};
+        try{
+            const samples=rows.flatMap(row=>[...row.children]).map(root=>({root,anchor:componentRoundTrip(point(root))}));
+            const rect=list.getBoundingClientRect(),tailPoint={x:rect.left+20,y:rect.bottom-4},tail=componentRoundTrip(tailPoint);
+            assert(samples.every(sample=>!JSON.stringify(sample.anchor).includes('private-')&&!JSON.stringify(sample.anchor).includes('同名动作')),'AI identity leaked raw IDs, prompts or names');
+            list.prepend(rows[2]);rows[0].classList.add('b3-list-item--focus');
+            const check=sample=>{const p=resolveCursor(sample.anchor),q=point(sample.root);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'same-name AI action followed list order');};samples.forEach(check);
+            const tailResolved=resolveCursor(tail);assert(tailResolved&&Math.hypot(tailResolved.x-tailPoint.x,tailResolved.y-tailPoint.y)<.6,'separated-list perimeter followed former last action');
+            rows[1].dataset.id='replacement';for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'replacement AI action inherited pointer');rows[1].dataset.id='private-action-second';
+            const clone=rows[0].cloneNode(true);list.append(clone);for(const sample of samples.filter(s=>rows[0].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'duplicate AI identity guessed');clone.remove();
+            for(const property of ['opacity','visibility','display']){rows[1].style[property]={opacity:'0',visibility:'hidden',display:'none'}[property];for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'hidden AI action painted: '+property);rows[1].style[property]=property==='display'?'flex':'';}samples.forEach(check);
+            rows[1].remove();for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'removed AI action inherited same-name sibling');
+        }finally{fixture.remove();}
+    });
     await test('命令面板按稳定命令身份匹配，同名重排、替换、重复和隐藏不串位',async()=>{
         const fixture=document.createElement('div');fixture.dataset.key='dialog-commandpanel';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:25px;top:25px;width:420px;height:300px;z-index:100;background:white"><div class="b3-dialog__header">命令面板</div><ul id="commands" class="b3-list search__list" style="padding:10px;margin:0;height:240px;box-sizing:border-box"></ul></div>';document.body.append(fixture);
         const list=fixture.querySelector('ul');for(const key of ['a','b','c'])list.insertAdjacentHTML('beforeend','<li class="b3-list-item" data-command-id="plugin/example/identity_'+key+'" style="display:block;list-style:none;height:40px"><span class="b3-list-item__text">同名命令</span></li>');

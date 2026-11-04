@@ -453,6 +453,16 @@ test('calendar scopes retain only bounded hashes and optional pane identity',asy
     for(const bad of [{key:'raw date'},{key:'a'.repeat(17)},{pane:'private pane'},{part:'event'},{group:scope.key},{kind:'unknown-calendar'}])await assert.rejects(update('calendar-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
 });
 
+test('tree scopes retain only bounded hashes and optional pane identity',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    await kernel.methods.get('presenceHeartbeat')('tree-scope-test',{generation:1});
+    const scope={kind:'tree',key:'1234567890abcdef',pane:'abcdef1234567890',label:'private tag path',bookmark:'private bookmark'},edge={kind:'self',side:'start'};
+    const cursor={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.4,y:.5},x:.4,y:.5,ui:{version:3,kind:'component',scope,route:[],edges:{x:[edge,edge],y:[edge,edge]}}};
+    await update('tree-scope-test',1,1,cursor);
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.scope)),{kind:scope.kind,key:scope.key,pane:scope.pane});
+    for(const bad of [{key:'raw tag'},{key:'a'.repeat(17)},{pane:'private pane'},{part:'event'},{group:scope.key},{kind:'unknown-tree'}])await assert.rejects(update('tree-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
+});
+
 test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
     const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
     await heartbeat('component-user-test',{generation:1});
@@ -482,6 +492,13 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     }
     await update('component-user-test',1,5,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'list',side:'end',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
     assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind:'list',side:'end'});
+    await update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'start',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind:'paint',side:'start'});
+    await assert.rejects(update('component-user-test',1,7,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
+    for(const [index,kind] of ['list-first','list-last'].entries()){
+        await update('component-user-test',1,7+index,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind,side:'end',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
+        assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind,side:'end'});
+    }
     await assert.rejects(update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'list',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
     for(const bad of [{scope:null},{scope:{kind:'global',key:'body'}},{route:Array(33).fill(step)},{route:[{...step,index:1}]},{route:[{...step,count:10001}]},
         {frame:[{...step,key:'<script>'}]},{textHash:'raw text'},{edges:{...ui.edges,x:[{kind:'selector',side:'start'},{kind:'self',side:'end'}]}},

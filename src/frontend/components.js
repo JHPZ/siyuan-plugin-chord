@@ -21,10 +21,12 @@ function componentChildren(element) {
     });
 }
 
-function componentListRect(element) {
-    const children=element.matches('.b3-list') && componentChildren(element);
-    if(!children?.length || children.some(child=>!child.matches('.b3-list-item')))return null;
-    const rects=children.map(child=>child.getBoundingClientRect()).filter(rect=>rect.width>0 && rect.height>0);
+function componentListRect(element,part) {
+    const tree=element.matches('ul') && element.closest('.sy__tag,.sy__bookmark'),children=(tree || element.matches('.b3-list')) && componentChildren(element);
+    if(!children?.length || !children.some(child=>child.matches('.b3-list-item')) || children.some(child=>!child.matches(tree ? 'li[data-treetype],ul':'.b3-list-item,.b3-menu__separator')))return null;
+    const items=tree ? [...element.querySelectorAll('li[data-treetype]')]:children;
+    let rects=items.map(child=>child.getBoundingClientRect()).filter(rect=>rect.width>0 && rect.height>0);
+    if(part && rects.length){rects.sort((a,b)=>a.top-b.top || a.left-b.left);rects=[part==='first' ? rects[0]:rects.at(-1)];}
     return rects.length ? {left:Math.min(...rects.map(rect=>rect.left)),right:Math.max(...rects.map(rect=>rect.right)),top:Math.min(...rects.map(rect=>rect.top)),bottom:Math.max(...rects.map(rect=>rect.bottom))}:null;
 }
 
@@ -32,10 +34,12 @@ function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    const tree=componentTreeRegion(element);
+    if(tree?.root===element)values.push(['tree',componentHash(JSON.stringify(tree.identity))]);
     if(element.matches('.b3-menu__separator')){
         const siblings=componentChildren(element.parentElement),index=siblings.indexOf(element),before=siblings.slice(0,index).reverse().find(item=>item.matches('.b3-menu__item')),after=siblings.slice(index+1).find(item=>item.matches('.b3-menu__item'));
         values.push(['between',[before ? componentKey(before):'',after ? componentKey(after):''].sort()]);
-    }else if(element.matches('.b3-menu__item[data-id]'))values.push(['menu-action',componentHash(element.getAttribute('data-id'))]);
+    }else if(element.matches('.b3-menu__item[data-id],.b3-menu .b3-list-item[data-type="saved"][data-id]'))values.push(['menu-action',componentHash(element.getAttribute('data-id'))]);
     if(element.matches('.protyle-hint .b3-list-item')){
         const result=element.querySelector(':scope > .b3-list-item__first[data-node-id]')?.getAttribute('data-node-id'),value=result || element.getAttribute('data-value');
         if(value)values.push(['hint',componentHash(value)]);
@@ -68,9 +72,9 @@ function componentKey(element) {
         values.push(['between',[neighbour(element.previousElementSibling),neighbour(element.nextElementSibling)].sort()]);
     }
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
-    const label=!privateText && !values.length ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
+    const label=!privateText && !values.length && !(tree && element.matches('.counter')) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item,.protyle-hint .b3-list-item__text') ? textLabel(element):'')):'';
-    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^b3-menu__item--(?:current|show|group-first|group-last)$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
 
@@ -106,6 +110,21 @@ function componentFollow(root,route) {
 const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
 const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id],.av__gallery-field,.av__firstcol,.av__row[data-id],.av__gallery-item[data-id],.av__row--header,.av__row--footer,.av__group-title,.av__body[data-group-id]';
 const COMPONENT_CALENDAR_REGIONS='.av__calendar,.av__calendar-day,.av__calendar-week,.av__calendar-week-row,.av__calendar-week-number,.av__calendar-days,.av__calendar-events,.av__calendar-weekdays > div,.av__calendar-item,.av__calendar-field,.av__calendar-undated-item[data-calendar-undated-row]';
+
+function componentTreeRegion(element) {
+    const panel=element.closest('.sy__tag,.sy__bookmark');if(!panel)return null;
+    const root=element.closest('li[data-treetype],ul'),branch=root?.matches('ul');
+    const row=branch ? root.previousElementSibling:root;
+    if(!row?.matches('li[data-treetype]') || !panel.contains(row))return null;
+    const kind=row.getAttribute('data-treetype'),attribute=kind==='tag' ? 'data-label':kind==='bookmark' ? row.hasAttribute('data-node-id') ? 'data-node-id':'data-bookmark':null;
+    const value=attribute && row.getAttribute(attribute);if(!value)return null;
+    return {panel,root,identity:[kind,attribute,value,branch ? 'branch':'row']};
+}
+
+function componentTreeScope(region,plugin) {
+    const base=componentScope(region.panel,plugin);
+    return base ? {kind:'tree',key:componentHash(JSON.stringify([base.scope.kind,base.scope.key,...region.identity]))}:null;
+}
 
 function componentCalendarDate(value) {
     if(!/^-?\d{1,16}$/.test(value || ''))return '';
@@ -172,6 +191,8 @@ function componentAVScope(av,plugin) {
 
 function componentScope(element,plugin) {
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
+    const tree=componentTreeRegion(element);
+    if(tree){const scope=componentTreeScope(tree,plugin);return scope ? {root:tree.root,scope}:null;}
     const calendar=componentCalendarRegion(element);
     if(calendar){const scope=componentCalendarScope(calendar,plugin);return scope ? {root:calendar.root,scope}:null;}
     const region=componentAVRegion(element);
@@ -213,6 +234,12 @@ function componentScope(element,plugin) {
 }
 
 function componentRoots(scope,plugin) {
+    if(scope.kind==='tree'){
+        const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul')].filter(root=>{
+            const region=componentTreeRegion(root);return region?.root===root && componentTreeScope(region,plugin)?.key===scope.key && visibleElement(root);
+        });
+        return roots.length===1 ? roots[0]:null;
+    }
     if(scope.kind==='calendar'){
         let roots=[...document.querySelectorAll(COMPONENT_CALENDAR_REGIONS)].filter(root=>{
             const region=componentCalendarRegion(root);return region?.root===root && componentCalendarScope(region,plugin)?.key===scope.key;
@@ -247,6 +274,7 @@ function componentCharacter(element,offset) {
 
 function componentNearText(element,point) {
     if(element.matches('input,textarea') || element.closest('[data-private]'))return null;
+    if(componentTreeRegion(element)?.root===element)return null;
     const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
     if(node?.nodeType!==3 || !element.contains(node)){
@@ -342,26 +370,41 @@ function frameToParent(frame,point) {
 function componentBox(hit,point) {
     if(hit.matches('.protyle-hint .b3-list-item__text > mark'))hit=hit.parentElement;
     if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
+    if(hit.matches('.b3-list-item__arrow') && componentTreeRegion(hit))hit=hit.closest('.b3-list-item__toggle') || hit;
     while(hit.parentElement){
         const rect=hit.getBoundingClientRect();
-        if(point.x>=rect.left && point.x<=rect.right && point.y>=rect.top && point.y<=rect.bottom)break;
+        if(point.x>=rect.left-.5 && point.x<=rect.right+.5 && point.y>=rect.top-.5 && point.y<=rect.bottom+.5)break;
         hit=hit.parentElement;
     }
     return hit;
 }
 
+function componentPaintRect(element) {
+    const rect=element.getBoundingClientRect();
+    // Hit testing can include half a CSS pixel beyond the measured box.
+    return {left:rect.left-.5,right:rect.right+.5,top:rect.top-.5,bottom:rect.bottom+.5};
+}
+
 function componentGeometry(element,point) {
     const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
     if(box)point=box.toLocal(point);
-    const bounds=box ? box.bounds:element.getBoundingClientRect(),children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element);
-    const edges={},relative={};let usedText=false;
+    let bounds=box ? box.bounds:element.getBoundingClientRect();
+    const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
+    if(paint)bounds=componentPaintRect(element);
+    const children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element);
+    const edges={},relative={};let usedText=!!(componentTreeRegion(element) && element.matches('.counter'));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
-        const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':'self',side:'end'}}];
+        const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
-        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end]);
+        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark') && (point.x<list.left || point.x>list.right));
         if(perimeter)for(const [side,key] of [['start',start],['end',end]])if(list[key]>=bounds[start] && list[key]<=bounds[end])entries.push({value:list[key],edge:{kind:'list',side}});
+        // At coincident bounds, prefer the nearest end row over the resizable list box.
+        if(perimeter && axis==='y' && element.matches('ul') && element.closest('.sy__tag,.sy__bookmark'))for(const part of point.y-bounds.top<=bounds.bottom-point.y ? ['last','first']:['first','last']){
+            const rect=componentListRect(element,part);
+            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
+        }
         for(const child of perimeter ? []:children){
             const rect=child.getBoundingClientRect();if(!rect.width || !rect.height || other<rect[otherStart] || other>rect[otherEnd])continue;
             const step=componentStep(child);
@@ -431,7 +474,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='frame' ? box?.content:edge.kind==='frame-box' ? box?.bounds:box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         if(values.some(value=>!Number.isFinite(value)) || values[1]<values[0] ||
@@ -442,8 +485,9 @@ function resolveComponent(cursor,plugin) {
     const hit=componentHit(element.ownerDocument,point);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
     const highlight=target===element && element.matches('.protyle-hint .b3-list-item__text') && hit?.matches('mark') && hit.parentElement===element;
+    const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || !visibleElement(hit) || hit!==target && !highlight && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
