@@ -1137,6 +1137,31 @@ async function test(name, run) {
             views[0].canvas.remove();assert(resolveCursor(blank)===null,'unrendered PDF page painted');
         }finally{testTabs.length=0;fixture.remove();}
     });
+    await test('PDF查找框按字素与留白定位，滚动、文件切换和旧比例锚点不误画',async()=>{
+        const fixture=document.createElement('div');fixture.className='layout-tab-container';fixture.style.cssText='position:fixed;left:30px;top:30px;width:650px;height:180px;z-index:100;background:white';
+        fixture.innerHTML='<div data-id="pdf-search-test"><div class="pdf__outer"><div id="findbar" class="findbar b3-menu"><input id="findInput" class="toolbarField b3-text-field"></div></div></div>';document.body.append(fixture);
+        const panel=fixture.firstElementChild,field=fixture.querySelector('input'),reference=document.createElement('div'),value='PDF 中文 😀 é 👨‍👩‍👧‍👦 '+'tail '.repeat(15),css='font:18px/30px monospace;width:500px;height:42px;padding:6px 8px;border:0;box-sizing:border-box;white-space:pre;';
+        field.style.cssText=css;field.value=value;reference.style.cssText=css+'position:fixed;left:-10000px;top:0';reference.textContent=value;document.body.append(reference);
+        const model={element:panel,pdfObject:{pdfDocument:{fingerprints:['pdf-search-file'],numPages:2},pdfViewer:{getPageView:()=>null}}};testTabs.push({model,panelElement:panel,headElement:document.createElement('li')});
+        try{
+            const point=offset=>{const s=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value).containing(offset),r=document.createRange();r.setStart(reference.firstChild,s.index);r.setEnd(reference.firstChild,s.index+s.segment.length);const g=r.getBoundingClientRect(),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();return {x:b.left+g.left-a.left+g.width*.5-field.scrollLeft,y:b.top+g.top-a.top+g.height*.5};};
+            const samples=[0,4,7,10,13].map(offset=>({offset,anchor:componentRoundTrip(point(offset))}));assert(samples.every(s=>s.anchor.ui.textHash),'PDF find still uses whole input ratios');
+            const b=field.getBoundingClientRect(),padding=componentRoundTrip({x:b.left+4,y:b.top+b.height*.5});assert(Object.values(padding.ui.edges).flat().some(e=>e.kind==='field'),'PDF padding has no content bounds');
+            field.parentElement.classList.add('wrapContainers');assert(samples.every(s=>resolveCursor(s.anchor))&&resolveCursor(padding),'responsive PDF findbar lost identity');field.parentElement.classList.remove('wrapContainers');
+            const old={...samples[0].anchor,ui:{...samples[0].anchor.ui,edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:[{kind:'self',side:'start'},{kind:'self',side:'end'}]}}};delete old.ui.textHash;assert(resolveCursor(old)===null,'old PDF input ratios painted');
+            for(const width of [350,580]){field.style.width=width+'px';reference.style.width=width+'px';for(const s of samples){const p=point(s.offset),a=resolveCursor(s.anchor);assert(a&&Math.hypot(a.x-p.x,a.y-p.y)<.02,'PDF find width drift');}}
+            field.style.width='120px';reference.style.width='120px';field.scrollLeft=300;
+            for(const s of samples){const p=point(s.offset),r=field.getBoundingClientRect(),a=resolveCursor(s.anchor),visible=p.x>=r.left+8&&p.x<r.right-8;assert(visible?a&&Math.hypot(a.x-p.x,a.y-p.y)<.02:a===null,'PDF find scroll clipping');}
+            assert(resolveCursor(padding),'PDF visible padding lost on scroll');field.scrollLeft=0;field.style.width='500px';reference.style.width='500px';
+            const plugin={currentDocument:()=>null,i18n:{pageWorkspace:'Workspace'},dialogBase:{kind:'asset',path:'assets/unrelated.pdf',title:'Other PDF'}},pointOnText=point(0),nativeAnchor=componentRoundTrip(pointOnText,plugin);plugin.dialogBase={kind:'workspace',title:''};assert(resolveCursor(nativeAnchor,plugin),'PDF find follows unrelated active page');
+            model.pdfObject.pdfDocument.fingerprints[0]='other-pdf';assert(samples.every(s=>resolveCursor(s.anchor)===null)&&resolveCursor(padding)===null,'another PDF inherited find pointers');model.pdfObject.pdfDocument.fingerprints[0]='pdf-search-file';
+            field.value='different query';assert(samples.every(s=>resolveCursor(s.anchor)===null),'different PDF query painted');assert(resolveCursor(padding),'PDF padding inherited query text');field.value=value;
+            field.parentElement.style.visibility='hidden';assert(samples.every(s=>resolveCursor(s.anchor)===null)&&resolveCursor(padding)===null,'closed PDF findbar painted');field.parentElement.style.visibility='';
+            field.setAttribute('data-private','');assert(!componentTextField(field)&&samples.every(s=>resolveCursor(s.anchor)===null),'private PDF find eligible');field.removeAttribute('data-private');
+            field.style.webkitTextSecurity='disc';Object.defineProperty(field,'value',{configurable:true,get(){throw Error('masked PDF value read');}});assert(!componentTextField(field),'masked PDF find eligible');assert(componentNearText(field,pointOnText)===null,'masked PDF measured');delete field.value;field.style.webkitTextSecurity='';
+            testTabs.length=0;Object.defineProperty(field,'value',{configurable:true,get(){throw Error('unknown PDF value read');}});assert(!componentTextField(field)&&componentNearText(field,pointOnText)===null,'unregistered PDF field measured');
+        }finally{testTabs.length=0;fixture.remove();reference.remove();}
+    });
     await test('原生关系图按节点身份与场景坐标定位，缩放平移、节点移动和缺失不误画',async()=>{
         const fixture=document.createElement('div'),dock=document.createElement('button');fixture.className='dockPanel sy__graph';dock.className='dock__item';dock.dataset.type='graph';
         fixture.style.cssText='position:fixed;left:30px;top:30px;width:420px;height:280px;z-index:100;background:white';fixture.innerHTML='<div class="graph__svg" style="width:100%;height:100%"><canvas width="420" height="280" style="width:100%;height:100%"></canvas></div>';
