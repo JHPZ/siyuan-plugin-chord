@@ -26,6 +26,8 @@ function dockPage(target) {
 
 function cursorRegion(element) {
     if(element.closest('.b3-dialog'))return null;
+    const backlink=componentBacklinkContext(element),editor=element.closest('.protyle');
+    if(backlink && editor && backlink.panel.contains(editor))return backlink.identity ? {kind:'dock',id:'backlink-'+componentHash(JSON.stringify(backlink.identity))}:null;
     const dock=dockPage(element);
     if(dock)return {kind:'dock',id:dock.id};
     if(element.closest('.dockPanel'))return null;

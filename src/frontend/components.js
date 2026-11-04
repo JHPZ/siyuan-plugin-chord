@@ -22,8 +22,9 @@ function componentChildren(element) {
 }
 
 function componentListRect(element,part) {
-    const tree=element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline'),children=(tree || element.matches('.b3-list')) && componentChildren(element);
-    if(!children?.length || !children.some(child=>child.matches('.b3-list-item')) || children.some(child=>!child.matches(tree ? 'li[data-treetype],ul':'.b3-list-item,.b3-menu__separator')))return null;
+    if(element.matches('.backlinkList__item') && componentBacklinkContext(element)){const row=element.querySelector(':scope > li'),rect=row?.getBoundingClientRect();return rect?.width && rect.height ? rect:null;}
+    const backlink=element.matches('.b3-list') && element.parentElement?.matches('.backlinkList,.backlinkMList') && componentBacklinkContext(element),tree=element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline'),children=(tree || element.matches('.b3-list')) && componentChildren(element);
+    if(!children?.length || !children.some(child=>child.matches(backlink ? '.backlinkList__item':'.b3-list-item')) || children.some(child=>!child.matches(tree ? 'li[data-treetype],ul':backlink ? '.backlinkList__item':'.b3-list-item,.b3-menu__separator')))return null;
     const items=tree ? [...element.querySelectorAll('li[data-treetype]')]:children;
     let rects=items.map(child=>child.getBoundingClientRect()).filter(rect=>rect.width>0 && rect.height>0);
     if(part && rects.length){rects.sort((a,b)=>a.top-b.top || a.left-b.left);rects=[part==='first' ? rects[0]:rects.at(-1)];}
@@ -111,7 +112,27 @@ const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-to
 const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id],.av__gallery-field,.av__firstcol,.av__row[data-id],.av__gallery-item[data-id],.av__row--header,.av__row--footer,.av__group-title,.av__body[data-group-id]';
 const COMPONENT_CALENDAR_REGIONS='.av__calendar,.av__calendar-day,.av__calendar-week,.av__calendar-week-row,.av__calendar-week-number,.av__calendar-days,.av__calendar-events,.av__calendar-weekdays > div,.av__calendar-item,.av__calendar-field,.av__calendar-undated-item[data-calendar-undated-row]';
 
+function componentBacklinkContext(element) {
+    const panel=element.closest('.sy__backlink,.sy__backlink--bottom');if(!panel)return null;
+    let model;try{model=getModelByDockType('backlink');}catch{}
+    if(model?.element!==panel){try{model=getAllTabs().flatMap(tab=>[tab.model,tab.model?.backlink]).find(item=>item?.element===panel);}catch{model=null;}}
+    const section=element.closest('.backlinkList,.backlinkMList'),mention=!!element.closest('.backlinkMList,.backlinkMList__header');
+    return {panel,section,identity:DOCUMENT_ID.test(model?.blockId || '') ? [model.type,model.blockId,mention ? 'mention':'backlink']:null};
+}
+
+function componentTextHash(element) {
+    const text=element.matches('.block__logo--counter') && element.closest('.sy__backlink,.sy__backlink--bottom') ? [...element.childNodes].filter(node=>node.nodeType!==1 || !node.matches('.counter')).map(node=>node.textContent).join(''):element.textContent;
+    return componentHash(text);
+}
+
 function componentTreeRegion(element) {
+    const backlink=componentBacklinkContext(element);
+    if(backlink){
+        const {panel,section,identity}=backlink,item=element.closest('.backlinkList__item[data-node-id]'),row=element.closest('.backlinkList__item > li[data-node-id]'),counter=element.closest('.backlinkList__header .counter,.backlinkMList__header .counter');
+        if(counter)return {panel,root:counter,identity:['backlink','counter',element.closest('.backlinkMList__header') ? 'mention':'backlink']};
+        const root=row || item || section;if(!root)return null;
+        return {panel,root,identity:identity ? ['backlink',...identity,row ? 'row':item ? 'item':'section',(row || item)?.getAttribute('data-node-id') || '']:null};
+    }
     const panel=element.closest('.sy__tag,.sy__bookmark,.sy__outline');if(!panel)return null;
     const root=element.closest('li[data-treetype],ul'),branch=root?.matches('ul');
     const row=branch ? root.previousElementSibling:root;
@@ -242,7 +263,7 @@ function componentScope(element,plugin) {
 
 function componentRoots(scope,plugin) {
     if(scope.kind==='tree'){
-        const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1')].filter(root=>{
+        const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1,.backlinkList,.backlinkMList,.backlinkList__item,.backlinkList__item > li,.backlinkList__header .counter,.backlinkMList__header .counter')].filter(root=>{
             const region=componentTreeRegion(root);return region?.root===root && componentTreeScope(region,plugin)?.key===scope.key && visibleElement(root);
         });
         return roots.length===1 ? roots[0]:null;
@@ -281,7 +302,7 @@ function componentCharacter(element,offset) {
 
 function componentNearText(element,point) {
     if(element.matches('input,textarea') || element.closest('[data-private]'))return null;
-    if(componentTreeRegion(element)?.root===element)return null;
+    if(componentTreeRegion(element)?.root===element || element.matches('.backlinkList__header,.backlinkMList__header') && element.closest('.sy__backlink,.sy__backlink--bottom'))return null;
     const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
     if(node?.nodeType!==3 || !element.contains(node)){
@@ -297,6 +318,7 @@ function componentNearText(element,point) {
         }
         return nearest ? [nearest]:null;
     }
+    if(element.matches('.block__logo--counter') && element.closest('.sy__backlink,.sy__backlink--bottom') && node.parentElement.closest('.counter'))return null;
     if(node.parentElement.closest('.b3-menu__item,.b3-list-item')!==element.closest('.b3-menu__item,.b3-list-item'))return null;
     if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
@@ -398,17 +420,17 @@ function componentGeometry(element,point) {
     let bounds=box ? box.bounds:element.getBoundingClientRect();
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
-    const children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element);
+    const children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     const edges={},relative={};let usedText=!!(componentTreeRegion(element) && element.matches('.counter'));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
-        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline') && (point.x<list.left || point.x>list.right));
+        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || tree && (point.x<list.left || point.x>list.right));
         if(perimeter)for(const [side,key] of [['start',start],['end',end]])if(list[key]>=bounds[start] && list[key]<=bounds[end])entries.push({value:list[key],edge:{kind:'list',side}});
         // At coincident bounds, prefer the nearest end row over the resizable list box.
-        if(perimeter && axis==='y' && element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline'))for(const part of point.y-bounds.top<=bounds.bottom-point.y ? ['last','first']:['first','last']){
+        if(perimeter && axis==='y' && tree)for(const part of point.y-bounds.top<=bounds.bottom-point.y ? ['last','first']:['first','last']){
             const rect=componentListRect(element,part);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
         }
@@ -425,7 +447,7 @@ function componentGeometry(element,point) {
         usedText ||= lower.edge.kind==='text' || upper.edge.kind==='text';
     }
     const imagePoint=image && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
-    return {edges,...relative,...(usedText ? {textHash:componentHash(element.textContent)}:{}),...(imagePoint ? {imagePoint}:{})};
+    return {edges,...relative,...(usedText ? {textHash:componentTextHash(element)}:{}),...(imagePoint ? {imagePoint}:{})};
 }
 
 function captureComponent(hit,plugin,point) {
@@ -471,7 +493,7 @@ function resolveComponent(cursor,plugin) {
         element=doc?.body && componentFollow(doc.body,route);if(!element)return null;
     }
     if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') ||
-        anchor.textHash && componentHash(element.textContent)!==anchor.textHash)return null;
+        anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
     const box=element.matches('iframe') ? frameBox(element):null;if(element.matches('iframe') && !box)return null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
