@@ -491,6 +491,51 @@ async function test(name, run) {
             fixture.querySelector('.av__header').dataset.currentViewId='20261104140000-othview';assert(resolveCursor(blank)===null&&resolveCursor(anchor)===null,'different calendar view inherited pointer');
         }finally{fixture.remove();}
     });
+    await test('原生卡片封面区分透明占位图后的不同背景图案，穿透图片时也不误画',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:25px;top:25px;width:300px;height:220px;z-index:100;background:white';fixture.innerHTML='<div class="protyle-background" data-node-id="20261104142000-bgdoc01"></div><div class="protyle-wysiwyg" style="padding:0"><div data-type="NodeAttributeView" data-node-id="20261104142000-bgblock" data-av-id="20261104142000-bgdata1" contenteditable="false"><div class="av__gallery-item" data-id="20261104142000-row0001"><div class="av__gallery-cover" style="width:240px;height:160px"><img class="av__gallery-img" style="width:100%;height:100%;background:linear-gradient(45deg,red,blue)"></div></div></div></div>';
+        document.body.append(fixture);const image=fixture.querySelector('img');image.src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';await image.decode();
+        try{
+            const point={x:100,y:100};
+            for(const pointerEvents of ['auto','none']){image.style.pointerEvents=pointerEvents;const anchor=componentRoundTrip(point),background=image.style.background;image.style.background='linear-gradient(45deg,green,yellow)';assert(resolveCursor(anchor)===null,'different native cover pattern inherited pointer');image.style.background=background;assert(resolveCursor(anchor),'restored cover did not restore pointer');}
+            image.src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="blue"/></svg>');await image.decode();
+            const cover=image.parentElement;cover.style.overflow='hidden';image.style.objectFit='cover';image.style.objectPosition='50% 50%';
+            const r=cover.getBoundingClientRect(),center=componentRoundTrip({x:r.left+120,y:r.top+80}),edge=componentRoundTrip({x:r.left+4,y:r.top+80});
+            assert(center.ui.imagePoint&&edge.ui.imagePoint,'pointer-transparent native cover lost image pixels');
+            cover.style.height='240px';image.style.objectPosition='80% 25%';
+            const moved=resolveCursor(center);assert(moved&&near(moved.x,r.left+48)&&near(moved.y,r.top+120),'native cover pixel followed container fraction');
+            assert(resolveCursor(edge)===null,'cropped native cover pixel painted');image.style.opacity='0';assert(resolveCursor(center)===null,'transparent native cover image painted');
+        }finally{fixture.remove();}
+    });
+    await test('悬停按钮透明和隐藏但仍占位时保留相邻留白，按钮自身继续隐藏',async()=>{
+        const fixture=document.createElement('div');fixture.id='hover-layout-gap';fixture.style.cssText='position:fixed;left:25px;top:25px;width:200px;height:110px;z-index:100;background:white';fixture.innerHTML='<button data-type="hover-control" style="position:absolute;left:40px;top:10px;width:70px;height:30px">操作</button>';document.body.append(fixture);
+        try{
+            const button=fixture.firstElementChild,point={x:85,y:95},blank=componentRoundTrip(point),control=componentRoundTrip({x:90,y:45});
+            for(const state of ['opacity','visibility']){
+                button.style[state]=state==='opacity'?'0':'hidden';const mapped=resolveCursor(blank);assert(mapped&&Math.hypot(mapped.x-point.x,mapped.y-point.y)<.6,'transparent layout boundary lost whitespace');assert(resolveCursor(control)===null,'invisible hover button painted');button.style[state]='';
+            }
+            button.style.display='none';assert(resolveCursor(blank)===null,'removed layout boundary was guessed');button.style.display='';assert(resolveCursor(blank),'restored boundary did not restore whitespace');
+        }finally{fixture.remove();}
+    });
+    await test('原生看板栏目标题、卡片字段和空白按分组定位，同名重排与折叠不串位',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:25px;top:25px;width:650px;height:500px;z-index:100;background:white';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261104141000-kbdoc01"></div><div class="protyle-wysiwyg" style="padding:0"><div data-type="NodeAttributeView" data-node-id="20261104141000-kbblock" data-av-id="20261104141000-kbdata1" data-av-type="kanban" contenteditable="false"><div class="av__kanban" style="display:flex;gap:20px"></div></div></div>';
+        const board=fixture.querySelector('.av__kanban');
+        for(const group of ['20261104141000-group01','20261104141000-group02'])board.insertAdjacentHTML('beforeend','<div class="av__kanban-group" data-group-id="'+group+'" style="width:260px"><div class="av__group-title" style="height:40px"><span class="av__group-name">同名栏目</span><span class="av__group-counter">1</span></div><div class="av__body" data-group-id="'+group+'" style="padding:8px;min-height:170px"><div class="av__gallery"><div class="av__gallery-item" data-id="20261104141000-row0001" style="height:120px;padding:8px"><div class="av__gallery-fields"><div class="av__gallery-field"><div class="av__gallery-name">同名字段</div><div class="av__cell" data-field-id="20261104141000-col0001"><span>同名内容</span></div></div></div></div></div></div></div>');
+        document.body.append(fixture);const column=board.firstElementChild,title=column.querySelector('.av__group-name'),body=column.querySelector('.av__body'),card=column.querySelector('.av__gallery-item'),field=column.querySelector('.av__gallery-name');
+        const at=(e,x=8,y=10)=>{const r=e.getBoundingClientRect();return {x:r.left+x,y:r.top+y};},check=(a,e,x=8,y=10)=>{const p=resolveCursor(a),q=at(e,x,y);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'kanban target lost or drifted: '+e.className);};
+        try{
+            const titleAnchor=componentRoundTrip(at(title)),fieldAnchor=componentRoundTrip(at(field)),blank=componentRoundTrip(at(card,230,110));assert(titleAnchor.ui.scope.part==='group-title','native kanban title has no column identity');
+            board.append(column);check(titleAnchor,title);check(fieldAnchor,field);check(blank,card,230,110);
+            body.style.display='none';check(titleAnchor,title);assert(resolveCursor(fieldAnchor)===null&&resolveCursor(blank)===null,'collapsed column jumped to visible duplicate card');body.style.display='';
+            title.style.opacity='0';assert(resolveCursor(titleAnchor)===null,'transparent column title painted');title.style.opacity='1';
+            const label=column.querySelector('.av__group-title'),clone=label.cloneNode(true);label.after(clone);assert(resolveCursor(titleAnchor)===null,'duplicate kanban header guessed');clone.remove();
+            column.dataset.groupId='20261104141000-othergp';assert(resolveCursor(titleAnchor)===null,'another same-name column inherited title');column.dataset.groupId='20261104141000-group01';
+            column.style.height='480px';const bounds=column.getBoundingClientRect(),content=body.getBoundingClientRect(),outerPoint={x:bounds.right-5,y:bounds.bottom-4},outer=componentRoundTrip(outerPoint);assert(!outer.ui.textHash,'column whitespace froze all descendant text');
+            const ratio=(outerPoint.y-content.bottom)/(bounds.bottom-content.bottom),extra=card.cloneNode(true);extra.dataset.id='20261104141000-row0002';extra.querySelector('.av__cell').textContent='另一张卡片';card.after(extra);
+            let mapped=resolveCursor(outer),after=column.getBoundingClientRect(),end=body.getBoundingClientRect().bottom;assert(mapped&&Math.hypot(mapped.x-outerPoint.x,mapped.y-(end+(after.bottom-end)*ratio))<.6,'unrelated card changed column gap identity');extra.remove();
+            column.remove();assert(resolveCursor(titleAnchor)===null,'missing column title moved to another group');
+        }finally{fixture.remove();}
+    });
     await test('数据库分组标题、表头、汇总、行按钮和留白按身份匹配，重排冻结不丢失或串位',async()=>{
         const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:25px;top:25px;width:650px;height:580px;z-index:100;background:white';
         fixture.innerHTML='<div class="protyle-background" data-node-id="20261104132000-dbdoc01"></div><div class="protyle-wysiwyg" style="padding:0"><div data-type="NodeAttributeView" data-node-id="20261104132000-dbblock" data-av-id="20261104132000-dbdata1" contenteditable="false"><div class="av__scroll"></div></div></div>';

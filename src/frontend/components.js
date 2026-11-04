@@ -9,7 +9,8 @@ function componentChildren(element) {
     return [...element.children].filter(child=>{
         if(child.matches('style,script,.collab-cursor-layer,.collab-editing-layer,.collab-presence-users,.fn__none,[hidden]'))return false;
         const style=child.ownerDocument.defaultView.getComputedStyle(child);
-        return style.display!=='none' && style.visibility!=='hidden' && style.opacity!=='0';
+        // Transparent controls still occupy space and remain stable references for surrounding gaps.
+        return style.display!=='none';
     });
 }
 
@@ -23,6 +24,10 @@ function componentKey(element) {
             const value=element.getAttribute(name);if(value!==null)values.push([name,componentHash(['data-calendar-day','data-calendar-week','data-calendar-add'].includes(name) ? componentCalendarDate(value):value)]);
         }
         if(element.matches('.av__colsticky,.av__gallery-field'))values.push(['fields',[...element.querySelectorAll('[data-col-id],[data-field-id]')].map(cell=>cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id')).sort().join('|')]);
+        if(element.matches('.av__gallery-cover,.av__gallery-img')){
+            const image=element.matches('img') ? element:element.querySelector('img');
+            if(image)values.push(['cover',image.getAttribute('src'),image.style.background]);
+        }
     }
     if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
     if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
@@ -133,7 +138,7 @@ function componentAVRegion(element) {
     else if(title){root=title;part='group-title';}
     else if(body){root=body;part='group';}
     if(!root || root.closest('[data-type="NodeAttributeView"]')!==av)return null;
-    const group=title ? title.querySelector('[data-type="av-group-fold"][data-id]')?.getAttribute('data-id'):body?.getAttribute('data-group-id');
+    const group=title ? title.querySelector('[data-type="av-group-fold"][data-id]')?.getAttribute('data-id') || title.closest('.av__kanban-group[data-group-id]')?.getAttribute('data-group-id'):body?.getAttribute('data-group-id');
     return {av,root,part,row:row?.getAttribute('data-id') || '',column,group:group || ''};
 }
 
@@ -222,11 +227,14 @@ function componentNearText(element,point) {
     const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
     if(node?.nodeType!==3 || !element.contains(node))return null;
+    if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
     return [prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
 }
 
 function componentImageRect(image) {
+    if(image.matches('.av__gallery-cover'))image=image.querySelector(':scope > img.av__gallery-img');
+    if(!image || !visibleElement(image))return null;
     if(!image.matches('img') || !image.naturalWidth || !image.naturalHeight)return null;
     const style=image.ownerDocument.defaultView.getComputedStyle(image),rect=image.getBoundingClientRect();
     const left=parseFloat(style.paddingLeft),right=parseFloat(style.paddingRight),top=parseFloat(style.paddingTop),bottom=parseFloat(style.paddingBottom);
@@ -316,8 +324,7 @@ function componentGeometry(element,point) {
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
         for(const child of children){
-            if(!visibleElement(child))continue;
-            const rect=child.getBoundingClientRect();if(other<rect[otherStart] || other>rect[otherEnd])continue;
+            const rect=child.getBoundingClientRect();if(!rect.width || !rect.height || other<rect[otherStart] || other>rect[otherEnd])continue;
             const step=componentStep(child);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'child',side,step}});
         }
