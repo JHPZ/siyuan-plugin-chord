@@ -22,7 +22,7 @@ function componentChildren(element) {
 }
 
 function componentListRect(element,part) {
-    const tree=element.matches('ul') && element.closest('.sy__tag,.sy__bookmark'),children=(tree || element.matches('.b3-list')) && componentChildren(element);
+    const tree=element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline'),children=(tree || element.matches('.b3-list')) && componentChildren(element);
     if(!children?.length || !children.some(child=>child.matches('.b3-list-item')) || children.some(child=>!child.matches(tree ? 'li[data-treetype],ul':'.b3-list-item,.b3-menu__separator')))return null;
     const items=tree ? [...element.querySelectorAll('li[data-treetype]')]:children;
     let rects=items.map(child=>child.getBoundingClientRect()).filter(rect=>rect.width>0 && rect.height>0);
@@ -112,16 +112,23 @@ const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av_
 const COMPONENT_CALENDAR_REGIONS='.av__calendar,.av__calendar-day,.av__calendar-week,.av__calendar-week-row,.av__calendar-week-number,.av__calendar-days,.av__calendar-events,.av__calendar-weekdays > div,.av__calendar-item,.av__calendar-field,.av__calendar-undated-item[data-calendar-undated-row]';
 
 function componentTreeRegion(element) {
-    const panel=element.closest('.sy__tag,.sy__bookmark');if(!panel)return null;
+    const panel=element.closest('.sy__tag,.sy__bookmark,.sy__outline');if(!panel)return null;
     const root=element.closest('li[data-treetype],ul'),branch=root?.matches('ul');
     const row=branch ? root.previousElementSibling:root;
-    if(!row?.matches('li[data-treetype]') || !panel.contains(row))return null;
-    const kind=row.getAttribute('data-treetype'),attribute=kind==='tag' ? 'data-label':kind==='bookmark' ? row.hasAttribute('data-node-id') ? 'data-node-id':'data-bookmark':null;
+    if(!row?.matches('li[data-treetype]') || !panel.contains(row)){
+        if(!panel.matches('.sy__outline'))return null;
+        let model;try{model=getModelByDockType('outline');}catch{}
+        const title=panel.querySelector(':scope > .b3-list-item'),content=title?.nextElementSibling;
+        const root=title?.contains(element) ? title:content?.contains(element) ? content:null;
+        return root ? {panel,root,identity:model?.parent?.panelElement===panel && DOCUMENT_ID.test(model.blockId || '') ? ['outline','document',model.blockId,root===title ? 'title':'content']:null}:null;
+    }
+    const kind=row.getAttribute('data-treetype'),attribute=kind==='tag' ? 'data-label':kind==='outline' ? 'data-node-id':kind==='bookmark' ? row.hasAttribute('data-node-id') ? 'data-node-id':'data-bookmark':null;
     const value=attribute && row.getAttribute(attribute);if(!value)return null;
     return {panel,root,identity:[kind,attribute,value,branch ? 'branch':'row']};
 }
 
 function componentTreeScope(region,plugin) {
+    if(!region.identity)return null;
     const base=componentScope(region.panel,plugin);
     return base ? {kind:'tree',key:componentHash(JSON.stringify([base.scope.kind,base.scope.key,...region.identity]))}:null;
 }
@@ -235,7 +242,7 @@ function componentScope(element,plugin) {
 
 function componentRoots(scope,plugin) {
     if(scope.kind==='tree'){
-        const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul')].filter(root=>{
+        const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1')].filter(root=>{
             const region=componentTreeRegion(root);return region?.root===root && componentTreeScope(region,plugin)?.key===scope.key && visibleElement(root);
         });
         return roots.length===1 ? roots[0]:null;
@@ -398,10 +405,10 @@ function componentGeometry(element,point) {
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
-        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark') && (point.x<list.left || point.x>list.right));
+        const perimeter=list && (point[axis]<list[start] || point[axis]>list[end] || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline') && (point.x<list.left || point.x>list.right));
         if(perimeter)for(const [side,key] of [['start',start],['end',end]])if(list[key]>=bounds[start] && list[key]<=bounds[end])entries.push({value:list[key],edge:{kind:'list',side}});
         // At coincident bounds, prefer the nearest end row over the resizable list box.
-        if(perimeter && axis==='y' && element.matches('ul') && element.closest('.sy__tag,.sy__bookmark'))for(const part of point.y-bounds.top<=bounds.bottom-point.y ? ['last','first']:['first','last']){
+        if(perimeter && axis==='y' && element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline'))for(const part of point.y-bounds.top<=bounds.bottom-point.y ? ['last','first']:['first','last']){
             const rect=componentListRect(element,part);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
         }

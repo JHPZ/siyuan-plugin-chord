@@ -616,10 +616,10 @@ async function test(name, run) {
         }finally{fixture.remove();}
     });
     await test('标签完整路径和书签组身份独立于计数、嵌套列表顺序及同名叶节点',async()=>{
-        for(const kind of ['tag','bookmark']){
+        for(const kind of ['tag','bookmark','outline']){
             const fixture=document.createElement('div'),dock=document.createElement('div'),previous=dockModels.get(kind);
             fixture.className='sy__'+kind+' dockPanel';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;height:300px;z-index:100;background:white';dock.className='dock__item';dock.dataset.type=kind;
-            const attribute=kind==='tag'?'data-label':'data-bookmark';
+            const attribute=kind==='tag'?'data-label':kind==='outline'?'data-node-id':'data-bookmark';
             fixture.innerHTML='<ul class="b3-list" style="padding:4px 0 10px;margin:0"></ul>';const list=fixture.firstElementChild;
             for(const name of ['甲','乙'])list.insertAdjacentHTML('beforeend','<li class="b3-list-item" data-treetype="'+kind+'" '+attribute+'="private-root-'+name+'" style="display:flex;align-items:center;height:34px"><span class="b3-list-item__toggle"><svg class="b3-list-item__arrow b3-list-item__arrow--open" width="16" height="16"><rect width="16" height="16"/></svg></span><span class="b3-list-item__text" style="width:130px">'+name+'</span><span class="counter">2</span></li><ul style="margin:0;padding-left:20px"><li class="b3-list-item" data-treetype="'+kind+'" '+(kind==='tag'?'data-label="private-root-'+name+'/同名"':'data-node-id="20261104170000-child0'+(name==='甲'?'1':'2')+'"')+' style="display:flex;align-items:center;height:34px"><span class="b3-list-item__text" style="width:130px">同名</span><span class="counter">1</span></li></ul>');
             document.body.append(fixture,dock);dockModels.set(kind,{parent:{panelElement:fixture}});
@@ -634,12 +634,26 @@ async function test(name, run) {
                 const owner=kind==='tag'?leaf[0]:groups[0],old=owner.getAttribute(attribute);owner.setAttribute(attribute,'private-replacement');for(const s of samples.filter(s=>owner.contains(s.root)))assert(resolveCursor(s.anchor)===null,'same-name replacement inherited tree pointer');owner.setAttribute(attribute,old);samples.forEach(check);
                 nested[0].style.display='none';arrow.classList.remove('b3-list-item__arrow--open');assert(resolveCursor(arrowAnchor),'visible tree toggle disappeared after collapsing its children');for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'collapsed tree branch inherited same-name leaf');nested[0].style.display='';arrow.classList.add('b3-list-item__arrow--open');samples.forEach(check);
                 leaf[0].style.opacity='0';for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'transparent tree leaf painted');leaf[0].style.opacity='';
-                if(kind==='bookmark'){
+                if(kind==='bookmark'||kind==='outline'){
                     nested[1].append(leaf[0]);samples.forEach(check);nested[0].append(leaf[0]);samples.forEach(check);
                 }
                 const duplicate=leaf[0].cloneNode(true);nested[1].append(duplicate);for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'ambiguous tree row guessed');duplicate.remove();samples.forEach(check);
             }finally{if(previous)dockModels.set(kind,previous);else dockModels.delete(kind);fixture.remove();dock.remove();}
         }
+    });
+    await test('大纲标题与内容留白绑定文档，通用工具栏跨文档仍可见',async()=>{
+        const fixture=document.createElement('div'),dock=document.createElement('div'),previous=dockModels.get('outline');
+        fixture.className='sy__outline dockPanel';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;height:300px;z-index:100;background:white';dock.className='dock__item';dock.dataset.type='outline';
+        fixture.innerHTML='<div class="block__icons" style="height:32px"><button data-type="search">搜索</button></div><div class="b3-list-item" title="同名文档" style="height:32px;display:flex"><span class="b3-list-item__text" style="width:160px">同名文档</span><span class="counter">2</span></div><div class="fn__flex-1" style="height:236px;padding:3px 0 8px;box-sizing:border-box"><ul class="b3-list" style="margin:0;padding:0"><li data-treetype="outline" data-node-id="20261104180000-heading" class="b3-list-item" style="height:28px">标题</li></ul></div>';
+        document.body.append(fixture,dock);const model={blockId:'20261104180000-doc0001',notebookId:'20261102202832-mhg8hmt',parent:{panelElement:fixture}};dockModels.set('outline',model);
+        const point=e=>{const r=e.getBoundingClientRect();return {x:r.right-3,y:r.bottom-3};},title=fixture.children[1],content=fixture.children[2],label=title.firstElementChild;
+        try{
+            const samples=[title,label,content].map(root=>({root,anchor:componentRoundTrip(point(root))})),control=componentRoundTrip(point(fixture.querySelector('button')));
+            model.blockId='20261104180000-doc0002';for(const sample of samples)assert(resolveCursor(sample.anchor)===null,'same-name outline document inherited title or content whitespace');assert(resolveCursor(control),'generic outline toolbar disappeared across documents');
+            model.blockId='';for(const sample of samples)assert(resolveCursor(sample.anchor)===null,'unidentified outline document painted');assert(captureCursor(point(title))===null,'unidentified title acquired a generic dock anchor');model.blockId='20261104180000-doc0001';const check=()=>{for(const sample of samples){const actual=resolveCursor(sample.anchor),expected=point(sample.root);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.01,'outline title or content drifted');}};check();
+            title.lastElementChild.textContent='3';check();label.textContent='重命名文档';assert(resolveCursor(samples[1].anchor)===null,'renamed title inherited old text');label.textContent='同名文档';check();
+            fixture.style.opacity='0';for(const sample of samples)assert(resolveCursor(sample.anchor)===null,'hidden outline content painted');fixture.style.opacity='';check();
+        }finally{if(previous)dockModels.set('outline',previous);else dockModels.delete('outline');fixture.remove();dock.remove();}
     });
     await test('树外围留白与原生半像素命中独立于分支重排',async()=>{
         const fixture=document.createElement('div');fixture.className='sy__tag';fixture.style.cssText='position:fixed;left:25px;top:25px;width:300px;background:white;z-index:100';
