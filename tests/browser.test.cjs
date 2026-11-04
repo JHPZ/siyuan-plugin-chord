@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const frontendSource = fs.readFileSync(path.join(root, "index.js"), "utf8");
-const helpers = fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/graphs.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/components.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
+const helpers = fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/graphs.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/pdf.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/components.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
 const selectionMethods = frontendSource.slice(frontendSource.indexOf('    renderSelections() {'), frontendSource.indexOf('    clearRow(')).replace('renderSelections() {','function renderSelections() {') +
     frontendSource.slice(frontendSource.indexOf('    async sendSelection() {'), frontendSource.indexOf('    scheduleCursorRender(')).replace('async sendSelection() {','async function sendSelection() {');
 const treeMethods = frontendSource.slice(frontendSource.indexOf('    clearRow('), frontendSource.indexOf('    openMenu() {'))
@@ -31,6 +31,8 @@ ${Array.from({ length: 25 }, (_, i) => `<li data-type="navigation-file" data-nod
 </div></div></div></div><script>${helpers}\n${selectionMethods}\n${treeMethods}</script><script>
 const dockModels=new Map();
 function getModelByDockType(type){return dockModels.get(type);}
+const testTabs=[];
+function getAllTabs(){return testTabs;}
 const viewerMenus=[];
 class Menu {
     constructor() { this.items=[];viewerMenus.push(this); }
@@ -509,6 +511,44 @@ async function test(name, run) {
             frameElement.contentWindow.scrollTo(0,20);await frame();assert(resolveCursor(anchor),'visible scrolled button disappeared');
             button.remove();assert(resolveCursor(anchor)===null,'missing iframe component used frame fraction');
         }finally{frameElement.remove();}
+    });
+    await test('原生 PDF 页面按文件和页码定位，缩放旋转、页间空白与遮挡不会串页',async()=>{
+        const fixture=document.createElement('div');fixture.className='layout-tab-container';
+        fixture.style.cssText='position:fixed;left:30px;top:30px;width:420px;height:360px;z-index:100;background:white;overflow:auto';
+        fixture.innerHTML='<div data-id="pdf-test"><div class="pdfViewer"><div class="page" data-page-number="1" style="width:200px;height:120px;position:relative;margin:10px"><canvas style="width:100%;height:100%"></canvas><div class="textLayer" style="position:absolute;left:25px;top:25px;width:65px;height:20px">PDF text</div><div class="pdf__rect" data-node-id="20261104110000-pdfmark" style="position:absolute;left:110px;top:25px;width:40px;height:20px"></div></div><div class="page" data-page-number="2" style="width:200px;height:120px;position:relative;margin:10px"><canvas style="width:100%;height:100%"></canvas></div></div></div>';
+        document.body.append(fixture);
+        let rotation=0,scale=1;
+        const panel=fixture.firstElementChild,pages=[...fixture.querySelectorAll('.page')];
+        const views=pages.map(div=>({div,canvas:div.querySelector('canvas'),pdfPage:{view:[0,0,200,120]},get viewport(){return {width:(rotation?120:200)*scale,height:(rotation?200:120)*scale,convertToPdfPoint:(x,y)=>rotation?[y/scale,x/scale]:[x/scale,y/scale],convertToViewportPoint:(x,y)=>rotation?[y*scale,x*scale]:[x*scale,y*scale]};}}));
+        const pdfObject={pdfDocument:{fingerprints:['test-pdf-file'],numPages:2},pdfViewer:{getPageView:index=>views[index]}};
+        const model={path:'assets/cursor-test.pdf',element:panel,pdfObject},head=document.createElement('li');
+        testTabs.push({panelElement:panel,headElement:head,model,title:'PDF'});
+        const thumbnail=document.createElement('div');thumbnail.className='thumbnail selected';thumbnail.dataset.pageNumber='1';thumbnail.style.cssText='position:absolute;left:260px;top:10px;width:90px;height:70px;padding:5px;box-sizing:border-box';
+        const thumbnailImage=document.createElement('img');thumbnailImage.style.cssText='width:80px;height:60px';const imageContainer=document.createElement('div');imageContainer.className='thumbnailImageContainer';imageContainer.setAttribute('role','button');imageContainer.append(thumbnailImage);thumbnail.append(imageContainer);panel.append(thumbnail);
+        thumbnailImage.src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="blue"/></svg>');await new Promise(resolve=>thumbnailImage.onload=resolve);
+        pdfObject.pdfThumbnailViewer={getThumbnail:()=>({div:thumbnail,image:thumbnailImage,get viewport(){return views[0].viewport;}})};
+        const pdfPoint=(view,x,y)=>{const r=view.canvas.getBoundingClientRect(),v=view.viewport.convertToViewportPoint(x,y);return {x:r.left+v[0]*r.width/view.viewport.width,y:r.top+v[1]*r.height/view.viewport.height};};
+        try{
+            const blank=componentRoundTrip(pdfPoint(views[0],170,90));assert(blank.ui.pdf?.page===1,'PDF canvas blank has no page identity');
+            const text=componentRoundTrip(pdfPoint(views[0],40,35));assert(text.ui.pdf,'PDF text does not share page coordinates');
+            const marked=componentRoundTrip(pdfPoint(views[0],120,35));assert(marked.ui.pdf?.mark,'PDF annotation identity missing');
+            const second=componentRoundTrip(pdfPoint(views[1],170,90));assert(second.ui.pdf?.page===2,'PDF second page lost identity');
+            const thumbnailRect=thumbnailImage.getBoundingClientRect(),thumbnailCursor=componentRoundTrip({x:thumbnailRect.left+20,y:thumbnailRect.top+10});assert(thumbnailCursor.ui.pdf?.part==='thumbnail','PDF thumbnail has no semantic page identity');
+            const thumbBorder=componentRoundTrip({x:thumbnailRect.left-2,y:thumbnailRect.top+10});thumbnail.classList.remove('selected');assert(resolveCursor(thumbBorder),'thumbnail selection changed blank identity');
+            thumbnail.style.display='none';assert(resolveCursor(thumbnailCursor)===null,'hidden PDF thumbnail painted on document page');thumbnail.style.display='';
+            const gapRect=pages[0].getBoundingClientRect(),gap=componentRoundTrip({x:gapRect.left+30,y:gapRect.bottom+5});
+            rotation=1;scale=1.2;for(const page of pages){page.style.width='144px';page.style.height='240px';}
+            thumbnailImage.style.width='60px';thumbnailImage.style.height='80px';thumbnail.style.height='90px';
+            const rotatedThumbnail=resolveCursor(thumbnailCursor),thumbnailAfter=thumbnailImage.getBoundingClientRect();assert(rotatedThumbnail&&near(rotatedThumbnail.x,thumbnailAfter.left+10)&&near(rotatedThumbnail.y,thumbnailAfter.top+20),'thumbnail used control fraction after rotation');
+            const mapped=resolveCursor(blank),expected=pdfPoint(views[0],170,90);assert(mapped&&near(mapped.x,expected.x)&&near(mapped.y,expected.y),'PDF rotation/zoom drifts');
+            const mark=fixture.querySelector('.pdf__rect');mark.style.left='30px';mark.style.top='132px';mark.style.width='24px';mark.style.height='48px';assert(resolveCursor(marked),'rotated PDF annotation lost identity');
+            assert(resolveCursor(gap),'PDF page gap vanished after scaling');
+            mark.remove();assert(resolveCursor(marked)===null,'missing PDF annotation inherited page position');
+            pdfObject.pdfDocument.fingerprints[0]='replaced-file';assert(resolveCursor(blank)===null,'replaced PDF content matched old file');pdfObject.pdfDocument.fingerprints[0]='test-pdf-file';
+            fixture.scrollTop=270;assert(resolveCursor(text)===null,'offscreen PDF page painted');assert(resolveCursor(second),'visible second PDF page disappeared');fixture.scrollTop=0;
+            const cover=document.createElement('div');cover.style.cssText='position:fixed;inset:0;z-index:101;background:white';document.body.append(cover);assert(resolveCursor(blank)===null,'covered PDF page painted');cover.remove();
+            views[0].canvas.remove();assert(resolveCursor(blank)===null,'unrendered PDF page painted');
+        }finally{testTabs.length=0;fixture.remove();}
     });
     await test('原生关系图按节点身份与场景坐标定位，缩放平移、节点移动和缺失不误画',async()=>{
         const fixture=document.createElement('div'),dock=document.createElement('button');fixture.className='dockPanel sy__graph';dock.className='dock__item';dock.dataset.type='graph';

@@ -298,6 +298,8 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page,...activity};
+    const pdf=capturePDF(hit,plugin,point);
+    if(pdf!==undefined)return pdf ? {surface:'ui',documentId:null,blockId:null,page,screen,...pdf,...activity}:null;
     const fallback=()=>{
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;

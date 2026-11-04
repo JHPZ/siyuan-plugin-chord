@@ -14,9 +14,10 @@ function componentChildren(element) {
 }
 
 function componentKey(element) {
-    const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
-    const values=attributes.map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
-    if(element.matches('img'))values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
+    const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
+    const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
+    const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
     if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
     if(element.matches('.protyle'))values.push(['document',editorDocumentId(element)]);
@@ -34,7 +35,7 @@ function componentKey(element) {
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
     const label=!privateText && !values.length ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') ? textLabel(element):'')):'';
-    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name)).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
 
@@ -203,6 +204,7 @@ function resolveComponent(cursor,plugin) {
     const root=componentRoots(anchor.scope,plugin);if(!root)return null;
     let element=componentFollow(root,anchor.route),frame;
     if(!element)return null;
+    if(anchor.pdf)return visibleElement(element) ? resolvePDF(element,anchor.pdf):null;
     if(anchor.graph)return visibleElement(element) && element.matches('canvas') ? resolveGraph(element,anchor.graph):null;
     if(anchor.frame){
         frame=element;if(!frame.matches('iframe'))return null;

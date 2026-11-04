@@ -102,6 +102,12 @@ function validComponentAnchor(value) {
         ['x','y'].every(axis=>Array.isArray(value.edges?.[axis]) && value.edges[axis].length===2 && value.edges[axis].every(validComponentEdge)) &&
         (value.textHash===undefined || typeof value.textHash==='string' && /^[a-f0-9]{16}$/.test(value.textHash)) &&
         (value.imagePoint===undefined || value.imagePoint && [value.imagePoint.x,value.imagePoint.y].every(number=>Number.isFinite(number) && number>=0 && number<=1)) &&
+        (value.pdf===undefined || value.graph===undefined && value.frame===undefined && value.imagePoint===undefined && value.pdf &&
+            typeof value.pdf.file==='string' && /^[a-f0-9]{16}$/.test(value.pdf.file) &&
+            ['page','thumbnail'].includes(value.pdf.part) &&
+            Number.isSafeInteger(value.pdf.page) && value.pdf.page>0 && value.pdf.page<=100000 &&
+            [value.pdf.x,value.pdf.y].every(number=>Number.isFinite(number) && Math.abs(number)<=10000000) &&
+            (value.pdf.mark===null || typeof value.pdf.mark==='string' && /^[a-f0-9]{16}$/.test(value.pdf.mark))) &&
         (value.graph===undefined || value.frame===undefined && value.graph &&
             (value.graph.node===null || typeof value.graph.node==='string' && /^[a-f0-9]{16}$/.test(value.graph.node)) &&
             typeof value.graph.layout==='string' && /^[a-f0-9]{16}$/.test(value.graph.layout) &&
@@ -115,7 +121,8 @@ function cleanComponentAnchor(value) {
         route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
         edges:{x:value.edges.x.map(edge),y:value.edges.y.map(edge)},...(value.textHash ? {textHash:value.textHash}:{}),
         ...(value.imagePoint ? {imagePoint:{x:value.imagePoint.x,y:value.imagePoint.y}}:{}),
-        ...(value.graph ? {graph:{node:value.graph.node,layout:value.graph.layout,x:value.graph.x,y:value.graph.y}}:{})};
+        ...(value.graph ? {graph:{node:value.graph.node,layout:value.graph.layout,x:value.graph.x,y:value.graph.y}}:{}),
+        ...(value.pdf ? {pdf:{file:value.pdf.file,page:value.pdf.page,part:value.pdf.part,x:value.pdf.x,y:value.pdf.y,mark:value.pdf.mark}}:{})};
 }
 function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
@@ -420,6 +427,53 @@ function resolveGraph(element,anchor) {
     return document.elementFromPoint(point.x,point.y)===element ? point:null;
 }
 
+function pdfModel(element) {
+    // shortcut: native PDF.js views are checked at runtime; use a public page coordinate API when SiYuan exposes one.
+    let tabs;try{tabs=getAllTabs();}catch{return null;}
+    return tabs.map(tab=>tab.model).find(model=>model?.element?.contains(element) &&
+        typeof model.pdfObject?.pdfDocument?.fingerprints?.[0]==='string' && typeof model.pdfObject.pdfViewer?.getPageView==='function');
+}
+
+function pdfMark(element) {
+    const mark=element?.closest('.pdf__rect[data-node-id],[data-annotation-id]');
+    return mark ? componentHash(mark.getAttribute('data-node-id') || mark.getAttribute('data-annotation-id')):null;
+}
+
+function pdfView(model,page,part) {
+    if(!Number.isSafeInteger(page) || page<1 || page>model?.pdfObject?.pdfDocument?.numPages)return null;
+    const view=part==='thumbnail' ? model?.pdfObject?.pdfThumbnailViewer?.getThumbnail?.(page-1):model?.pdfObject?.pdfViewer?.getPageView(page-1),viewport=view?.viewport;
+    const element=part==='thumbnail' ? view?.image:view?.canvas;
+    return view?.div?.isConnected && element?.isConnected && visibleElement(element) &&
+        [viewport?.width,viewport?.height].every(value=>Number.isFinite(value)&&value>0) &&
+        typeof viewport.convertToPdfPoint==='function' && typeof viewport.convertToViewportPoint==='function' ? {div:view.div,viewport,element}:null;
+}
+
+function capturePDF(hit,plugin,point) {
+    const pageElement=hit.closest('.pdfViewer .page[data-page-number],.thumbnail[data-page-number]');if(!pageElement)return undefined;
+    const model=pdfModel(pageElement);if(!model)return undefined;
+    const page=Number(pageElement.dataset.pageNumber),part=pageElement.matches('.thumbnail') ? 'thumbnail':'page',view=pdfView(model,page,part);
+    if(!view || view.div!==pageElement)return part==='thumbnail' ? undefined:null;
+    const scope=componentScope(model.element,plugin);if(!scope)return null;
+    const rect=view.element.getBoundingClientRect();
+    if(point.x<rect.left || point.x>rect.right || point.y<rect.top || point.y>rect.bottom)return undefined;
+    const [x,y]=view.viewport.convertToPdfPoint((point.x-rect.left)*view.viewport.width/rect.width,(point.y-rect.top)*view.viewport.height/rect.height);
+    const ui={version:3,kind:'component',scope:scope.scope,route:componentRoute(scope.root,model.element),
+        edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:[{kind:'self',side:'start'},{kind:'self',side:'end'}]},
+        pdf:{file:componentHash(model.pdfObject.pdfDocument.fingerprints[0]),page,part,x,y,mark:pdfMark(hit)}};
+    return validUIAnchor(ui) ? {ui,x:0,y:0}:null;
+}
+
+function resolvePDF(element,anchor) {
+    const model=pdfModel(element);
+    if(!model || componentHash(model.pdfObject.pdfDocument.fingerprints[0])!==anchor.file)return null;
+    const view=pdfView(model,anchor.page,anchor.part);if(!view)return null;
+    const [x,y]=view.viewport.convertToViewportPoint(anchor.x,anchor.y),rect=view.element.getBoundingClientRect();
+    if(x<0 || x>view.viewport.width || y<0 || y>view.viewport.height)return null;
+    const point={x:rect.left+x*rect.width/view.viewport.width,y:rect.top+y*rect.height/view.viewport.height};
+    const hit=document.elementFromPoint(point.x,point.y);
+    return visibleElement(hit) && hit.closest('.page[data-page-number],.thumbnail[data-page-number]')===view.div && pdfMark(hit)===anchor.mark ? point:null;
+}
+
 // Component identities are bounded hashes; input values and document text never enter the wire format.
 function componentHash(value) {
     let a=2166136261,b=5381;
@@ -436,9 +490,10 @@ function componentChildren(element) {
 }
 
 function componentKey(element) {
-    const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
-    const values=attributes.map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
-    if(element.matches('img'))values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
+    const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
+    const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
+    const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
     if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
     if(element.matches('.protyle'))values.push(['document',editorDocumentId(element)]);
@@ -456,7 +511,7 @@ function componentKey(element) {
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
     const label=!privateText && !values.length ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') ? textLabel(element):'')):'';
-    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name)).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
 
@@ -625,6 +680,7 @@ function resolveComponent(cursor,plugin) {
     const root=componentRoots(anchor.scope,plugin);if(!root)return null;
     let element=componentFollow(root,anchor.route),frame;
     if(!element)return null;
+    if(anchor.pdf)return visibleElement(element) ? resolvePDF(element,anchor.pdf):null;
     if(anchor.graph)return visibleElement(element) && element.matches('canvas') ? resolveGraph(element,anchor.graph):null;
     if(anchor.frame){
         frame=element;if(!frame.matches('iframe'))return null;
@@ -959,6 +1015,8 @@ function captureCursor(point, plugin) {
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     if (anchored) return {...anchored,screen,page,...activity};
+    const pdf=capturePDF(hit,plugin,point);
+    if(pdf!==undefined)return pdf ? {surface:'ui',documentId:null,blockId:null,page,screen,...pdf,...activity}:null;
     const fallback=()=>{
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
