@@ -236,6 +236,24 @@ async function test(name, run) {
             }finally{fixture.remove();}
         }
     });
+    await test('横排和嵌套超级块的留白跟随所属栏，重排与撤销不落入相邻栏',async()=>{
+        const fixture=documentSpaceFixture();try{
+            const editor=fixture.querySelector('.protyle-wysiwyg'),paragraph=editor.querySelector('.p'),root=cursorTextRoot(paragraph);root.textContent='Short';
+            const tail=rectAt(paragraph,4),bounds=editor.getBoundingClientRect(),point={x:tail.right+(bounds.right-16-tail.right)*.6,y:tail.top+tail.height/2},anchor=spaceRoundTrip(point);
+            const row=document.createElement('div');row.className='sb';row.dataset.sbLayout='col';row.style.cssText='display:flex;gap:12px';paragraph.before(row);row.append(paragraph);paragraph.style.cssText='width:45%;flex:none';
+            const neighbor=document.createElement('div');neighbor.className='p';neighbor.dataset.nodeId='20261030165150-space05';neighbor.style.cssText='flex:1';neighbor.innerHTML='<div contenteditable="true">Other column</div>';row.append(neighbor);
+            for(const nested of [false,true]){
+                if(nested){const outer=document.createElement('div');outer.className='sb';outer.dataset.sbLayout='col';outer.style.cssText='display:flex;gap:12px';row.before(outer);outer.append(row,neighbor.cloneNode(true));row.style.cssText+=';width:75%;flex:none';outer.lastElementChild.removeAttribute('data-node-id');}
+                for(const width of ['540px','680px']){fixture.style.width=width;for(const first of [true,false]){
+                    row.insertBefore(paragraph,first?neighbor:null);const g=rectAt(paragraph,4),r=paragraph.getBoundingClientRect(),expected={x:g.right+(r.right-g.right)*.6,y:g.top+g.height/2},actual=resolveCursor(anchor);
+                    assert(actual&&near(actual.x,expected.x)&&near(actual.y,expected.y),'old whitespace escaped its local column');
+                    const fresh=spaceRoundTrip(expected);assert(fresh.blockId===paragraph.dataset.nodeId&&near(fresh.space.gap.ratio,.6),'fresh column gap used editor width');
+                    neighbor.style.display='none';assert(resolveCursor(fresh),'hiding another column hid the target');neighbor.style.display='';paragraph.style.display='none';assert(resolveCursor(fresh)===null,'hidden target column remained visible');paragraph.style.display='';
+                }}
+            }
+            editor.prepend(paragraph);row.closest('.sb')?.remove();paragraph.style.cssText='';fixture.style.width='540px';const restored=resolveCursor(anchor);assert(restored&&near(restored.x,point.x)&&near(restored.y,point.y),'undo did not restore whitespace');
+        }finally{fixture.remove();}
+    });
     await test('段落空白跟随字符换行、字号和滚动，不使用整块比例',async()=>{
         const fixture=documentSpaceFixture();
         try {

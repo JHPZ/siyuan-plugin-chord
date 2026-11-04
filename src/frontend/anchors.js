@@ -54,15 +54,19 @@ function captureTextPoint(root, point, whitespace = false) {
     return null;
 }
 
-function documentColumn(editor) {
+function documentColumn(editor, block = editor) {
     const rect = editor.getBoundingClientRect(), style = getComputedStyle(editor);
-    return { left: rect.left + parseFloat(style.paddingLeft), right: rect.right - parseFloat(style.paddingRight) };
+    const column = { left: rect.left + parseFloat(style.paddingLeft), right: rect.right - parseFloat(style.paddingRight) };
+    for (let child = block; child && child !== editor; child = child.parentElement) {
+        if (!child.parentElement?.matches('.sb[data-sb-layout="col"]')) continue;
+        const bounds = child.getBoundingClientRect();
+        column.left = Math.max(column.left, bounds.left);column.right = Math.min(column.right, bounds.right);
+    }
+    return column;
 }
 
 function captureDocumentSpace(editor, hit, point) {
     if (hit.closest('[contenteditable="false"],img,video,audio,canvas,iframe,button,input,select,textarea')) return null;
-    const column = documentColumn(editor);
-    if (point.x < column.left || point.x > column.right) return null;
     let block = hit.closest('[data-node-id]');
     if (!block || block === editor || !editor.contains(block)) {
         // Only gaps between actual text blocks belong to document content.
@@ -76,6 +80,8 @@ function captureDocumentSpace(editor, hit, point) {
         block = candidates[0].root.closest('[data-node-id]');
     }
     if (!block || block.closest('.fn__none')) return null;
+    const column = documentColumn(editor, block);
+    if (point.x < column.left || point.x > column.right) return null;
     const root = cursorTextRoot(block);
     if (!root.matches('[contenteditable="true"]')) return null;
     const caret = document.caretPositionFromPoint?.(point.x, point.y);
@@ -140,7 +146,7 @@ function resolveDocumentCursor(cursor) {
             if (!rect && relative.offset === 0 && !/[^\s\u200b]/.test(root.textContent)) rect = root.getBoundingClientRect();
             if (!rect?.height || !rect.width) continue;
             const style = getComputedStyle(root), font = parseFloat(style.fontSize), line = parseFloat(style.lineHeight) || font * 1.2;
-            const editor = block.closest('.protyle-wysiwyg'), column = documentColumn(editor);
+            const editor = block.closest('.protyle-wysiwyg'), column = documentColumn(editor, block);
             let x = column.left + (column.right - column.left) * relative.x;
             if(relative.gap){
                 const {side,ratio}=relative.gap,left=side==='before' ? column.left:side==='after' ? rect.right:rect.left;
