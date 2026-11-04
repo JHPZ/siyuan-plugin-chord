@@ -90,7 +90,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='range-thumb' || edge.kind==='range-track' ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='range-thumb' || edge.kind==='range-track' || ['picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -1059,6 +1059,28 @@ function componentImageRect(image) {
         right:rect.left+(image.clientLeft+left+x+w)*sx,bottom:rect.top+(image.clientTop+top+y+h)*sy,width:w*sx,height:h*sy};
 }
 
+function componentPicker(element) {
+    if(!element.matches('select:open') || element.closest('[data-private]'))return null;
+    const doc=element.ownerDocument,css=doc.defaultView.getComputedStyle(element,'::picker(select)');
+    // shortcut: sticky markers measure block pickers; add layout-specific markers before accepting grid or vertical pickers.
+    if(css.appearance!=='base-select' || css.display!=='block' || css.visibility!=='visible' || Number(css.opacity)<=.01 || css.writingMode!=='horizontal-tb' || css.transform!=='none' || css.rotate!=='none' || css.scale!=='none' || css.columnCount!=='auto')return null;
+    const children=componentChildren(element).filter(child=>child!==element.firstElementChild || !child.matches('button')),before=children.map(child=>child.getBoundingClientRect());
+    const markers=['sticky','absolute'].map(position=>{const marker=doc.createElement('div');marker.className='collab-text-measure';marker.setAttribute('aria-hidden','true');marker.inert=true;
+        marker.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;box-sizing:content-box!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+(position==='sticky' ? 'top:0!important;left:0!important;width:100%!important;height:1px!important;margin-bottom:-1px!important;':'inset:0!important;');return marker;});
+    element.insertBefore(markers[0],children[0] || null);element.append(markers[1]);
+    try{
+        const top=markers[0].getBoundingClientRect(),port=markers[1].getBoundingClientRect(),sx=top.width/parseFloat(doc.defaultView.getComputedStyle(markers[0]).width),sy=top.height,n=name=>parseFloat(css[name]);
+        if(![sx,sy].every(value=>Number.isFinite(value)&&value>0) || children.some((child,index)=>{const rect=child.getBoundingClientRect(),old=before[index];return ['left','right','top','bottom'].some(side=>Math.abs(rect[side]-old[side])>.001);}))return null;
+        const width=n('width')+(css.boxSizing==='border-box' ? 0:n('borderLeftWidth')+n('borderRightWidth')+n('paddingLeft')+n('paddingRight')),height=n('height')+(css.boxSizing==='border-box' ? 0:n('borderTopWidth')+n('borderBottomWidth')+n('paddingTop')+n('paddingBottom'));
+        const content={left:top.left,right:top.right,top:top.top,bottom:top.top+port.height-(n('paddingTop')+n('paddingBottom'))*sy},scrollbarX=Math.max(0,width-n('borderLeftWidth')-n('borderRightWidth')-port.width/sx),scrollbarY=Math.max(0,height-n('borderTopWidth')-n('borderBottomWidth')-port.height/sy);
+        const gutterLeft=css.scrollbarGutter.includes('both-edges') ? scrollbarX/2:css.direction==='rtl' ? scrollbarX:0;
+        const bounds={left:content.left-(n('paddingLeft')+n('borderLeftWidth')+gutterLeft)*sx,top:content.top-(n('paddingTop')+n('borderTopWidth'))*sy};bounds.right=bounds.left+width*sx;bounds.bottom=bounds.top+height*sy;
+        const border={left:bounds.left+n('borderLeftWidth')*sx,right:bounds.right-n('borderRightWidth')*sx,top:bounds.top+n('borderTopWidth')*sy,bottom:bounds.bottom-n('borderBottomWidth')*sy},viewport={left:content.left-n('paddingLeft')*sx,right:content.right+n('paddingRight')*sx,top:content.top-n('paddingTop')*sy,bottom:content.bottom+n('paddingBottom')*sy};
+        if(![...Object.values(bounds),...Object.values(content)].every(Number.isFinite) || content.bottom<content.top)return null;
+        return {bounds,border,viewport,content,children,scrollbarX:scrollbarX*sx,scrollbarY:scrollbarY*sy};
+    }finally{markers.forEach(marker=>marker.remove());}
+}
+
 function componentSelectImage(element) {
     // shortcut: embedded SVG icons expose intrinsic size; add sizing before accepting raster or external icons.
     const view=element.ownerDocument.defaultView,css=view.getComputedStyle(element),url=css.backgroundImage.match(/^url\("(data:image\/svg\+xml[^"\n]*)"\)$/)?.[1];
@@ -1130,6 +1152,7 @@ function frameToParent(frame,point) {
 }
 
 function componentBox(hit,point) {
+    if(hit.matches('select:open'))return hit;
     if(hit.matches('mark') && hit.parentElement.matches(COMPONENT_HIGHLIGHT_TEXT))hit=hit.parentElement;
     if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
     if(hit.matches('.b3-list-item__arrow') && componentTreeRegion(hit))hit=hit.closest('.b3-list-item__toggle') || hit;
@@ -1148,7 +1171,10 @@ function componentPaintRect(element) {
 }
 
 function componentGeometry(element,point) {
-    const select=element.matches('select');if(select && !componentTextField(element))return null;
+    const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
+    const onPicker=inside(picker?.bounds),select=element.matches('select') && !onPicker;if(select && !componentTextField(element))return null;
+    // Native scrollbar thumbs need their own geometry; a reserved gutter is never ordinary padding.
+    if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
     if(slider && !range)return null;
     const box=range?.box || (element.matches('iframe') ? frameBox(element):null);if(element.matches('iframe') && !box)return null;
@@ -1157,20 +1183,23 @@ function componentGeometry(element,point) {
     let bounds=box ? box.bounds:element.getBoundingClientRect();
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
-    const field=componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
-    const children=box || select ? []:componentChildren(element),image=componentImageRect(element),frame=range?.content || box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
-    let text=box || padding && !select ? []:componentNearText(element,point) || [];
+    if(onPicker)bounds=picker.bounds;
+    const field=onPicker ? null:componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
+    const children=onPicker ? picker.children:box || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element),frame=range?.content || box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
+    let text=onPicker || box || padding && !select ? []:componentNearText(element,point) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
     if(select && glyph){const {rect,offset}=glyph;return {edges:{x:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}],y:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}]},x:(point.x-rect.left)/rect.width,y:(point.y-rect.top)/rect.height,textHash:componentTextHash(element)};}
     if(select && imagePoint)return {edges:{x:[{kind:'image',side:'start'},{kind:'image',side:'end'}],y:[{kind:'image',side:'start'},{kind:'image',side:'end'}]},x:imagePoint.x,y:imagePoint.y,imagePoint};
     if(select && padding && !glyph)text=[];
     if(select && !glyph && !image && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage!=='none')return null;
-    if(componentTextField(element) && !text.length && !padding && !imagePoint)return null;
+    if(!onPicker && componentTextField(element) && !text.length && !padding && !imagePoint)return null;
     const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
         const column=axis==='x' && element.matches('.sb[data-sb-layout="col"]');
-        const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
+        const entries=[{value:bounds[start],edge:{kind:onPicker ? 'picker-box':box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:onPicker ? 'picker-box':box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
+        if(onPicker && (other<picker.border[otherStart] || other>=picker.border[otherEnd]) && point[axis]>=picker.border[start] && point[axis]<picker.border[end]){edges[axis]=entries.map(item=>item.edge);relative[axis]=(point[axis]-bounds[start])/(bounds[end]-bounds[start]);continue;}
+        if(onPicker)for(const part of point[axis]<picker.border[start] || point[axis]>=picker.border[end] ? ['content','viewport','border']:['border','viewport','content'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:picker[part][key],edge:{kind:'picker-'+part,side}});
         if(image && (!select || !glyph && other>=image[otherStart] && other<=image[otherEnd]))for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame && !onThumb && !(range && axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right))for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
         if(range)for(const part of onThumb || axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right ? ['thumb']:['thumb','track']){
@@ -1189,7 +1218,7 @@ function componentGeometry(element,point) {
             const rect=componentListRect(element,part);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
         }
-        for(const child of perimeter ? []:children){
+        for(const child of perimeter || onPicker && (axis==='x' || !inside(picker.content)) ? []:children){
             const rect=child.getBoundingClientRect();if(!rect.width || !rect.height || (other<rect[otherStart] || other>rect[otherEnd]) && !column)continue;
             const step=componentStep(child);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end]){
@@ -1251,14 +1280,16 @@ function resolveComponent(cursor,plugin) {
     }
     if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') ||
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
-    const select=element.matches('select');
+    const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-')),picker=pickerAnchor && componentPicker(element);
+    if(pickerAnchor && !picker)return null;
+    const select=element.matches('select') && !picker;
     if(select && !componentTextField(element))return null;
-    if(componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || select && edge.kind==='image'))return null;
+    if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || select && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
     if(slider && (!range || !Object.values(anchor.edges).flat().some(edge=>['range-thumb','range-track','frame','frame-box'].includes(edge.kind))))return null;
     const box=range?.box || (element.matches('iframe') ? frameBox(element):null);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
-    const field=componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
+    const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
         if(anchor.imagePoint){
@@ -1267,7 +1298,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -1276,7 +1307,7 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    if(select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field')){
+    if(picker || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field')){
         // Padding is visible whitespace; text underneath it is clipped by the native input.
         if(fieldRects && field && !select && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
         const local=componentGeometry(element,point);
