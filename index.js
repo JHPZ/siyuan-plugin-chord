@@ -88,7 +88,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='image' || edge.kind==='frame' ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -99,16 +99,17 @@ function validComponentAnchor(value) {
         typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
         (scope.pane===undefined || typeof scope.pane==='string' && /^[a-f0-9]{16}$/.test(scope.pane)) &&
         validComponentRoute(value.route) && (value.frame===undefined || validComponentRoute(value.frame)) && (value.target===undefined || validComponentRoute(value.target)) &&
+        (value.frames===undefined || value.frame===undefined && Array.isArray(value.frames) && value.frames.length>=2 && value.frames.length<=8 && value.frames.every(validComponentRoute)) &&
         ['x','y'].every(axis=>Array.isArray(value.edges?.[axis]) && value.edges[axis].length===2 && value.edges[axis].every(validComponentEdge)) &&
         (value.textHash===undefined || typeof value.textHash==='string' && /^[a-f0-9]{16}$/.test(value.textHash)) &&
         (value.imagePoint===undefined || value.imagePoint && [value.imagePoint.x,value.imagePoint.y].every(number=>Number.isFinite(number) && number>=0 && number<=1)) &&
-        (value.pdf===undefined || value.graph===undefined && value.frame===undefined && value.imagePoint===undefined && value.pdf &&
+        (value.pdf===undefined || value.graph===undefined && value.frame===undefined && value.frames===undefined && value.imagePoint===undefined && value.pdf &&
             typeof value.pdf.file==='string' && /^[a-f0-9]{16}$/.test(value.pdf.file) &&
             ['page','thumbnail'].includes(value.pdf.part) &&
             Number.isSafeInteger(value.pdf.page) && value.pdf.page>0 && value.pdf.page<=100000 &&
             [value.pdf.x,value.pdf.y].every(number=>Number.isFinite(number) && Math.abs(number)<=10000000) &&
             (value.pdf.mark===null || typeof value.pdf.mark==='string' && /^[a-f0-9]{16}$/.test(value.pdf.mark))) &&
-        (value.graph===undefined || value.frame===undefined && value.graph &&
+        (value.graph===undefined || value.frame===undefined && value.frames===undefined && value.graph &&
             (value.graph.node===null || typeof value.graph.node==='string' && /^[a-f0-9]{16}$/.test(value.graph.node)) &&
             typeof value.graph.layout==='string' && /^[a-f0-9]{16}$/.test(value.graph.layout) &&
             [value.graph.x,value.graph.y].every(number=>Number.isFinite(number) && Math.abs(number)<=10000000));
@@ -119,6 +120,7 @@ function cleanComponentAnchor(value) {
     const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
     return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{})},
         route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
+        ...(value.frames ? {frames:value.frames.map(route=>route.map(step))}:{}),
         edges:{x:value.edges.x.map(edge),y:value.edges.y.map(edge)},...(value.textHash ? {textHash:value.textHash}:{}),
         ...(value.imagePoint ? {imagePoint:{x:value.imagePoint.x,y:value.imagePoint.y}}:{}),
         ...(value.graph ? {graph:{node:value.graph.node,layout:value.graph.layout,x:value.graph.x,y:value.graph.y}}:{}),
@@ -621,13 +623,41 @@ function componentImageRect(image) {
         right:rect.left+(image.clientLeft+left+x+w)*sx,bottom:rect.top+(image.clientTop+top+y+h)*sy,width:w*sx,height:h*sy};
 }
 
+function frameContentRect(frame) {
+    const rect=frame.getBoundingClientRect(),sx=rect.width/frame.offsetWidth,sy=rect.height/frame.offsetHeight;
+    const left=rect.left+frame.clientLeft*sx,top=rect.top+frame.clientTop*sy;
+    return {left,top,right:left+frame.clientWidth*sx,bottom:top+frame.clientHeight*sy,width:frame.clientWidth*sx,height:frame.clientHeight*sy};
+}
+
+function frameToContent(frame,point) {
+    const rect=frameContentRect(frame);
+    return point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom ?
+        {x:(point.x-rect.left)*frame.clientWidth/rect.width,y:(point.y-rect.top)*frame.clientHeight/rect.height}:null;
+}
+
+function frameToParent(frame,point) {
+    const rect=frameContentRect(frame);
+    return {x:rect.left+point.x*rect.width/frame.clientWidth,y:rect.top+point.y*rect.height/frame.clientHeight};
+}
+
+function componentBox(hit,point) {
+    if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
+    while(hit.parentElement){
+        const rect=hit.getBoundingClientRect();
+        if(point.x>=rect.left && point.x<=rect.right && point.y>=rect.top && point.y<=rect.bottom)break;
+        hit=hit.parentElement;
+    }
+    return hit;
+}
+
 function componentGeometry(element,point) {
-    const bounds=element.getBoundingClientRect(),children=componentChildren(element),text=componentNearText(element,point) || [],image=componentImageRect(element);
+    const bounds=element.getBoundingClientRect(),children=componentChildren(element),text=componentNearText(element,point) || [],image=componentImageRect(element),frame=element.matches('iframe') ? frameContentRect(element):null;
     const edges={},relative={};let usedText=false;
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
         const entries=[{value:bounds[start],edge:{kind:'self',side:'start'}},{value:bounds[end],edge:{kind:'self',side:'end'}}];
         if(image)for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
+        if(frame)for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
         for(const child of children){
             if(!visibleElement(child))continue;
             const rect=child.getBoundingClientRect();if(other<rect[otherStart] || other>rect[otherEnd])continue;
@@ -649,28 +679,26 @@ function captureComponent(hit,plugin,point) {
     if(hit.closest('[data-private]'))return null;
     const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
     if(hit.matches('canvas') && !graph)return null;
-    const original=hit;
-    if(hit instanceof SVGElement)hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
-    while(hit.parentElement){
-        const rect=hit.getBoundingClientRect();
-        if(point.x>=rect.left && point.x<=rect.right && point.y>=rect.top && point.y<=rect.bottom)break;
-        hit=hit.parentElement;
-    }
+    let original=hit;hit=componentBox(hit,point);
     const scope=componentScope(hit,plugin);if(!scope)return null;
     const route=componentRoute(scope.root,hit);if(!route)return null;
-    let frame;
-    if(hit.matches('iframe')){
+    const frames=[];
+    while(hit.matches('iframe')){
+        const inside=frameToContent(hit,point);if(!inside)break;
+        // shortcut: cap embedded document chains at eight levels; raise with a matching protocol bound if needed.
+        if(frames.length>=8)return null;
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
-        const rect=hit.getBoundingClientRect();point={x:(point.x-rect.left)*hit.offsetWidth/rect.width-hit.clientLeft,y:(point.y-rect.top)*hit.offsetHeight/rect.height-hit.clientTop};
-        const inner=doc.elementFromPoint(point.x,point.y);if(!inner || inner.closest('[data-private]') || inner.matches('canvas,iframe'))return null;
-        frame=componentRoute(doc.body,inner);if(!frame)return null;hit=inner;
+        point=inside;const inner=doc.elementFromPoint(point.x,point.y);
+        if(!visibleElement(inner) || inner.closest('[data-private]') || inner.matches('canvas'))return null;
+        original=inner;hit=componentBox(inner,point);
+        const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
-    const target=hit!==original && !frame ? componentRoute(hit,original):undefined;
+    const target=hit!==original ? componentRoute(hit,original):undefined;
     if(target===null)return null;
     const geometry=componentGeometry(hit,point);if(!geometry)return null;
     const {x,y,...fields}=geometry;
-    const ui={version:3,kind:'component',scope:scope.scope,route,...(frame ? {frame}:{}),...(target ? {target}:{}),...(graph ? {graph}:{}),...fields};
+    const ui={version:3,kind:'component',scope:scope.scope,route,...(frames.length===1 ? {frame:frames[0]}:frames.length ? {frames}:{}),...(target ? {target}:{}),...(graph ? {graph}:{}),...fields};
     return validUIAnchor(ui) ? {ui,x,y}:null;
 }
 
@@ -678,16 +706,16 @@ function resolveComponent(cursor,plugin) {
     const anchor=cursor.ui;
     if(!validUIAnchor(anchor))return null;
     const root=componentRoots(anchor.scope,plugin);if(!root)return null;
-    let element=componentFollow(root,anchor.route),frame;
+    let element=componentFollow(root,anchor.route);const frames=[];
     if(!element)return null;
     if(anchor.pdf)return visibleElement(element) ? resolvePDF(element,anchor.pdf):null;
     if(anchor.graph)return visibleElement(element) && element.matches('canvas') ? resolveGraph(element,anchor.graph):null;
-    if(anchor.frame){
-        frame=element;if(!frame.matches('iframe'))return null;
-        let doc;try{doc=frame.contentDocument;}catch{}
-        element=doc?.body && componentFollow(doc.body,anchor.frame);if(!element)return null;
+    for(const route of anchor.frames || (anchor.frame ? [anchor.frame]:[])){
+        if(!element.matches('iframe') || !visibleElement(element) || element.closest('[data-private]'))return null;
+        frames.push(element);let doc;try{doc=element.contentDocument;}catch{}
+        element=doc?.body && componentFollow(doc.body,route);if(!element)return null;
     }
-    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas,iframe') ||
+    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') ||
         anchor.textHash && componentHash(element.textContent)!==anchor.textHash)return null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
@@ -697,7 +725,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):target?.getBoundingClientRect();
+            const rect=edge.kind==='text' ? componentCharacter(element,edge.offset):edge.kind==='image' ? componentImageRect(element):edge.kind==='frame' && element.matches('iframe') ? frameContentRect(element):target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         if(values.some(value=>!Number.isFinite(value)) || values[1]<values[0] ||
@@ -707,10 +735,11 @@ function resolveComponent(cursor,plugin) {
     const hit=element.ownerDocument.elementFromPoint(point.x,point.y);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!target || hit!==target && !(hit instanceof SVGElement && target.contains(hit)))return null;
-    if(frame){
-        const rect=frame.getBoundingClientRect();point.x=rect.left+(point.x+frame.clientLeft)*rect.width/frame.offsetWidth;point.y=rect.top+(point.y+frame.clientTop)*rect.height/frame.offsetHeight;
-        if(document.elementFromPoint(point.x,point.y)!==frame)return null;
+    if(!target || hit!==target && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(element.matches('iframe') && frameToContent(element,point))return null;
+    for(const frame of frames.reverse()){
+        Object.assign(point,frameToParent(frame,point));
+        if(frame.ownerDocument.elementFromPoint(point.x,point.y)!==frame)return null;
     }
     return point;
 }
@@ -1442,19 +1471,47 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     bindFrames() {
-        for(const [frame,binding] of this.frameListeners)if(!frame.isConnected){binding.stop();this.frameListeners.delete(frame);}
-        for(const frame of document.querySelectorAll('iframe')) {
+        const frames=new Set();
+        const visit=(doc,depth)=>{
+            if(depth>=8)return;
+            for(const frame of doc.querySelectorAll('iframe')){
+                frames.add(frame);try{if(frame.contentDocument)visit(frame.contentDocument,depth+1);}catch{}
+            }
+        };
+        visit(document,0);
+        for(const [frame,binding] of this.frameListeners)if(!frames.has(frame)){binding.stop();this.frameListeners.delete(frame);}
+        for(const frame of frames) {
             if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
-            let doc;
-            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+(event.clientX+frame.clientLeft)*rect.width/(frame.offsetWidth || rect.width),clientY:rect.top+(event.clientY+frame.clientTop)*rect.height/(frame.offsetHeight || rect.height)});};
-            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc=null;};
-            const load=()=>{
-                stopDocument();
-                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc?.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});}catch{}
+            let doc,observer;
+            const move=(event)=>{
+                if(!frame.isConnected)return;
+                let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=false;
+                for(let current=frame;current;){
+                    point=frameToParent(current,point);target=current;
+                    if(current.ownerDocument===document){reachedRoot=true;break;}
+                    current=current.ownerDocument.defaultView?.frameElement;
+                }
+                if(!reachedRoot)return;
+                this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);doc=null;};
+            const load=()=>{
+                let next;try{next=frame.contentDocument;}catch{}
+                if(next===doc)return;
+                stopDocument();
+                doc=next;if(!doc)return;
+                doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
+                observer=new MutationObserver(records=>{
+                    if(this.stopped)return;
+                    this.handleCursorLayout();
+                    if(records.some(record=>[...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1 && (node.matches('iframe') || node.querySelector('iframe')))))this.bindFrames();
+                });
+                observer.observe(doc,{childList:true,characterData:true,subtree:true,attributes:true});
+            };
+            const onLoad=()=>{load();this.bindFrames();this.handleCursorLayout();};
             const enter=()=>this.handlePointerLeave();
-            frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
-            this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',load);frame.removeEventListener('pointerenter',enter);}});
+            frame.addEventListener('load',onLoad);frame.addEventListener('pointerenter',enter,{passive:true});load();
+            this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',onLoad);frame.removeEventListener('pointerenter',enter);}});
         }
     }
 

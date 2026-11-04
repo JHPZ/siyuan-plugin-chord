@@ -512,6 +512,30 @@ async function test(name, run) {
             button.remove();assert(resolveCursor(anchor)===null,'missing iframe component used frame fraction');
         }finally{frameElement.remove();}
     });
+    await test('多层同源嵌入逐层换算边框、缩放、滚动和遮挡，边框留白不猜测内部位置',async()=>{
+        const outer=document.createElement('iframe');outer.id='nested-frame-fixture';outer.style.cssText='position:fixed;left:25px;top:25px;width:430px;height:300px;border:7px solid black;transform:scale(.9);transform-origin:top left;z-index:100';
+        outer.srcdoc='<style>body{margin:0;padding:18px;height:900px}</style>';
+        const loaded=new Promise(resolve=>outer.onload=resolve);document.body.append(outer);await loaded;
+        const inner=outer.contentDocument.createElement('iframe');inner.style.cssText='width:340px;height:220px;border:5px solid black;transform:scale(.9);transform-origin:top left';
+        inner.srcdoc='<style>body{margin:14px;height:700px}button{margin-top:24px;width:150px;height:40px}#blank{height:80px;width:150px}</style><button data-name="deep">内部按钮</button><div id="blank"></div>';
+        const innerLoaded=new Promise(resolve=>inner.onload=resolve);outer.contentDocument.body.append(inner);await innerLoaded;
+        const pointAt=(element,x=3,y=3)=>{const r=element.getBoundingClientRect();let point={x:r.left+x,y:r.top+y};for(const frameElement of [inner,outer]){const f=frameElement.getBoundingClientRect();point={x:f.left+(point.x+frameElement.clientLeft)*f.width/frameElement.offsetWidth,y:f.top+(point.y+frameElement.clientTop)*f.height/frameElement.offsetHeight};}return point;};
+        try{
+            const button=inner.contentDocument.querySelector('button'),anchor=componentRoundTrip(pointAt(button));assert(anchor.ui.frames?.length===2,'nested document chain missing');
+            const blank=inner.contentDocument.querySelector('#blank');componentRoundTrip(pointAt(blank,15,15));
+            const borderPoint={x:outer.getBoundingClientRect().left+2,y:outer.getBoundingClientRect().top+50},border=componentRoundTrip(borderPoint);
+            outer.style.width='460px';const borderAfter=resolveCursor(border);assert(borderAfter&&near(borderAfter.x,borderPoint.x),'iframe border became content after resizing');
+            outer.contentWindow.scrollTo(0,8);inner.contentWindow.scrollTo(0,8);await frame();
+            const moved=resolveCursor(anchor),expected=pointAt(button);assert(moved&&near(moved.x,expected.x)&&near(moved.y,expected.y),'nested scroll drift');
+            inner.style.opacity='0';assert(resolveCursor(anchor)===null,'transparent nested iframe painted');inner.style.opacity='1';
+            for(const enclosing of [outer,inner]){enclosing.setAttribute('data-private','');assert(resolveCursor(anchor)===null,'private enclosing iframe painted');enclosing.removeAttribute('data-private');}assert(resolveCursor(anchor),'restored nested iframe missing');
+            const cover=inner.contentDocument.createElement('div');cover.style.cssText='position:fixed;inset:0;background:white;z-index:200';inner.contentDocument.body.append(cover);assert(resolveCursor(anchor)===null,'inner-document overlay ignored');cover.remove();
+            const parentCover=outer.contentDocument.createElement('div');parentCover.style.cssText='position:fixed;inset:0;background:white;z-index:200';outer.contentDocument.body.append(parentCover);assert(resolveCursor(anchor)===null,'parent-document overlay ignored');parentCover.remove();
+            const svg=inner.contentDocument.createElementNS('http://www.w3.org/2000/svg','svg');svg.style.cssText='display:block;width:20px;height:20px;overflow:visible';svg.innerHTML='<path d="M0 0H20V20H0Z"/>';blank.append(svg);componentRoundTrip(pointAt(svg,3,3));
+            button.remove();assert(resolveCursor(anchor)===null,'missing nested component inherited frame fraction');
+            inner.setAttribute('sandbox','');const replaced=new Promise(resolve=>inner.onload=resolve);inner.srcdoc='<button>Opaque embedded page</button>';await replaced;const ir=inner.getBoundingClientRect(),or=outer.getBoundingClientRect(),opaquePoint={x:or.left+(ir.left+20+outer.clientLeft)*or.width/outer.offsetWidth,y:or.top+(ir.top+20+outer.clientTop)*or.height/outer.offsetHeight};assert(captureCursor(opaquePoint)===null,'nested cross-origin content guessed');
+        }finally{outer.remove();}
+    });
     await test('原生 PDF 页面按文件和页码定位，缩放旋转、页间空白与遮挡不会串页',async()=>{
         const fixture=document.createElement('div');fixture.className='layout-tab-container';
         fixture.style.cssText='position:fixed;left:30px;top:30px;width:420px;height:360px;z-index:100;background:white;overflow:auto';
@@ -749,6 +773,16 @@ async function test(name, run) {
                     const rect=embedded.getBoundingClientRect();assert(plugin.pointer&&near(plugin.pointer.x,rect.left+(20+embedded.clientLeft)*rect.width/embedded.offsetWidth)&&near(plugin.pointer.y,rect.top+(30+embedded.clientTop)*rect.height/embedded.offsetHeight),'iframe pointer not translated; bindings='+plugin.frameListeners.size);
                     embedded.contentDocument.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'v',ctrlKey:true,bubbles:true}));
                     assert(plugin.pendingShortcut==='Ctrl+V','iframe shortcut missing');plugin.pendingShortcut=null;
+                    const child=embedded.contentDocument.createElement('iframe');child.style.cssText='width:180px;height:80px;border:5px solid black';child.srcdoc='<button>Nested button</button>';
+                    const childReady=new Promise(resolve=>child.onload=resolve);embedded.contentDocument.body.append(child);await childReady;await frame();
+                    assert(plugin.frameListeners.size===2,'dynamically inserted nested frame was not observed');
+                    const childDoc=child.contentDocument;childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
+                    const c=child.getBoundingClientRect(),e=embedded.getBoundingClientRect(),expected={x:e.left+(c.left+(12+child.clientLeft)*c.width/child.offsetWidth+embedded.clientLeft)*e.width/embedded.offsetWidth,y:e.top+(c.top+(16+child.clientTop)*c.height/child.offsetHeight+embedded.clientTop)*e.height/embedded.offsetHeight};
+                    assert(near(plugin.pointer.x,expected.x)&&near(plugin.pointer.y,expected.y),'nested frame pointer not translated through parent');
+                    childDoc.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'b',ctrlKey:true,bubbles:true}));assert(plugin.pendingShortcut==='Ctrl+B','nested shortcut missing');plugin.pendingShortcut=null;
+                    const nextDocument=new Promise(resolve=>child.onload=resolve);child.srcdoc='<button>New nested page</button>';await nextDocument;
+                    const before=JSON.stringify(plugin.pointer);childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:60,clientY:50,pointerType:'mouse',bubbles:true}));assert(JSON.stringify(plugin.pointer)===before,'replaced frame document kept its pointer listener');
+                    child.remove();await frame();assert(plugin.frameListeners.size===1,'removed nested iframe leaked binding');
                     plugin.openPeople();plugin.peopleDialog.element.querySelector('.b3-dialog__scrim').click();await settleDialog();assert(!plugin.peoplePanel,'native scrim did not dismiss list');
                 } finally {embedded.remove();button.remove();plugin.bindFrames();plugin.pendingShortcut=null;}
                 assert(plugin.frameListeners.size===0,'iframe listeners leaked');

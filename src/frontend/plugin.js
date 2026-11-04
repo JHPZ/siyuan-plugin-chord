@@ -387,19 +387,47 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     bindFrames() {
-        for(const [frame,binding] of this.frameListeners)if(!frame.isConnected){binding.stop();this.frameListeners.delete(frame);}
-        for(const frame of document.querySelectorAll('iframe')) {
+        const frames=new Set();
+        const visit=(doc,depth)=>{
+            if(depth>=8)return;
+            for(const frame of doc.querySelectorAll('iframe')){
+                frames.add(frame);try{if(frame.contentDocument)visit(frame.contentDocument,depth+1);}catch{}
+            }
+        };
+        visit(document,0);
+        for(const [frame,binding] of this.frameListeners)if(!frames.has(frame)){binding.stop();this.frameListeners.delete(frame);}
+        for(const frame of frames) {
             if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
-            let doc;
-            const move=(event)=>{const rect=frame.getBoundingClientRect();this.handlePointer({target:frame,pointerType:event.pointerType,clientX:rect.left+(event.clientX+frame.clientLeft)*rect.width/(frame.offsetWidth || rect.width),clientY:rect.top+(event.clientY+frame.clientTop)*rect.height/(frame.offsetHeight || rect.height)});};
-            const stopDocument=()=>{doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc=null;};
-            const load=()=>{
-                stopDocument();
-                try{doc=frame.contentDocument;doc?.addEventListener('pointermove',move,{capture:true,passive:true});doc?.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc?.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});}catch{}
+            let doc,observer;
+            const move=(event)=>{
+                if(!frame.isConnected)return;
+                let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=false;
+                for(let current=frame;current;){
+                    point=frameToParent(current,point);target=current;
+                    if(current.ownerDocument===document){reachedRoot=true;break;}
+                    current=current.ownerDocument.defaultView?.frameElement;
+                }
+                if(!reachedRoot)return;
+                this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);doc=null;};
+            const load=()=>{
+                let next;try{next=frame.contentDocument;}catch{}
+                if(next===doc)return;
+                stopDocument();
+                doc=next;if(!doc)return;
+                doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
+                observer=new MutationObserver(records=>{
+                    if(this.stopped)return;
+                    this.handleCursorLayout();
+                    if(records.some(record=>[...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1 && (node.matches('iframe') || node.querySelector('iframe')))))this.bindFrames();
+                });
+                observer.observe(doc,{childList:true,characterData:true,subtree:true,attributes:true});
+            };
+            const onLoad=()=>{load();this.bindFrames();this.handleCursorLayout();};
             const enter=()=>this.handlePointerLeave();
-            frame.addEventListener('load',load);frame.addEventListener('pointerenter',enter,{passive:true});load();
-            this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',load);frame.removeEventListener('pointerenter',enter);}});
+            frame.addEventListener('load',onLoad);frame.addEventListener('pointerenter',enter,{passive:true});load();
+            this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',onLoad);frame.removeEventListener('pointerenter',enter);}});
         }
     }
 

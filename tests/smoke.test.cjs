@@ -436,12 +436,19 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     await update('component-user-test',1,1,cursor);
     const cleaned=(await snapshot()).cursors[0].cursor.ui;
     assert.ok(!JSON.stringify(cleaned).includes('private'));assert.equal(cleaned.route[0].key,step.key);assert.equal(cleaned.edges.y[0].offset,12);
+    const frames=[[step],[step]];
+    await update('component-user-test',1,2,{...cursor,ui:{...ui,frames}});
+    const nested=(await snapshot()).cursors[0].cursor.ui;
+    assert.equal(nested.frames.length,2);assert.ok(!JSON.stringify(nested).includes('private'));
+    for(const bad of [{frames:[]},{frames:[[step]]},{frames:Array(9).fill([step])},{frames,frame:[step]},{frames:[[step],[{...step,key:'raw name'}]]}]) {
+        await assert.rejects(update('component-user-test',1,3,{...cursor,ui:{...ui,...bad}}),/Invalid UI cursor/);
+    }
     const graph={node:step.key,layout:step.key,x:.2,y:-.3,secret:'private'};
-    await update('component-user-test',1,2,{...cursor,ui:{...ui,graph}});
+    await update('component-user-test',1,3,{...cursor,ui:{...ui,graph}});
     assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.graph)),{node:step.key,layout:step.key,x:.2,y:-.3});
     for(const invalid of [{...graph,node:'raw document name'},{...graph,x:Infinity},{...graph,y:1e8}])await assert.rejects(update('component-user-test',1,3,{...cursor,ui:{...ui,graph:invalid}}),/Invalid UI cursor/);
     const pdf={file:step.key,page:2,part:'page',x:72,y:140,mark:null,secret:'private'};
-    await update('component-user-test',1,3,{...cursor,ui:{...ui,pdf}});
+    await update('component-user-test',1,4,{...cursor,ui:{...ui,pdf}});
     assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.pdf)),{file:step.key,page:2,part:'page',x:72,y:140,mark:null});
     for(const bad of [{pdf:null},{pdf:{...pdf,page:0}},{pdf:{...pdf,page:1.5}},{pdf:{...pdf,part:'canvas'}},{pdf:{...pdf,file:'raw file name'}},{pdf:{...pdf,x:Infinity}},{pdf:{...pdf,mark:'raw annotation'}},{pdf,graph},{pdf,frame:[]}]) {
         await assert.rejects(update('component-user-test',1,4,{...cursor,ui:{...ui,...bad}}),/Invalid UI cursor/);
