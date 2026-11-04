@@ -615,6 +615,33 @@ async function test(name, run) {
             rows[0].remove();assert(resolveCursor(samples[0].anchor)===null,'missing result moved to same-name sibling');samples.slice(4).forEach(check);
         }finally{fixture.remove();}
     });
+    await test('原生菜单按动作与相邻项定位，悬停、分组、子菜单和重排不改变可见目标',async()=>{
+        const menu=document.createElement('div');menu.className='b3-menu';menu.dataset.name='native-menu-fixture';menu.style.cssText='position:fixed;left:25px;top:25px;width:300px;height:350px;padding:8px;box-sizing:border-box;background:white;z-index:100';
+        menu.innerHTML='<div class="b3-menu__items"><button data-id="alpha" class="b3-menu__item b3-menu__item--group-first">同名动作</button><button data-id="separator_1" class="b3-menu__separator"></button><button data-id="beta" class="b3-menu__item b3-menu__item--group-last">同名动作</button><button data-id="headingNumber" class="b3-menu__item b3-menu__item--current b3-menu__item--show b3-menu__item--group-last"><span class="b3-menu__label">标题编号</span></button></div>';
+        const list=menu.firstElementChild,submenu=document.createElement('div');submenu.className='b3-menu__submenu';submenu.style.cssText='position:absolute;left:310px;top:50px;background:white;width:120px';submenu.innerHTML='<button data-id="enable" class="b3-menu__item">启用</button>';list.querySelector('[data-id="headingNumber"]').append(submenu);for(const row of list.children)row.style.cssText='display:block;width:100%;height:35px';document.body.append(menu);
+        try{
+            const parent=list.querySelector('[data-id="headingNumber"]'),label=parent.querySelector('span'),child=parent.querySelector('[data-id="enable"]'),separator=list.querySelector('.b3-menu__separator');
+            const point=root=>{const r=root.getBoundingClientRect();return{x:r.left+6,y:r.top+r.height/2};},samples=[...list.querySelectorAll(':scope > .b3-menu__item'),label,separator,child].map(root=>({root,anchor:componentRoundTrip(point(root))}));
+            const r=menu.getBoundingClientRect(),blankPoint={x:r.right-2,y:r.top+r.height/2},blank=componentRoundTrip(blankPoint);assert(!blank.ui.textHash,'menu exterior inherited action text');
+            parent.classList.remove('b3-menu__item--show','b3-menu__item--current','b3-menu__item--group-last');parent.querySelector('.b3-menu__submenu').style.display='none';
+            const check=sample=>{const actual=resolveCursor(sample.anchor),expected=point(sample.root);assert(actual&&near(actual.x,expected.x)&&near(actual.y,expected.y),'visible menu action lost after state or layout change');};
+            samples.slice(0,-1).forEach(check);assert(resolveCursor(samples.at(-1).anchor)===null,'closed submenu painted');
+            for(const row of [...list.children])list.prepend(row);samples.slice(0,-1).forEach(check);
+            const other=document.createElement('button');other.className='b3-menu__item';other.dataset.id='other';other.textContent='其他内容';separator.before(other);assert(resolveCursor(samples.find(sample=>sample.root===separator).anchor)===null,'different action boundary inherited separator');
+            const mapped=resolveCursor(blank);assert(mapped&&near(mapped.x,blankPoint.x)&&near(mapped.y,blankPoint.y),'unrelated menu content removed exterior whitespace');
+        }finally{menu.remove();}
+    });
+    await test('原生上传透明输入层按可见文字和图标定位，改宽和遮挡不误画',async()=>{
+        const menu=document.createElement('div');menu.className='b3-menu';menu.dataset.name='native-upload-fixture';menu.style.cssText='position:fixed;left:25px;top:25px;width:300px;background:white;z-index:100';menu.innerHTML='<button data-id="insertAsset" class="b3-menu__item" style="position:relative;display:flex;align-items:center;gap:8px;width:100%;height:40px;padding:6px"><svg width="18" height="18"><rect width="18" height="18" fill="blue"/></svg><span class="b3-menu__label" style="flex:1;text-align:left">插入图片或文件<input class="b3-form__upload" type="file" style="position:absolute;inset:0;width:100%;height:100%;opacity:.001"></span></button>';document.body.append(menu);
+        try{
+            const row=menu.firstElementChild,label=row.querySelector('span'),upload=row.querySelector('input'),icon=row.querySelector('svg'),character=componentCharacter(label,3),ir=icon.getBoundingClientRect(),textPoint={x:character.left+character.width/2,y:character.top+character.height/2},iconPoint={x:ir.left+ir.width/2,y:ir.top+ir.height/2};assert(document.elementFromPoint(textPoint.x,textPoint.y)===upload,'native upload overlay not reproduced');
+            const text=componentRoundTrip(textPoint),image=componentRoundTrip(iconPoint);menu.style.width='430px';
+            for(const [anchor,expected] of [[text,textPoint],[image,iconPoint]]){const actual=resolveCursor(anchor);assert(actual&&near(actual.x,expected.x)&&near(actual.y,expected.y),'upload pointer followed input box instead of visible content');}
+            icon.style.opacity='0';assert(resolveCursor(image)===null,'invisible upload icon inherited button');icon.style.opacity='1';
+            const cover=document.createElement('div');cover.style.cssText='position:fixed;left:25px;top:25px;width:430px;height:40px;z-index:101;background:white';document.body.append(cover);assert(resolveCursor(text)===null,'covered upload text painted');cover.remove();upload.style.opacity='1';assert(resolveCursor(text)===null,'visible file control was treated as a transparent overlay');
+            upload.style.opacity='.001';upload.setAttribute('data-private','true');assert(captureCursor(textPoint)===null&&resolveCursor(text)===null,'private upload input was bypassed');
+        }finally{menu.remove();}
+    });
     await test('所有 DOM 组件的文字、边角和留白覆盖扫描：菜单、侧栏、设置、标签、图片与插件面板',async()=>{
         const fixture=document.createElement('div');fixture.id='component-inventory';
         fixture.style.cssText='position:fixed;left:12px;top:12px;width:'+Math.min(900,innerWidth-50)+'px;height:540px;background:white;z-index:100;overflow:auto;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding:6px';

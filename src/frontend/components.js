@@ -1,4 +1,10 @@
 // Component identities are bounded hashes; input values and document text never enter the wire format.
+function componentHit(doc,point) {
+    const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
+    if(!item || hit.closest('[data-private]') || Number(doc.defaultView.getComputedStyle(hit).opacity)>.01)return hit;
+    return doc.elementsFromPoint(point.x,point.y).find(element=>element!==hit && item.contains(element) && visibleElement(element)) || null;
+}
+
 function componentHash(value) {
     let a=2166136261,b=5381;
     for(let index=0;index<value.length;index++){const code=value.charCodeAt(index);a=Math.imul(a^code,16777619);b=Math.imul(b,33)^code;}
@@ -11,7 +17,7 @@ function componentChildren(element) {
         if(element.matches('.protyle-hint .b3-list-item__text') && child.matches('mark'))return false;
         const style=child.ownerDocument.defaultView.getComputedStyle(child);
         // Transparent controls still occupy space and remain stable references for surrounding gaps.
-        return style.display!=='none';
+        return style.display!=='none' && !(child.matches('.b3-menu__item input.b3-form__upload[type="file"]') && Number(style.opacity)<=.01);
     });
 }
 
@@ -19,6 +25,10 @@ function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('.b3-menu__separator')){
+        const siblings=componentChildren(element.parentElement),index=siblings.indexOf(element),before=siblings.slice(0,index).reverse().find(item=>item.matches('.b3-menu__item')),after=siblings.slice(index+1).find(item=>item.matches('.b3-menu__item'));
+        values.push(['between',[before ? componentKey(before):'',after ? componentKey(after):''].sort()]);
+    }else if(element.matches('.b3-menu__item[data-id]'))values.push(['menu-action',componentHash(element.getAttribute('data-id'))]);
     if(element.matches('.protyle-hint .b3-list-item')){
         const result=element.querySelector(':scope > .b3-list-item__first[data-node-id]')?.getAttribute('data-node-id'),value=result || element.getAttribute('data-value');
         if(value)values.push(['hint',componentHash(value)]);
@@ -52,7 +62,7 @@ function componentKey(element) {
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
     const label=!privateText && !values.length ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item,.protyle-hint .b3-list-item__text') ? textLabel(element):'')):'';
-    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^b3-menu__item--(?:current|show|group-first|group-last)$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
 
@@ -231,7 +241,20 @@ function componentNearText(element,point) {
     if(element.matches('input,textarea') || element.closest('[data-private]'))return null;
     const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
-    if(node?.nodeType!==3 || !element.contains(node))return null;
+    if(node?.nodeType!==3 || !element.contains(node)){
+        // Native upload inputs intercept caret hit testing above their visible label text.
+        const upload=element.matches('.b3-menu__label') && element.querySelector('input.b3-form__upload[type="file"]');
+        if(!upload || Number(doc.defaultView.getComputedStyle(upload).opacity)>.01)return null;
+        let nearest;
+        for(let index=0;index<element.textContent.length;index++){
+            const rect=componentCharacter(element,index);if(!rect)continue;
+            const distance=Math.hypot(Math.max(rect.left-point.x,point.x-rect.right,0),Math.max(rect.top-point.y,point.y-rect.bottom,0));
+            if(!nearest || distance<nearest.distance)nearest={offset:index,rect,distance};
+            if(distance===0)break;
+        }
+        return nearest ? [nearest]:null;
+    }
+    if(element.closest('.b3-menu') && node.parentElement.closest('.b3-menu__item')!==element.closest('.b3-menu__item'))return null;
     if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
     return [prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
@@ -360,7 +383,7 @@ function captureComponent(hit,plugin,point) {
         if(frames.length>=8)return null;
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
-        point=inside;const inner=doc.elementFromPoint(point.x,point.y);
+        point=inside;const inner=componentHit(doc,point);
         if(!visibleElement(inner) || inner.closest('[data-private]') || inner.matches('canvas'))return null;
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
@@ -406,7 +429,7 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    const hit=element.ownerDocument.elementFromPoint(point.x,point.y);
+    const hit=componentHit(element.ownerDocument,point);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
     const highlight=target===element && element.matches('.protyle-hint .b3-list-item__text') && hit?.matches('mark') && hit.parentElement===element;
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
