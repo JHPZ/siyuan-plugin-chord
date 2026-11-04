@@ -1189,6 +1189,22 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'cropped-away image pixel painted');
         }finally{image.remove();}
     });
+    await test('源码浮窗绑定渲染目标，切换公式和失效目标时隐藏',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:20px;top:20px;width:500px;height:200px;background:white;z-index:100';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261030165150-util001"></div><div class="protyle-wysiwyg"><div data-node-id="20261030165150-util002"><span data-type="inline-math">x</span><span data-type="inline-math">x</span></div><div data-node-id="20261030165150-util003" data-type="NodeMathBlock">x</div></div><div class="protyle-util" style="position:absolute;left:0;top:70px;width:480px;height:120px;background:white"><div class="resize__move">公式</div><textarea style="width:420px;height:40px"></textarea><button>刷新</button></div>';
+        document.body.append(fixture);const popup=fixture.querySelector('.protyle-util'),spans=fixture.querySelectorAll('[data-type="inline-math"]'),block=spans[0].parentElement,other=fixture.querySelector('[data-type="NodeMathBlock"]');
+        const open=(renderElement,blockElement=block)=>{popup.querySelector('textarea').replaceWith(document.createElement('textarea'));if(typeof rememberRenderTarget==='function')rememberRenderTarget({detail:{protyle:{element:fixture},toolbar:{subElement:popup},blockElement,renderElement}});};
+        try{
+            open(spans[0]);const r=popup.querySelector('textarea').getBoundingClientRect(),anchor=componentRoundTrip({x:r.left+5,y:r.top+5});
+            open(spans[1]);assert(resolveCursor(anchor)===null,'another identical inline formula inherited source cursor');
+            open(other,other);assert(resolveCursor(anchor)===null,'another block inherited source cursor');
+            open(spans[0]);assert(resolveCursor(anchor),'same formula reopening lost cursor');
+            popup.querySelector('textarea').value='private changed source';assert(resolveCursor(anchor),'input value entered identity');assert(!JSON.stringify(anchor).includes('private'),'raw source on wire');
+            popup.classList.add('fn__none');assert(resolveCursor(anchor)===null,'closed popup drew cursor');popup.classList.remove('fn__none');
+            spans[0].remove();assert(resolveCursor(anchor)===null,'detached target retained cursor');
+            assert(captureCursor({x:r.left+5,y:r.top+5})===null,'invalid target captured');
+        }finally{fixture.remove();}
+    });
     await test('三个分屏重排后匹配同一对文档之间的分隔条，缺少邻接文档时隐藏',async()=>{
         const fixture=document.createElement('div');fixture.id='three-pane-fixture';fixture.style.cssText='position:fixed;left:20px;top:20px;width:500px;height:100px;background:white;z-index:100;display:flex';
         const panels=['pane001','pane002','pane003'].map(id=>{const panel=document.createElement('div');panel.style.cssText='width:130px;height:100px';panel.innerHTML='<div class="protyle-background" data-node-id="20261030165150-'+id+'"></div>';return panel;});
@@ -1202,7 +1218,7 @@ async function test(name, run) {
         }finally{fixture.remove();}
     });
     await test('完整插件在在线和断线时都放行正文编辑、拖拽与原生撤销', async () => {
-        const commands=[], messages=[], subscriptions=new Map();
+        const commands=[], messages=[], subscriptions=new Map(), editorEvents=new Map();
         const navigation={opened:[],commands:[],tab:null,allow:false};
         const NativePlugin = (() => {
             const module={exports:{}};
@@ -1227,7 +1243,7 @@ async function test(name, run) {
         })();
         const plugin=new NativePlugin();let offline=false;
         Object.assign(plugin,{name:'chord-native-test',i18n:${JSON.stringify(JSON.parse(fs.readFileSync(path.join(root,'i18n/zh-CN.json'),'utf8')))},
-            eventBus:{on(){},off(){}},kernel:{rpc:{bind:async(name,handler)=>subscriptions.set(name,handler),unbind:async name=>subscriptions.delete(name),
+            eventBus:{on(name,handler){editorEvents.set(name,handler);},off(name,handler){assert(editorEvents.get(name)===handler,"wrong editor event cleanup");editorEvents.delete(name);}},kernel:{rpc:{bind:async(name,handler)=>subscriptions.set(name,handler),unbind:async name=>subscriptions.delete(name),
                 call:new Proxy({},{get:(_,name)=>async()=>{
                     if(offline)throw Error('Offline');
                     if(name==='presenceHeartbeat')return {count:1,clients:[{name:'A',hue:120,documentId:'20261030165150-doc0001'}],self:{name:'A',hue:120}};
@@ -1238,6 +1254,7 @@ async function test(name, run) {
         const input=cursorTextRoot(block), original=input.innerHTML;
         try {
             await plugin.onload();await plugin.onLayoutReady();
+            assert(editorEvents.get("open-noneditableblock")===plugin.handleRenderTarget,"render event not registered");
             await test('顶栏直接显示人数，点击后打开原生人员弹窗，退出清理状态',async()=>{
                 assert(plugin.topBar.textContent==='1 人在线','online count is not visible');
                 assert(!plugin.peoplePanel,'people list opened before click');
@@ -1495,7 +1512,7 @@ async function test(name, run) {
             assert(commands.length===1&&commands[0].langKey==='checkOnline','personal history command remains');
             assert(!messages.length,'display failure showed an editing permission notice');
         } finally {await plugin.onunload();}
-        assert(!document.querySelector('.collab-cursor-layer')&&!subscriptions.size,'display leaked after unload');
+        assert(!document.querySelector('.collab-cursor-layer')&&!subscriptions.size&&!editorEvents.size,'display leaked after unload');
     });
     document.title = results.some(result=>result.startsWith('FAIL')) ? 'FAIL Cursor browser regression' : 'PASS Cursor browser regression';
     document.getElementById('results').dataset.complete = 'true';

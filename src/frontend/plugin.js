@@ -40,6 +40,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handlePresence = (presence) => this.updatePresence(presence);
         this.handleCursors = (state) => this.updateCursors(state);
         this.handleDocument = () => this.scheduleDocumentReport();
+        this.handleRenderTarget = rememberRenderTarget;
         this.handleKernelState = ({ detail }) => {
             if (detail.code === 2) {
                 this.presenceRevision = -1;
@@ -52,6 +53,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
         await this.kernel.rpc.bind("shortcut-shown", this.handleShortcut);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
+        this.eventBus.on("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) {
             this.eventBus.on(event, this.handleDocument);
         }
@@ -866,6 +868,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.renameDialog?.destroy();
         document.querySelectorAll(".sy__file .collab-presence").forEach((row) => this.clearRow(row));
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
+        this.eventBus.off("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
         await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut)]);
         await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});

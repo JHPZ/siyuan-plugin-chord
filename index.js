@@ -521,6 +521,22 @@ function resolvePDF(element,anchor) {
 
 // Component identities are bounded hashes; input values and document text never enter the wire format.
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
+const componentRenderTargets=new WeakMap();
+
+function rememberRenderTarget({detail}) {
+    const {protyle,toolbar,blockElement,renderElement}=detail || {},popup=toolbar?.subElement;
+    if(!popup?.matches('.protyle-util') || !protyle?.element?.contains(popup) || !blockElement?.contains(renderElement))return;
+    componentRenderTargets.set(popup,{editor:protyle.element,block:blockElement,target:renderElement,field:popup.querySelector('textarea')});
+}
+
+function componentRenderTarget(popup) {
+    const context=componentRenderTargets.get(popup);
+    if(!context)return null;
+    const {editor,block,target,field}=context,id=block.getAttribute('data-node-id');
+    if(!field || popup.querySelector('textarea')!==field || !editor.contains(popup) || !editor.querySelector('.protyle-wysiwyg')?.contains(block) || !block.contains(target) || !DOCUMENT_ID.test(id || ''))return null;
+    const route=componentRoute(block,target);
+    return route ? [id,componentKey(target),route]:null;
+}
 function componentHit(doc,point) {
     const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
     if(!item || hit.closest('[data-private]') || Number(doc.defaultView.getComputedStyle(hit).opacity)>.01)return hit;
@@ -609,6 +625,7 @@ function componentKey(element) {
     if(element.id && !/^\d{14}-/.test(element.id) && !dialogTitle)values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
     if(element.matches('.protyle'))values.push(['document',editorDocumentId(element)]);
+    if(element.matches('.protyle-util'))values.push(['render-target',componentRenderTarget(element)]);
     if(element.matches('.sb__resize'))values.push(['between',componentSuperblockDivider(element)]);
     if(element.matches('.layout__wnd,[data-type="wnd"]'))values.push(['pane',componentPane(element)]);
     if(element.matches('.layout__resize')){
@@ -770,6 +787,8 @@ function componentAVScope(av,plugin) {
 
 function componentScope(element,plugin) {
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
+    const popup=element.closest('.protyle-util');
+    if(popup?.querySelector('textarea') && !componentRenderTarget(popup))return null;
     const tree=componentTreeRegion(element);
     if(tree){const scope=componentTreeScope(tree,plugin);return scope ? {root:tree.root,scope}:null;}
     const calendar=componentCalendarRegion(element);
@@ -1398,6 +1417,7 @@ function captureCursor(point, plugin) {
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
     };
+    if(hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
     const target=uiAnchor(hit,plugin,point);
     if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
@@ -1415,6 +1435,7 @@ function resolveCursor(cursor, plugin) {
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
     const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
     if(!element || element.closest(CURSOR_EXCLUDED))return null;
+    if(element.closest('.protyle-util')?.querySelector('textarea'))return null;
     if(element.closest('.sy__file') && cursor.ui.kind!=='file')return null;
     if(cursor.region && !matchesRegion(element,cursor.region))return null;
     if(!['file','dock','tab','tab-control','settings-nav'].includes(cursor.ui.kind) && !element.matches(CURSOR_CONTROL) && !element.matches('.protyle-title__input'))return null;
@@ -1472,6 +1493,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handlePresence = (presence) => this.updatePresence(presence);
         this.handleCursors = (state) => this.updateCursors(state);
         this.handleDocument = () => this.scheduleDocumentReport();
+        this.handleRenderTarget = rememberRenderTarget;
         this.handleKernelState = ({ detail }) => {
             if (detail.code === 2) {
                 this.presenceRevision = -1;
@@ -1484,6 +1506,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
         await this.kernel.rpc.bind("shortcut-shown", this.handleShortcut);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
+        this.eventBus.on("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) {
             this.eventBus.on(event, this.handleDocument);
         }
@@ -2298,6 +2321,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.renameDialog?.destroy();
         document.querySelectorAll(".sy__file .collab-presence").forEach((row) => this.clearRow(row));
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
+        this.eventBus.off("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
         await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut)]);
         await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
