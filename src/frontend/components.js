@@ -1,4 +1,5 @@
 // Component identities are bounded hashes; input values and document text never enter the wire format.
+const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code';
 function componentHit(doc,point) {
     const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
     if(!item || hit.closest('[data-private]') || Number(doc.defaultView.getComputedStyle(hit).opacity)>.01)return hit;
@@ -14,7 +15,7 @@ function componentHash(value) {
 function componentChildren(element) {
     return [...element.children].filter(child=>{
         if(child.matches('style,script,.collab-cursor-layer,.collab-editing-layer,.collab-presence-users,.fn__none,[hidden]'))return false;
-        if(element.matches('.protyle-hint .b3-list-item__text') && child.matches('mark'))return false;
+        if(element.matches(COMPONENT_HIGHLIGHT_TEXT) && child.matches('mark'))return false;
         const style=child.ownerDocument.defaultView.getComputedStyle(child);
         // Transparent controls still occupy space and remain stable references for surrounding gaps.
         return style.display!=='none' && !(child.matches('.b3-menu__item input.b3-form__upload[type="file"]') && Number(style.opacity)<=.01);
@@ -31,10 +32,18 @@ function componentListRect(element,part) {
     return rects.length ? {left:Math.min(...rects.map(rect=>rect.left)),right:Math.max(...rects.map(rect=>rect.right)),top:Math.min(...rects.map(rect=>rect.top)),bottom:Math.max(...rects.map(rect=>rect.bottom))}:null;
 }
 
+function componentSearchField(element) {
+    const label=element.closest('.search__list .search__av-content > .fn__code'),field=element.closest('.search__list [data-av-search-match]') || label?.nextElementSibling;
+    if(!field)return label ? null:undefined;
+    if(!field.matches('[data-av-search-match]'))return null;
+    try{const {itemID,keyID}=JSON.parse(field.getAttribute('data-av-search-match'));return [itemID,keyID].every(value=>DOCUMENT_ID.test(value || '')) ? [itemID,keyID]:null;}catch{return null;}
+}
+
 function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('.search__list [data-av-search-match],.search__list .search__av-content > .fn__code'))values.push(['search-field',componentHash(JSON.stringify(componentSearchField(element)))]);
     const tree=componentTreeRegion(element);
     if(tree?.root===element)values.push(['tree',componentHash(JSON.stringify(tree.identity))]);
     if(element.matches('.b3-menu__separator')){
@@ -73,8 +82,8 @@ function componentKey(element) {
         values.push(['between',[neighbour(element.previousElementSibling),neighbour(element.nextElementSibling)].sort()]);
     }
     const privateText=element.closest('input,textarea,[contenteditable],[data-private]');
-    const label=!privateText && !values.length && !(tree && element.matches('.counter')) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
-        (!element.children.length || element.matches('.b3-list-item,.b3-menu__item,.protyle-hint .b3-list-item__text') ? textLabel(element):'')):'';
+    const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
+        (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') || element.matches(COMPONENT_HIGHLIGHT_TEXT) ? textLabel(element):'')):'';
     const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(name==='selected' && element.matches('.thumbnail'))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
@@ -320,6 +329,7 @@ function componentNearText(element,point) {
         return nearest ? [nearest]:null;
     }
     if(element.matches('.block__logo--counter') && element.closest('.sy__backlink,.sy__backlink--bottom') && node.parentElement.closest('.counter'))return null;
+    if(element.matches('.search__list [data-type="search-item"]') && node.parentElement!==element)return null;
     if(node.parentElement.closest('.b3-menu__item,.b3-list-item')!==element.closest('.b3-menu__item,.b3-list-item'))return null;
     if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
@@ -398,7 +408,7 @@ function frameToParent(frame,point) {
 }
 
 function componentBox(hit,point) {
-    if(hit.matches('.protyle-hint .b3-list-item__text > mark'))hit=hit.parentElement;
+    if(hit.matches('mark') && hit.parentElement.matches(COMPONENT_HIGHLIGHT_TEXT))hit=hit.parentElement;
     if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
     if(hit.matches('.b3-list-item__arrow') && componentTreeRegion(hit))hit=hit.closest('.b3-list-item__toggle') || hit;
     while(hit.parentElement){
@@ -422,7 +432,7 @@ function componentGeometry(element,point) {
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     const children=box ? []:componentChildren(element),text=box ? []:componentNearText(element,point) || [],image=componentImageRect(element),frame=box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
-    const edges={},relative={};let usedText=!!(componentTreeRegion(element) && element.matches('.counter'));
+    const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
         const entries=[{value:bounds[start],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
@@ -452,7 +462,7 @@ function componentGeometry(element,point) {
 }
 
 function captureComponent(hit,plugin,point) {
-    if(hit.closest('[data-private]'))return null;
+    if(hit.closest('[data-private]') || componentSearchField(hit)===null)return null;
     const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
     if(hit.matches('canvas') && !graph)return null;
     let original=hit;hit=componentBox(hit,point);
@@ -467,11 +477,11 @@ function captureComponent(hit,plugin,point) {
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
         point=inside;const inner=componentHit(doc,point);
-        if(!visibleElement(inner) || inner.closest('[data-private]') || inner.matches('canvas'))return null;
+        if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || inner.matches('canvas'))return null;
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
-    const highlight=original.matches('.protyle-hint .b3-list-item__text > mark') && hit===original.parentElement;
+    const highlight=original.matches('mark') && hit===original.parentElement && hit.matches(COMPONENT_HIGHLIGHT_TEXT);
     const target=hit!==original && !highlight ? componentRoute(hit,original):undefined;
     if(target===null)return null;
     const geometry=componentGeometry(hit,point);if(!geometry)return null;
@@ -514,10 +524,10 @@ function resolveComponent(cursor,plugin) {
     if(box)Object.assign(point,box.toParent(point));
     const hit=componentHit(element.ownerDocument,point);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
-    const highlight=target===element && element.matches('.protyle-hint .b3-list-item__text') && hit?.matches('mark') && hit.parentElement===element;
+    const highlight=target===element && element.matches(COMPONENT_HIGHLIGHT_TEXT) && hit?.matches('mark') && hit.parentElement===element;
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || componentSearchField(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
