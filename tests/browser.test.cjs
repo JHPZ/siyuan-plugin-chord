@@ -1189,6 +1189,45 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'cropped-away image pixel painted');
         }finally{image.remove();}
     });
+    await test('源码字符随输入框改宽换行，空白和内容变化分别校验',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:380px;background:white;z-index:100';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261030165150-field01"></div><div class="protyle-wysiwyg"><div data-node-id="20261030165150-field02" data-type="NodeMathBlock">x</div></div><div class="protyle-util" style="position:absolute;left:0;top:0"><textarea></textarea></div>';
+        const field=fixture.querySelector('textarea'),popup=field.parentElement,reference=document.createElement('div');
+        const css='font:20px/28px monospace;tab-size:4;white-space:pre-wrap;overflow-wrap:break-word;word-break:normal;padding:8px;box-sizing:border-box;border:0;letter-spacing:0;';
+        field.style.cssText=css+'width:320px;height:350px;resize:none;overflow:auto;display:block';reference.style.cssText=css+'width:320px;position:fixed;left:-10000px;top:0';
+        field.value='alpha = 123;  中文 😀 tab'+String.fromCharCode(9)+'end'+String.fromCharCode(10,10)+'last = "+quoted+"; '+ 'wrap words '.repeat(7);reference.textContent=field.value;document.body.append(fixture,reference);
+        if(typeof rememberRenderTarget==='function')rememberRenderTarget({detail:{protyle:{element:fixture},toolbar:{subElement:popup},blockElement:fixture.querySelector('[data-node-id="20261030165150-field02"]'),renderElement:fixture.querySelector('[data-node-id="20261030165150-field02"]')}});
+        const expected=offset=>{const g=rectAt(reference,offset),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();const scale=b.width/a.width;return {x:b.left+(g.left-a.left+g.width*.5-field.scrollLeft)*scale,y:b.top+(g.top-a.top+g.height*.5-field.scrollTop)*scale};};
+        try{
+            field.focus();field.setSelectionRange(3,8);
+            const samples=[0,8,13,15,18,21,24,29,35,45,60,80].map(offset=>({offset,anchor:componentRoundTrip(expected(offset))}));
+            field.style.width='240px';reference.style.width='240px';
+            for(const {offset,anchor}of samples){const p=expected(offset),resolved=resolveCursor(anchor);assert(resolved&&near(resolved.x,p.x)&&near(resolved.y,p.y),'field glyph moved with box ratio at '+offset);assert(anchor.ui?.textHash,'source text has no content hash');assert(!JSON.stringify(anchor).includes('alpha'),'raw source in anchor');}
+            assert(document.activeElement===field&&field.selectionStart===3&&field.selectionEnd===8,'measurement changed native focus or selection');
+            field.style.font='18px/30px serif';reference.style.font='18px/30px serif';fixture.style.transformOrigin='0 0';fixture.style.transform='scale(.8)';
+            for(const {offset,anchor}of samples){const p=expected(offset),resolved=resolveCursor(anchor);assert(resolved&&Math.hypot(resolved.x-p.x,resolved.y-p.y)<.01,'font or scale drift '+JSON.stringify({offset,p,resolved,anchor}));}
+            fixture.style.transform='';
+            field.value=field.value.replace('alpha','other');assert(samples.every(s=>resolveCursor(s.anchor)===null),'different source inherited glyphs');field.value=reference.textContent;
+            const rawRect=offset=>{const range=document.createRange();range.setStart(reference.firstChild,offset);range.setEnd(reference.firstChild,offset+1);return range.getBoundingClientRect();};
+            const gapExpected=(offset,blank=false)=>{const g=rawRect(offset),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect(),left=g.right-a.left+b.left;return {x:left+(b.right-left)*.6,y:g.top-a.top+b.top+g.height*.5};};
+            const gaps=[26,28].map(offset=>({offset,anchor:componentRoundTrip(gapExpected(offset))}));
+            field.style.width='400px';reference.style.width='400px';
+            for(const {offset,anchor}of gaps){const p=gapExpected(offset),actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-p.x,actual.y-p.y)<.01,'explicit line or empty line gap drift '+JSON.stringify({offset,p,actual,anchor}));}
+            field.style.width='190px';reference.style.width='190px';let occupied;
+            for(let offset=29;offset<field.value.length-2;offset++){
+                if(/\\s/.test(field.value[offset]))continue;let next=offset+1;while(field.value[next]===' ')next++;
+                const g=rawRect(offset),n=rawRect(next),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();
+                if(n.top>g.top&&b.width-(g.right-a.left)>15){const p={x:b.left+(g.right-a.left)+(b.width-(g.right-a.left))*.8,y:b.top+g.top-a.top+g.height*.5};occupied=componentRoundTrip(p);break;}
+            }
+            assert(occupied?.ui.textHash,'no wrapped line-end gap fixture');field.style.width='600px';reference.style.width='600px';assert(resolveCursor(occupied)===null,'source blank occupied after reflow retained pointer');
+            field.style.height='80px';field.scrollTop=60;assert(field.scrollTop>0,'vertical source scroll did not move');
+            for(const {offset,anchor}of samples){const p=expected(offset),r=field.getBoundingClientRect(),visible=p.y>=r.top&&p.y<r.bottom,resolved=resolveCursor(anchor);assert(visible?resolved&&near(resolved.x,p.x)&&near(resolved.y,p.y):resolved===null,'source scroll clipping '+JSON.stringify({offset,p,resolved,visible,scroll:field.scrollTop,r:r.toJSON(),anchor}));}
+            field.style.height='350px';field.scrollTop=0;field.style.width='160px';reference.style.width='160px';field.style.whiteSpace='pre';reference.style.whiteSpace='pre';field.scrollLeft=120;assert(field.scrollLeft>0,'horizontal source scroll did not move');
+            for(const {offset,anchor}of samples){const p=expected(offset),r=field.getBoundingClientRect(),visible=p.x>=r.left&&p.x<r.right,resolved=resolveCursor(anchor);assert(visible?resolved&&near(resolved.x,p.x)&&near(resolved.y,p.y):resolved===null,'source horizontal clipping at '+offset);}
+            const segmenter=Intl.Segmenter;try{Intl.Segmenter=undefined;const b=field.getBoundingClientRect();assert(captureCursor({x:b.left+20,y:b.top+20})===null,'unsupported grapheme measurement used box ratio');}finally{Intl.Segmenter=segmenter;}
+            assert(!document.querySelector('.collab-text-measure'),'measurement leaked into UI');
+        }finally{fixture.remove();reference.remove();}
+    });
     await test('源码浮窗绑定渲染目标，切换公式和失效目标时隐藏',async()=>{
         const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:20px;top:20px;width:500px;height:200px;background:white;z-index:100';
         fixture.innerHTML='<div class="protyle-background" data-node-id="20261030165150-util001"></div><div class="protyle-wysiwyg"><div data-node-id="20261030165150-util002"><span data-type="inline-math">x</span><span data-type="inline-math">x</span></div><div data-node-id="20261030165150-util003" data-type="NodeMathBlock">x</div></div><div class="protyle-util" style="position:absolute;left:0;top:70px;width:480px;height:120px;background:white"><div class="resize__move">公式</div><textarea style="width:420px;height:40px"></textarea><button>刷新</button></div>';
@@ -1199,7 +1238,7 @@ async function test(name, run) {
             open(spans[1]);assert(resolveCursor(anchor)===null,'another identical inline formula inherited source cursor');
             open(other,other);assert(resolveCursor(anchor)===null,'another block inherited source cursor');
             open(spans[0]);assert(resolveCursor(anchor),'same formula reopening lost cursor');
-            popup.querySelector('textarea').value='private changed source';assert(resolveCursor(anchor),'input value entered identity');assert(!JSON.stringify(anchor).includes('private'),'raw source on wire');
+            const identity=componentKey(popup);popup.querySelector('textarea').value='private changed source';assert(componentKey(popup)===identity,'input value entered target identity');assert(resolveCursor(anchor)===null,'different source inherited text');assert(!JSON.stringify(anchor).includes('private'),'raw source on wire');popup.querySelector('textarea').value='';
             popup.classList.add('fn__none');assert(resolveCursor(anchor)===null,'closed popup drew cursor');popup.classList.remove('fn__none');
             spans[0].remove();assert(resolveCursor(anchor)===null,'detached target retained cursor');
             assert(captureCursor({x:r.left+5,y:r.top+5})===null,'invalid target captured');

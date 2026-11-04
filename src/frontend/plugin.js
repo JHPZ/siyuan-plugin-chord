@@ -215,7 +215,7 @@ module.exports = class CollaborationPlugin extends Plugin {
     observeLayout() {
         this.domObserver = new MutationObserver((records) => {
             for (const record of records) {
-                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-editing-layer, .collab-people")) continue;
+                if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-editing-layer, .collab-people, .collab-text-measure")) continue;
                 if (record.type === "characterData") { this.scheduleCursorRender(false); this.queueActivity(); continue; }
                 if (record.type === "attributes") {
                     this.scheduleDocumentReport();
@@ -225,7 +225,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     this.queueActivity();
                     continue;
                 }
-                const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.matches('.collab-presence-users,.collab-editing-layer'));
+                const elements = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1 && !node.matches('.collab-presence-users,.collab-editing-layer,.collab-text-measure'));
                 if (!elements.length) continue;
                 if(elements.some((element)=>element.matches('iframe') || element.querySelector('iframe')))this.bindFrames();
                 this.scheduleDocumentReport();
