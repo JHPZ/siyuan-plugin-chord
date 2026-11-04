@@ -412,6 +412,20 @@ test("tick settings persist, broadcast live and preserve the old rate on write f
     assert.equal(first.frames.size, 0);
 });
 
+test('document space anchors are validated and retained without arbitrary payloads', async () => {
+    const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    await heartbeat('space-user-test',{generation:1});
+    const anchor={surface:'document',documentId:'20261030165150-doc0001',blockId:'20261030165150-block01',x:0,y:0,
+        region:{kind:'document',id:'20261030165150-doc0001'},space:{offset:12,x:.25,y:1.2,secret:'discard'}};
+    await update('space-user-test',1,1,anchor);
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.space)),{offset:12,x:.25,y:1.2});
+    for(const space of [null,{}, {...anchor.space,offset:-1},{...anchor.space,x:Infinity},{...anchor.space,x:-.1},{...anchor.space,x:1.1},{...anchor.space,y:'1'},{...anchor.space,y:1001}]) {
+        await assert.rejects(update('space-user-test',1,2,{...anchor,space}),/Invalid cursor/);
+    }
+    await assert.rejects(update('space-user-test',1,2,{...anchor,text:{offset:12,x:0,y:0}}),/Invalid cursor/);
+    await assert.rejects(update('space-user-test',1,2,{...anchor,surface:'tree',documentId:null}),/Invalid cursor/);
+});
+
 test("text selections share the cursor channel without claiming locks; validate, order, deduplicate and reset", async () => {
     const kernel=await createKernel();
     const heartbeat=kernel.methods.get('presenceHeartbeat'), update=kernel.methods.get('selectionUpdate'), snapshot=kernel.methods.get('cursorSnapshot');

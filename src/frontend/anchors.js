@@ -35,7 +35,7 @@ function cursorTextRoot(block) {
     return block.querySelector('[contenteditable="true"]') || block;
 }
 
-function captureTextPoint(root, point) {
+function captureTextPoint(root, point, whitespace = false) {
     const caret = document.caretPositionFromPoint?.(point.x, point.y);
     const range = caret ? null : document.caretRangeFromPoint?.(point.x, point.y);
     const node = caret?.offsetNode || range?.startContainer;
@@ -43,7 +43,7 @@ function captureTextPoint(root, point) {
     if (node?.nodeType !== 3 || !root.contains(node)) return null;
     // 锚定鼠标下的字符，避免不同窗口宽度导致整段比例定位漂移。
     for (const index of [offset - 1, offset]) {
-        if (index < 0 || index >= node.textContent.length || /\s/.test(node.textContent[index])) continue;
+        if (index < 0 || index >= node.textContent.length || (!whitespace && /\s/.test(node.textContent[index]))) continue;
         const character = characterRect(node, index);
         if (!character || point.x < character.left || point.x > character.right || point.y < character.top || point.y > character.bottom) continue;
         const prefix = document.createRange();
@@ -54,20 +54,73 @@ function captureTextPoint(root, point) {
     return null;
 }
 
+function documentColumn(editor) {
+    const rect = editor.getBoundingClientRect(), style = getComputedStyle(editor);
+    return { left: rect.left + parseFloat(style.paddingLeft), right: rect.right - parseFloat(style.paddingRight) };
+}
+
+function captureDocumentSpace(editor, hit, point) {
+    if (hit.closest('[contenteditable="false"]')) return null;
+    const column = documentColumn(editor);
+    if (point.x < column.left || point.x > column.right) return null;
+    let block = hit.closest('[data-node-id]');
+    if (!block || block === editor || !editor.contains(block)) {
+        // Only gaps between actual text blocks belong to document content.
+        const candidates = [...editor.querySelectorAll('[contenteditable="true"]')]
+            .filter(root => !root.closest('.fn__none'))
+            .map(root => ({ root, rect: root.getBoundingClientRect() }))
+            .filter(({ rect }) => rect.height > 0 && rect.width > 0);
+        if (!candidates.length || point.y < Math.min(...candidates.map(({ rect }) => rect.top)) ||
+            point.y > Math.max(...candidates.map(({ rect }) => rect.bottom))) return null;
+        candidates.sort((a, b) => Math.max(a.rect.top - point.y, point.y - a.rect.bottom, 0) - Math.max(b.rect.top - point.y, point.y - b.rect.bottom, 0));
+        block = candidates[0].root.closest('[data-node-id]');
+    }
+    if (!block || block.closest('.fn__none')) return null;
+    const root = cursorTextRoot(block);
+    if (!root.matches('[contenteditable="true"]')) return null;
+    const caret = document.caretPositionFromPoint?.(point.x, point.y);
+    const range = caret ? null : document.caretRangeFromPoint?.(point.x, point.y);
+    const node = caret?.offsetNode || range?.startContainer, offset = caret?.offset ?? range?.startOffset;
+    let index = point.y < root.getBoundingClientRect().top ? 0 : Math.max(0, root.textContent.length - 1);
+    if (node?.nodeType === 3 && root.contains(node)) {
+        const prefix = document.createRange();prefix.selectNodeContents(root);prefix.setEnd(node, offset);
+        const candidates = [prefix.toString().length - 1, prefix.toString().length]
+            .map(offset => ({ offset, character: characterAt(root, offset) }))
+            .filter(({ offset, character }) => offset >= 0 && character)
+            .map(({ offset, character }) => ({ offset, rect: characterRect(character.node, character.offset) }))
+            .filter(({ rect }) => rect);
+        candidates.sort((a, b) => Math.hypot(Math.max(a.rect.left - point.x, point.x - a.rect.right, 0), Math.max(a.rect.top - point.y, point.y - a.rect.bottom, 0)) -
+            Math.hypot(Math.max(b.rect.left - point.x, point.x - b.rect.right, 0), Math.max(b.rect.top - point.y, point.y - b.rect.bottom, 0)));
+        if (candidates.length) index = candidates[0].offset;
+    }
+    const character = characterAt(root, index);
+    let rect = character ? characterRect(character.node, character.offset) : null;
+    if (!rect && !/[^\s\u200b]/.test(root.textContent)) { rect = root.getBoundingClientRect();index = 0; }
+    if (!rect?.height || !rect.width) return null;
+    const style = getComputedStyle(root), font = parseFloat(style.fontSize), line = parseFloat(style.lineHeight) || font * 1.2;
+    return { block, space: { offset: index, x: (point.x - column.left) / (column.right - column.left), y: (point.y - rect.top) / line } };
+}
+
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
-    const block = document.elementFromPoint(point.x, point.y)?.closest('.protyle-wysiwyg [data-node-id]');
+    const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
+    if (!editor) return null;
+    let block = hit.closest('.protyle-wysiwyg [data-node-id]');
+    const text = block && captureTextPoint(cursorTextRoot(block), point, true);
+    const blank = !text && captureDocumentSpace(editor, hit, point);
+    if (blank) block = blank.block;
     if (!block || block.closest('.fn__none')) return null;
     const blockId = block.getAttribute('data-node-id');
     const documentId = editorDocumentId(block.closest('.protyle'));
     if (!DOCUMENT_ID.test(blockId) || !DOCUMENT_ID.test(documentId)) return null;
-    const text = captureTextPoint(cursorTextRoot(block), point), region=cursorRegion(block);
-    return text && region ? { surface:'document', documentId, blockId, x:text.x, y:text.y, text, region } : null;
+    const region = cursorRegion(block);
+    return region && (text || blank) ? { surface:'document', documentId, blockId, x:text?.x ?? 0, y:text?.y ?? 0,
+        ...(text ? { text } : { space: blank.space }), region } : null;
 }
 
 function resolveDocumentCursor(cursor) {
     // Old row/block fractions can point at unrelated content after reflow.
-    if (cursor.surface !== 'document' || !cursor.text) return null;
+    if (cursor.surface !== 'document' || (!cursor.text && !cursor.space)) return null;
     const blocks = [...document.querySelectorAll(".protyle:not(.fn__none)")]
             .filter((editor) => !editor.closest(".fn__none") && editorDocumentId(editor) === cursor.documentId)
             .flatMap((editor) => [...editor.querySelectorAll(`.protyle-wysiwyg [data-node-id="${cursor.blockId}"]`)])
@@ -75,8 +128,21 @@ function resolveDocumentCursor(cursor) {
     if(blocks.length!==1)return null;
     for (const block of blocks) {
         if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
+        if (cursor.space) {
+            const root = cursorTextRoot(block), relative = cursor.space;
+            const character = characterAt(root, relative.offset);
+            let rect = character ? characterRect(character.node, character.offset) : null;
+            if (!rect && relative.offset === 0 && !/[^\s\u200b]/.test(root.textContent)) rect = root.getBoundingClientRect();
+            if (!rect?.height || !rect.width) continue;
+            const style = getComputedStyle(root), font = parseFloat(style.fontSize), line = parseFloat(style.lineHeight) || font * 1.2;
+            const editor = block.closest('.protyle-wysiwyg'), column = documentColumn(editor);
+            const x = column.left + (column.right - column.left) * relative.x;
+            const y = rect.top + relative.y * line, hit = document.elementFromPoint(x, y);
+            if (hit?.closest('.protyle-wysiwyg') === editor) return { x, y };
+            continue;
+        }
         const character = characterAt(cursorTextRoot(block), cursor.text.offset);
-        if (!character || /\s/.test(character.node.textContent[character.offset])) continue;
+        if (!character) continue;
         const rect = characterRect(character.node, character.offset), relative = cursor.text;
         if (!rect?.width || !rect.height) continue;
         const x = rect.left + rect.width * relative.x;
@@ -96,6 +162,7 @@ function validCursor(cursor) {
     return cursor && ["document", "tree"].includes(cursor.surface) && typeof cursor.blockId === "string" && DOCUMENT_ID.test(cursor.blockId) &&
         (cursor.surface === "document" ? typeof cursor.documentId === "string" && DOCUMENT_ID.test(cursor.documentId) : cursor.documentId === null) &&
         [cursor.x, cursor.y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1) &&
+        (cursor.space === undefined || (cursor.surface === 'document' && cursor.text === undefined && validDocumentSpace(cursor.space))) &&
         (cursor.text === undefined || (cursor.surface === "document" && cursor.text && Number.isSafeInteger(cursor.text.offset) && cursor.text.offset >= 0 && cursor.text.offset <= 10000000 &&
             [cursor.text.x, cursor.text.y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)));
 }

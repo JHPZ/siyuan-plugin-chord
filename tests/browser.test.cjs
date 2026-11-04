@@ -143,7 +143,7 @@ async function test(name, run) {
             assert(captureCursor({x:t.left+5,y:t.top+t.height/2})===null,'indentation shared');
         } finally {fixture.remove();}
     });
-    await test('空白、分屏缝隙和旧比例锚点均不显示指针',async()=>{
+    await test('界面空白、分屏缝隙和旧比例锚点均不显示指针',async()=>{
         const fixture=document.createElement('div');fixture.id='blank-layout';fixture.className='layout__wnd--active';
         fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:240px;background:white;z-index:100';
         fixture.innerHTML='<div class="sy__file" style="height:80px"></div><div class="b3-list-item" style="height:30px"><span class="b3-list-item__text">反链列表行</span></div><div class="protyle-breadcrumb__space" style="height:40px"></div><div class="layout__resize" style="height:30px"></div>';
@@ -157,8 +157,71 @@ async function test(name, run) {
             assert(resolveDocumentCursor({surface:'tree',blockId:'20261030165150-file001',documentId:null,x:.5,y:.5})===null,'legacy row fraction displayed');
             assert(resolveDocumentCursor({...window.savedAnchor,text:undefined})===null,'legacy block fraction displayed');
         } finally {fixture.remove();}
-        await expose(block,10);const r=cursorTextRoot(block).getBoundingClientRect();
-        assert(captureCursor({x:r.right-2,y:r.bottom-2})===null,'paragraph trailing blank shared');
+    });
+    function documentSpaceFixture() {
+        const fixture=document.createElement('div');fixture.className='protyle';
+        fixture.style.cssText='position:fixed;left:30px;top:20px;width:540px;background:white;z-index:100';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261030165150-space01"></div><div class="protyle-wysiwyg" style="font:20px/40px sans-serif;padding:16px">'+
+            '<div class="p" data-node-id="20261030165150-space02"><div contenteditable="true">First line with spaces<br>Second line</div></div>'+
+            '<div class="p" data-node-id="20261030165150-space03"><div contenteditable="true"><br></div></div>'+
+            '<div class="p" data-node-id="20261030165150-space04"><div contenteditable="true">Final paragraph</div></div></div>';
+        document.body.append(fixture);return fixture;
+    }
+    function spaceRoundTrip(point) {
+        const anchor=captureCursor(point),resolved=anchor && resolveCursor(anchor);
+        assert(anchor?.surface==='document' && validCursor(anchor),'document point disappeared: '+JSON.stringify(point));
+        assert(resolved && near(resolved.x,point.x) && near(resolved.y,point.y),'space drift: '+JSON.stringify({point,anchor,resolved}));
+        return anchor;
+    }
+    await test('正文行距、行尾和段落间空白连续移动不丢光标',async()=>{
+        const fixture=documentSpaceFixture();
+        try {
+            const paragraphs=fixture.querySelectorAll('.p'),first=rectAt(paragraphs[0],2),last=rectAt(paragraphs[2],2);
+            for(let y=first.top+1;y<last.bottom;y+=1)spaceRoundTrip({x:first.left+first.width/2,y});
+            const r=cursorTextRoot(paragraphs[0]).getBoundingClientRect();
+            assert(spaceRoundTrip({x:r.right-20,y:first.top+5}).space,'line trailing whitespace missing');
+            const space=rectAt(paragraphs[0],5);
+            assert(spaceRoundTrip({x:space.left+space.width/2,y:space.top+space.height/2}).text?.offset===5,'actual text space lost');
+        } finally {fixture.remove();}
+    });
+    await test('空段落保留块身份，正文外边距和分屏缝隙仍隐藏',async()=>{
+        const fixture=documentSpaceFixture();
+        try {
+            const editor=fixture.querySelector('.protyle-wysiwyg'),empty=fixture.querySelectorAll('.p')[1],r=cursorTextRoot(empty).getBoundingClientRect();
+            const anchor=spaceRoundTrip({x:r.left+80,y:r.top+r.height/2});
+            assert(anchor.space?.offset===0 && anchor.blockId===empty.dataset.nodeId,'empty paragraph lost identity');
+            for(const placeholder of [String.fromCharCode(10)+'<br>',String.fromCharCode(8203)+'<br>']) {
+                cursorTextRoot(empty).innerHTML=placeholder;
+                assert(spaceRoundTrip({x:r.left+80,y:r.top+r.height/2}).blockId===empty.dataset.nodeId,'placeholder lost empty paragraph');
+            }
+            cursorTextRoot(empty).innerHTML='<br>';
+            const bounds=editor.getBoundingClientRect();
+            assert(captureCursor({x:bounds.left+3,y:r.top+5})===null,'document side margin shared');
+            assert(captureCursor({x:r.left+20,y:bounds.bottom-3})===null,'document bottom padding shared');
+            assert(resolveCursor({...anchor,documentId:'20261030165150-other01'})===null,'space escaped document');
+            const copy=fixture.cloneNode(true);copy.style.left='600px';document.body.append(copy);
+            assert(resolveCursor(anchor)===null,'ambiguous space picked arbitrary editor');copy.remove();
+            const cover=document.createElement('div');cover.className='occluder';cover.style.zIndex='101';document.body.append(cover);
+            assert(resolveCursor(anchor)===null,'space showed through overlay');cover.remove();
+        } finally {fixture.remove();}
+    });
+    await test('段落空白跟随字符换行、字号和滚动，不使用整块比例',async()=>{
+        const fixture=documentSpaceFixture();
+        try {
+            const paragraph=fixture.querySelector('.p'),root=cursorTextRoot(paragraph);
+            root.textContent='Wrapped paragraph content with a short final line. '.repeat(4).trim();
+            const tail=rectAt(paragraph,root.textContent.length-1),r=root.getBoundingClientRect();
+            const point={x:tail.right+2,y:r.bottom+8},anchor=spaceRoundTrip(point);
+            assert(anchor.space?.offset===root.textContent.length-1,'paragraph gap not anchored to tail');
+            fixture.style.width='360px';const editor=fixture.querySelector('.protyle-wysiwyg');editor.style.fontSize='24px';editor.style.lineHeight='48px';
+            const expected=rectAt(paragraph,anchor.space.offset),resolved=resolveCursor(anchor);
+            assert(resolved && near(resolved.y,expected.top+anchor.space.y*48),'space lost semantic line after reflow');
+            const column=documentColumn(editor);
+            assert(near(resolved.x,column.left+(column.right-column.left)*anchor.space.x),'blank column moved with line ending');
+            fixture.style.top='-20px';const moved=resolveCursor(anchor);
+            assert(moved && near(resolved.y-moved.y,40),'space lost scroll position');
+            paragraph.classList.add('fn__none');assert(resolveCursor(anchor)===null,'hidden paragraph shared');
+        } finally {fixture.remove();}
     });
     await test('跨内联节点和字体缩放', async () => {
         const root = cursorTextRoot(block);
@@ -316,11 +379,13 @@ async function test(name, run) {
                 const text=pane.querySelector('[contenteditable]'),r=rectAt(text,2),anchor=captureCursor({x:r.left+r.width/2,y:r.top+r.height/2});
                 assert(anchor?.region.id===(index===0 ? id:index===1 ? 'backlink':'agentChat'),'wrong region');
                 const resolved=resolveCursor(anchor);assert(resolved && near(resolved.x,r.left+r.width/2),'cursor escaped its region');
+                const area=text.getBoundingClientRect(),space=captureCursor({x:area.right-3,y:r.top+3});
+                assert(space?.space && space.region.id===anchor.region.id && resolveCursor(space),'space lost region');
                 const selection=document.getSelection(),range=document.createRange();range.setStart(text.firstChild,1);range.setEnd(text.firstChild,4);text.focus();selection.removeAllRanges();selection.addRange(range);
                 const shared=captureSelection();assert(shared.region.id===anchor.region.id && resolveSelection(shared).length===1,'selection escaped region');
                 assert(captureEditing().region.id===anchor.region.id,'editing lost region');
                 pane.classList.add('fn__none');assert(resolveCursor(anchor)===null && resolveSelection(shared).length===0,'hidden region matched other pane');pane.classList.remove('fn__none');
-                pane.remove();assert(resolveCursor(anchor)===null,'missing region fell back to document');fixture.append(pane);
+                pane.remove();assert(resolveCursor(anchor)===null && resolveCursor(space)===null,'missing region fell back to document');fixture.append(pane);
                 const button=pane.querySelector('button'),b=button.getBoundingClientRect(),control=captureCursor({x:b.left+5,y:b.top+5});
                 assert(control && resolveCursor(control),'region control missing '+index+' '+JSON.stringify(control)+' '+JSON.stringify(b.toJSON()));pane.remove();assert(resolveCursor(control)===null,'panel control fell back to document');fixture.append(pane);
             }

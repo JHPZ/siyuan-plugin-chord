@@ -2,6 +2,11 @@ const COLLAB_ID = /^\d{14}-[a-z0-9]{7}$/;
 const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backlinks', 'graphView', 'globalGraph', 'globalSearch', 'dataHistory', 'riffCard', 'mainMenu', 'recentDocs'];
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
+function validDocumentSpace(space) {
+    return space && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
+        Number.isFinite(space.x) && space.x >= 0 && space.x <= 1 && Number.isFinite(space.y) && Math.abs(space.y) <= 1000;
+}
+
 function validRegion(region) {
     return region && typeof region.id==='string' && (region.kind==='document' ? COLLAB_ID.test(region.id) : region.kind==='dock' && /^[\w-]{1,160}$/.test(region.id));
 }

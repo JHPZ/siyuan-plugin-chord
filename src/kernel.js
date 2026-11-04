@@ -24,6 +24,10 @@ function normalizeCursor(value) {
         throw new Error("Invalid cursor anchor");
     }
     const cursor = { ...metadata, surface: value.surface, documentId: value.documentId, blockId: value.blockId, x: value.x, y: value.y };
+    if (value.space !== undefined) {
+        if (value.surface !== 'document' || value.text !== undefined || !validDocumentSpace(value.space)) throw new Error('Invalid cursor document space');
+        cursor.space = { offset: value.space.offset, x: value.space.x, y: value.space.y };
+    }
     if (value.text !== undefined) {
         if (value.surface !== "document" || !value.text || !Number.isSafeInteger(value.text.offset) || value.text.offset < 0 || value.text.offset > 10000000 ||
             ![value.text.x, value.text.y].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0 && number <= 1)) throw new Error("Invalid cursor text anchor");
