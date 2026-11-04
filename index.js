@@ -95,8 +95,9 @@ function validComponentEdge(edge) {
 
 function validComponentAnchor(value) {
     const scope=value.scope;
-    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global'].includes(scope.kind) &&
+    return value.kind==='component' && scope && ['document','dock','dialog','floating','tab','global','av'].includes(scope.kind) &&
         typeof scope.key==='string' && /^[a-f0-9]{16}$/.test(scope.key) &&
+        (scope.kind!=='av' || [scope.row,scope.column].every(value=>typeof value==='string' && /^[a-f0-9]{16}$/.test(value))) &&
         (scope.pane===undefined || typeof scope.pane==='string' && /^[a-f0-9]{16}$/.test(scope.pane)) &&
         validComponentRoute(value.route) && (value.frame===undefined || validComponentRoute(value.frame)) && (value.target===undefined || validComponentRoute(value.target)) &&
         (value.frames===undefined || value.frame===undefined && Array.isArray(value.frames) && value.frames.length>=2 && value.frames.length<=8 && value.frames.every(validComponentRoute)) &&
@@ -118,7 +119,7 @@ function validComponentAnchor(value) {
 function cleanComponentAnchor(value) {
     const step=s=>({key:s.key,count:s.count,index:s.index});
     const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
-    return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{})},
+    return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{}),...(value.scope.kind==='av' ? {row:value.scope.row,column:value.scope.column}:{})},
         route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
         ...(value.frames ? {frames:value.frames.map(route=>route.map(step))}:{}),
         edges:{x:value.edges.x.map(edge),y:value.edges.y.map(edge)},...(value.textHash ? {textHash:value.textHash}:{}),
@@ -236,7 +237,7 @@ function captureDocumentSpace(editor, hit, point) {
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
-    if (!editor || !visibleElement(hit)) return null;
+    if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"]')) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
     const blank = !text && captureDocumentSpace(editor, hit, point);
@@ -259,7 +260,7 @@ function resolveDocumentCursor(cursor) {
             .filter(block=>visibleElement(block) && matchesRegion(block,cursor.region));
     if(blocks.length!==1)return null;
     for (const block of blocks) {
-        if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
+        if (block.closest('.fn__none,[data-type="NodeAttributeView"]') || !matchesRegion(block,cursor.region)) continue;
         if (cursor.space) {
             const root = cursorTextRoot(block), relative = cursor.space;
             const character = characterAt(root, relative.offset);
@@ -495,6 +496,10 @@ function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.closest('[data-type="NodeAttributeView"]')){
+        for(const name of ['data-av-id','data-av-type','data-col-id','data-field-id','data-group-id','data-id']){const value=element.getAttribute(name);if(value)values.push([name,componentHash(value)]);}
+        if(element.matches('.av__colsticky,.av__gallery-field'))values.push(['fields',[...element.querySelectorAll('[data-col-id],[data-field-id]')].map(cell=>cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id')).sort().join('|')]);
+    }
     if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
     if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
@@ -548,8 +553,20 @@ function componentFollow(root,route) {
 
 const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
 
+function componentAVScope(av,plugin) {
+    const base=componentScope(av,plugin);if(!base)return null;
+    return {kind:'av',key:componentHash(JSON.stringify([base.scope.kind,base.scope.key,av.getAttribute('data-node-id'),av.getAttribute('data-av-id')])),...(base.scope.pane ? {pane:base.scope.pane}:{})};
+}
+
 function componentScope(element,plugin) {
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
+    const cell=element.closest('.av__cell[data-col-id],.av__cell[data-field-id]'),av=cell?.closest('[data-type="NodeAttributeView"]'),row=cell?.closest('.av__row[data-id],.av__gallery-item[data-id]');
+    if(av && row){
+        const column=cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id');
+        if(![av.getAttribute('data-node-id'),av.getAttribute('data-av-id'),row.getAttribute('data-id'),column].every(value=>DOCUMENT_ID.test(value || '')))return null;
+        const scope=componentAVScope(av,plugin);
+        return scope ? {root:cell,scope:{...scope,row:componentHash(row.getAttribute('data-id')),column:componentHash(column)}}:null;
+    }
     const dialog=element.closest('.b3-dialog');
     if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
     const floating=element.closest(COMPONENT_FLOATING);
@@ -581,7 +598,12 @@ function componentScope(element,plugin) {
 
 function componentRoots(scope,plugin) {
     const selector={document:'.protyle',dock:'.dockPanel',dialog:'.b3-dialog',floating:COMPONENT_FLOATING,tab:'.layout-tab-container > [data-id]',global:'body'}[scope.kind];
-    let roots=[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
+    let roots=scope.kind==='av' ? [...document.querySelectorAll('[data-type="NodeAttributeView"]')]
+        .filter(av=>componentAVScope(av,plugin)?.key===scope.key)
+        .flatMap(av=>[...av.querySelectorAll('.av__cell[data-col-id],.av__cell[data-field-id]')].filter(cell=>{
+            const row=cell.closest('.av__row[data-id],.av__gallery-item[data-id]');
+            return cell.closest('[data-type="NodeAttributeView"]')===av && row && componentHash(row.getAttribute('data-id'))===scope.row && componentHash(cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id'))===scope.column;
+        })).filter(visibleElement):[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
         const local=componentScope(root,plugin);
         return local?.root===root && local.scope.kind===scope.kind && local.scope.key===scope.key;
     });
@@ -888,7 +910,7 @@ function uiClasses(element) {
 }
 
 const CURSOR_CONTROL = 'button,input,select,textarea,[role="button"],.block__icon,.toolbar__item,.b3-switch,.b3-select,.b3-slider,.b3-text-field,[data-statusbar-entry],[data-topbar-entry],.protyle-title__icon';
-const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize';
+const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize,[data-type="NodeAttributeView"]';
 const FILE_PARTS = {text:'.b3-list-item__text',icon:'.b3-list-item__icon',toggle:'.b3-list-item__arrow',switch:'.b3-list-item__switch',viewers:'.collab-presence-users',new:'[data-type="new"]','more-file':'[data-type="more-file"]','more-root':'[data-type="more-root"]'};
 
 function uiFingerprint(element) {

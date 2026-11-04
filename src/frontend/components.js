@@ -17,6 +17,10 @@ function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.closest('[data-type="NodeAttributeView"]')){
+        for(const name of ['data-av-id','data-av-type','data-col-id','data-field-id','data-group-id','data-id']){const value=element.getAttribute(name);if(value)values.push([name,componentHash(value)]);}
+        if(element.matches('.av__colsticky,.av__gallery-field'))values.push(['fields',[...element.querySelectorAll('[data-col-id],[data-field-id]')].map(cell=>cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id')).sort().join('|')]);
+    }
     if(element.matches('img') && !thumbnailImage)values.push(['intrinsic',element.naturalWidth+','+element.naturalHeight]);
     if(element.id && !/^\d{14}-/.test(element.id))values.push(['id',element.id]);
     if(element.matches('[data-type="tab-header"]'))values.push(['page',pageKey(tabPage(element))]);
@@ -70,8 +74,20 @@ function componentFollow(root,route) {
 
 const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
 
+function componentAVScope(av,plugin) {
+    const base=componentScope(av,plugin);if(!base)return null;
+    return {kind:'av',key:componentHash(JSON.stringify([base.scope.kind,base.scope.key,av.getAttribute('data-node-id'),av.getAttribute('data-av-id')])),...(base.scope.pane ? {pane:base.scope.pane}:{})};
+}
+
 function componentScope(element,plugin) {
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
+    const cell=element.closest('.av__cell[data-col-id],.av__cell[data-field-id]'),av=cell?.closest('[data-type="NodeAttributeView"]'),row=cell?.closest('.av__row[data-id],.av__gallery-item[data-id]');
+    if(av && row){
+        const column=cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id');
+        if(![av.getAttribute('data-node-id'),av.getAttribute('data-av-id'),row.getAttribute('data-id'),column].every(value=>DOCUMENT_ID.test(value || '')))return null;
+        const scope=componentAVScope(av,plugin);
+        return scope ? {root:cell,scope:{...scope,row:componentHash(row.getAttribute('data-id')),column:componentHash(column)}}:null;
+    }
     const dialog=element.closest('.b3-dialog');
     if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
     const floating=element.closest(COMPONENT_FLOATING);
@@ -103,7 +119,12 @@ function componentScope(element,plugin) {
 
 function componentRoots(scope,plugin) {
     const selector={document:'.protyle',dock:'.dockPanel',dialog:'.b3-dialog',floating:COMPONENT_FLOATING,tab:'.layout-tab-container > [data-id]',global:'body'}[scope.kind];
-    let roots=[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
+    let roots=scope.kind==='av' ? [...document.querySelectorAll('[data-type="NodeAttributeView"]')]
+        .filter(av=>componentAVScope(av,plugin)?.key===scope.key)
+        .flatMap(av=>[...av.querySelectorAll('.av__cell[data-col-id],.av__cell[data-field-id]')].filter(cell=>{
+            const row=cell.closest('.av__row[data-id],.av__gallery-item[data-id]');
+            return cell.closest('[data-type="NodeAttributeView"]')===av && row && componentHash(row.getAttribute('data-id'))===scope.row && componentHash(cell.getAttribute('data-col-id') || cell.getAttribute('data-field-id'))===scope.column;
+        })).filter(visibleElement):[...document.querySelectorAll(selector)].filter(visibleElement).filter(root=>{
         const local=componentScope(root,plugin);
         return local?.root===root && local.scope.kind===scope.kind && local.scope.key===scope.key;
     });

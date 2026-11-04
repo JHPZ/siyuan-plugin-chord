@@ -104,7 +104,7 @@ function captureDocumentSpace(editor, hit, point) {
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
-    if (!editor || !visibleElement(hit)) return null;
+    if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"]')) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
     const blank = !text && captureDocumentSpace(editor, hit, point);
@@ -127,7 +127,7 @@ function resolveDocumentCursor(cursor) {
             .filter(block=>visibleElement(block) && matchesRegion(block,cursor.region));
     if(blocks.length!==1)return null;
     for (const block of blocks) {
-        if (block.closest(".fn__none") || !matchesRegion(block,cursor.region)) continue;
+        if (block.closest('.fn__none,[data-type="NodeAttributeView"]') || !matchesRegion(block,cursor.region)) continue;
         if (cursor.space) {
             const root = cursorTextRoot(block), relative = cursor.space;
             const character = characterAt(root, relative.offset);

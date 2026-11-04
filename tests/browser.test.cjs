@@ -460,6 +460,30 @@ async function test(name, run) {
             panel.classList.add('fn__none');assert(resolveCursor(content,plugin)===null,'hidden settings section displayed cursor');
         } finally {fixture.remove();}
     });
+    await test('数据库单元格按数据库、行与列定位，重排、冻结、过滤和切换可见布局不串位',async()=>{
+        const fixture=document.createElement('div');fixture.className='protyle';fixture.style.cssText='position:fixed;left:35px;top:35px;width:650px;height:450px;z-index:100;background:white';
+        fixture.innerHTML='<div class="protyle-background" data-node-id="20261104130000-dbdoc01"></div><div class="protyle-wysiwyg" style="padding:0"><div data-type="NodeAttributeView" data-node-id="20261104130000-dbblock" data-av-id="20261104130000-dbdata1" data-av-type="table" contenteditable="false"><div class="av__container"><div class="av__body" style="height:220px;overflow:auto"></div></div></div></div>';
+        const database=fixture.querySelector('[data-av-id]'),body=fixture.querySelector('.av__body');
+        const rows=['20261104130000-row0001','20261104130000-row0002'].map(id=>{const row=document.createElement('div');row.className='av__row';row.dataset.id=id;row.style.cssText='display:flex;height:72px';for(const col of ['20261104130000-col0001','20261104130000-col0002']){const cell=document.createElement('div');cell.className='av__cell';cell.dataset.colId=col;cell.dataset.id=id.slice(0,-1)+col.at(-1);cell.style.cssText='width:220px;flex-shrink:0;padding:8px;box-sizing:border-box';cell.innerHTML='<span class="av__celltext">相同内容</span>';row.append(cell);}body.append(row);return row;});
+        document.body.append(fixture);const cell=rows[0].children[1],label=cell.firstElementChild;
+        const point=()=>{const r=label.getBoundingClientRect();return {x:r.left+15,y:r.top+10};};
+        try{
+            const anchor=componentRoundTrip(point());assert(anchor.ui?.scope.kind==='av','database text used whole-block character offsets');
+            const cr=cell.getBoundingClientRect(),blank=componentRoundTrip({x:cr.right-12,y:cr.bottom-8});
+            body.prepend(rows[1]);rows[0].prepend(cell);cell.style.width='270px';
+            let actual=resolveCursor(anchor),expected=point();assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'row or column reordering changed cell');
+            const blankAfter=resolveCursor(blank),after=cell.getBoundingClientRect();assert(blankAfter&&blankAfter.x>after.left&&blankAfter.x<after.right&&blankAfter.y>after.top&&blankAfter.y<after.bottom,'cell blank moved to another row');
+            const frozen=document.createElement('div');frozen.className='av__colsticky';rows[0].prepend(frozen);frozen.append(cell);actual=resolveCursor(anchor);expected=point();assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'frozen column wrapper broke cell identity');
+            const spare=rows[0].querySelector('.av__cell:not([data-col-id="20261104130000-col0002"])');spare.remove();assert(resolveCursor(anchor),'unrelated hidden column removed target');
+            rows[0].style.display='none';assert(resolveCursor(anchor)===null,'filtered row painted');rows[0].style.display='';
+            cell.style.opacity='0';assert(resolveCursor(blank)===null,'transparent database cell painted');cell.style.opacity='1';
+            const clone=rows[1].cloneNode(true);rows[0].replaceWith(clone);assert(resolveCursor(anchor)===null,'virtual row reuse inherited another item pointer');clone.replaceWith(rows[0]);
+            database.dataset.avType='gallery';rows[0].className='av__gallery-item';cell.dataset.fieldId=cell.dataset.colId;delete cell.dataset.colId;assert(resolveCursor(anchor),'same visible gallery field did not match');
+            const duplicate=cell.cloneNode(true);frozen.append(duplicate);assert(resolveCursor(anchor)===null,'ambiguous repeated database field guessed');duplicate.remove();
+            database.dataset.avId='20261104130000-otherdb';assert(resolveCursor(anchor)===null,'another database inherited pointer');database.dataset.avId='20261104130000-dbdata1';
+            fixture.querySelector('.protyle-background').dataset.nodeId='20261104130000-otherdc';assert(resolveCursor(anchor)===null,'database pointer crossed documents');
+        }finally{fixture.remove();}
+    });
     await test('所有 DOM 组件的文字、边角和留白覆盖扫描：菜单、侧栏、设置、标签、图片与插件面板',async()=>{
         const fixture=document.createElement('div');fixture.id='component-inventory';
         fixture.style.cssText='position:fixed;left:12px;top:12px;width:'+Math.min(900,innerWidth-50)+'px;height:540px;background:white;z-index:100;overflow:auto;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;padding:6px';

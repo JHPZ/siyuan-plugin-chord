@@ -426,6 +426,17 @@ test('document space anchors are validated and retained without arbitrary payloa
     await assert.rejects(update('space-user-test',1,2,{...anchor,surface:'tree',documentId:null}),/Invalid cursor/);
 });
 
+test('database cell scopes require bounded row and column hashes and strip private fields',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate');
+    await kernel.methods.get('presenceHeartbeat')('database-scope-test',{generation:1});
+    const scope={kind:'av',key:'1234567890abcdef',row:'abcdef1234567890',column:'0123456789abcdef',raw:'private value'};
+    const edge={kind:'self',side:'start'},cursor={surface:'ui',documentId:null,blockId:null,x:.4,y:.5,ui:{version:3,kind:'component',scope,route:[],edges:{x:[edge,edge],y:[edge,edge]}}};
+    await update('database-scope-test',1,1,cursor);
+    const cleaned=(await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.ui.scope;
+    assert.deepEqual(JSON.parse(JSON.stringify(cleaned)),{kind:'av',key:scope.key,row:scope.row,column:scope.column});
+    for(const bad of [{row:undefined},{column:null},{row:'raw row name'},{column:'abcdef1234567890'.repeat(20)}])await assert.rejects(update('database-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
+});
+
 test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
     const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
     await heartbeat('component-user-test',{generation:1});

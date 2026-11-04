@@ -103,7 +103,7 @@ function uiClasses(element) {
 }
 
 const CURSOR_CONTROL = 'button,input,select,textarea,[role="button"],.block__icon,.toolbar__item,.b3-switch,.b3-select,.b3-slider,.b3-text-field,[data-statusbar-entry],[data-topbar-entry],.protyle-title__icon';
-const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize';
+const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize,[data-type="NodeAttributeView"]';
 const FILE_PARTS = {text:'.b3-list-item__text',icon:'.b3-list-item__icon',toggle:'.b3-list-item__arrow',switch:'.b3-list-item__switch',viewers:'.collab-presence-users',new:'[data-type="new"]','more-file':'[data-type="more-file"]','more-root':'[data-type="more-root"]'};
 
 function uiFingerprint(element) {
