@@ -4,7 +4,9 @@ const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backl
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
 function validDocumentSpace(space) {
-    return space && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
+    return space && (space.gap===undefined || space.gap && ['before','inside','after'].includes(space.gap.side) &&
+        Number.isFinite(space.gap.ratio) && space.gap.ratio>=0 && space.gap.ratio<=1 &&
+        (space.gap.y===undefined || Number.isFinite(space.gap.y) && space.gap.y>=0 && space.gap.y<=1)) && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
         Number.isFinite(space.x) && space.x >= 0 && space.x <= 1 && Number.isFinite(space.y) && Math.abs(space.y) <= 1000;
 }
 
@@ -161,7 +163,7 @@ function normalizeCursor(value) {
     const cursor = { ...metadata, surface: value.surface, documentId: value.documentId, blockId: value.blockId, x: value.x, y: value.y };
     if (value.space !== undefined) {
         if (value.surface !== 'document' || value.text !== undefined || !validDocumentSpace(value.space)) throw new Error('Invalid cursor document space');
-        cursor.space = { offset: value.space.offset, x: value.space.x, y: value.space.y };
+        cursor.space = { offset: value.space.offset, x: value.space.x, y: value.space.y, ...(value.space.gap ? {gap:{side:value.space.gap.side,ratio:value.space.gap.ratio,...(value.space.gap.y!==undefined ? {y:value.space.gap.y}:{})}}:{}) };
     }
     if (value.text !== undefined) {
         if (value.surface !== "document" || !value.text || !Number.isSafeInteger(value.text.offset) || value.text.offset < 0 || value.text.offset > 10000000 ||

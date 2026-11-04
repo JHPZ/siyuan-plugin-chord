@@ -26,7 +26,7 @@ function normalizeCursor(value) {
     const cursor = { ...metadata, surface: value.surface, documentId: value.documentId, blockId: value.blockId, x: value.x, y: value.y };
     if (value.space !== undefined) {
         if (value.surface !== 'document' || value.text !== undefined || !validDocumentSpace(value.space)) throw new Error('Invalid cursor document space');
-        cursor.space = { offset: value.space.offset, x: value.space.x, y: value.space.y };
+        cursor.space = { offset: value.space.offset, x: value.space.x, y: value.space.y, ...(value.space.gap ? {gap:{side:value.space.gap.side,ratio:value.space.gap.ratio,...(value.space.gap.y!==undefined ? {y:value.space.gap.y}:{})}}:{}) };
     }
     if (value.text !== undefined) {
         if (value.surface !== "document" || !value.text || !Number.isSafeInteger(value.text.offset) || value.text.offset < 0 || value.text.offset > 10000000 ||

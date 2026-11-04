@@ -426,6 +426,14 @@ test('document space anchors are validated and retained without arbitrary payloa
     await assert.rejects(update('space-user-test',1,2,{...anchor,surface:'tree',documentId:null}),/Invalid cursor/);
 });
 
+test('document whitespace glyph gaps validate, copy and strip private fields while retaining legacy column coordinates',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');await kernel.methods.get('presenceHeartbeat')('glyph-gap-test',{generation:1});
+    const anchor={surface:'document',documentId:'20261030165150-doc0001',blockId:'20261030165150-block01',x:0,y:0,space:{offset:12,x:.25,y:1.2}};let sequence=0;
+    for(const side of ['before','inside','after']){const gap={side,ratio:.4,y:.5,secret:'discard'};await update('glyph-gap-test',1,++sequence,{...anchor,space:{...anchor.space,gap}});gap.ratio=.9;gap.y=.9;assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.space)),{offset:12,x:.25,y:1.2,gap:{side,ratio:.4,y:.5}});}
+    for(const gap of [{side:'inside',ratio:0},{side:'after',ratio:1,y:1}]){await update('glyph-gap-test',1,++sequence,{...anchor,space:{...anchor.space,gap}});assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.space.gap)),gap);}
+    for(const gap of [null,{},[],{side:'other',ratio:.4},{side:'after',ratio:-.1},{side:'after',ratio:1.1},{side:'after',ratio:Infinity},{side:'after',ratio:'0.4'},{side:'after',ratio:.4,y:null},{side:'after',ratio:.4,y:-.1},{side:'after',ratio:.4,y:1.1},{side:'after',ratio:.4,y:Infinity},{side:'after',ratio:.4,y:'0.5'}])await assert.rejects(update('glyph-gap-test',1,sequence+1,{...anchor,space:{...anchor.space,gap}}),/Invalid cursor/);
+});
+
 test('database cell scopes require bounded row and column hashes and strip private fields',async()=>{
     const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate');
     await kernel.methods.get('presenceHeartbeat')('database-scope-test',{generation:1});

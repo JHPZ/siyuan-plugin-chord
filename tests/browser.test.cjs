@@ -219,6 +219,23 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'space showed through overlay');cover.remove();
         } finally {fixture.remove();}
     });
+    await test('正文行尾和缩进留白跟随字形与栏边界，留白被新文字占据时隐藏',async()=>{
+        for(const side of ['before','inside','after']){
+            const fixture=documentSpaceFixture();try{
+                const paragraph=fixture.querySelector('.p'),root=cursorTextRoot(paragraph),editor=fixture.querySelector('.protyle-wysiwyg');root.textContent='Short text';root.style.paddingLeft='60px';paragraph.style.marginBottom='100px';
+                const tail=rectAt(paragraph,root.textContent.length-1),first=rectAt(paragraph,0),column=documentColumn(editor),r=root.getBoundingClientRect();
+                const x=side==='before'?column.left+(first.left-column.left)*.4:side==='inside'?tail.left+tail.width*.4:tail.right+(column.right-tail.right)*.4;
+                const point={x,y:side==='inside'?r.bottom+8:tail.top+tail.height/2},anchor=spaceRoundTrip(point);
+                assert(anchor.space?.gap?.side===side,'missing semantic '+side+' gap');
+                fixture.style.width='360px';editor.style.fontSize='24px';editor.style.lineHeight='48px';const g=rectAt(paragraph,anchor.space.offset),c=documentColumn(editor),expectedX=side==='before'?c.left+(g.left-c.left)*.4:side==='inside'?g.left+g.width*.4:g.right+(c.right-g.right)*.4,resolved=resolveCursor(anchor);
+                assert(resolved&&near(resolved.x,expectedX),'glyph gap drift after resize/font change: '+side);if(side!=='inside')assert(near(resolved.y,g.top+g.height/2),'glyph-band whitespace drifted vertically with font change');
+                const legacy={...anchor,space:{...anchor.space}};delete legacy.space.gap;const old=resolveCursor(legacy);assert(old&&near(old.x,c.left+(c.right-c.left)*anchor.space.x),'legacy column anchor changed');
+                if(side==='after'){
+                    const image=document.createElement('img');image.src='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="16" height="16"%3E%3Crect width="16" height="16" fill="blue"/%3E%3C/svg%3E';image.style.cssText='position:fixed;left:'+(resolved.x-8)+'px;top:'+(resolved.y-8)+'px;width:16px;height:16px';root.append(image);await image.decode();assert(resolveCursor(anchor)===null,'old whitespace painted on a new image');const media=captureCursor(resolved);assert(media?.ui?.kind==='component'&&!media.space,'image was captured as document whitespace');image.remove();
+                    root.textContent+=' new content that occupies the old line end';assert(resolveCursor(anchor)===null,'old trailing gap painted over new content');}
+            }finally{fixture.remove();}
+        }
+    });
     await test('段落空白跟随字符换行、字号和滚动，不使用整块比例',async()=>{
         const fixture=documentSpaceFixture();
         try {
@@ -231,7 +248,7 @@ async function test(name, run) {
             const expected=rectAt(paragraph,anchor.space.offset),resolved=resolveCursor(anchor);
             assert(resolved && near(resolved.y,expected.top+anchor.space.y*48),'space lost semantic line after reflow');
             const column=documentColumn(editor);
-            assert(near(resolved.x,column.left+(column.right-column.left)*anchor.space.x),'blank column moved with line ending');
+            assert(anchor.space.gap?.side==='after' && near(resolved.x,expected.right+(column.right-expected.right)*anchor.space.gap.ratio),'trailing gap lost its glyph boundary');
             fixture.style.top='-20px';const moved=resolveCursor(anchor);
             assert(moved && near(resolved.y-moved.y,40),'space lost scroll position');
             paragraph.classList.add('fn__none');assert(resolveCursor(anchor)===null,'hidden paragraph shared');

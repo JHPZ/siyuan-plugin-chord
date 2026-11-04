@@ -4,7 +4,9 @@ const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backl
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
 function validDocumentSpace(space) {
-    return space && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
+    return space && (space.gap===undefined || space.gap && ['before','inside','after'].includes(space.gap.side) &&
+        Number.isFinite(space.gap.ratio) && space.gap.ratio>=0 && space.gap.ratio<=1 &&
+        (space.gap.y===undefined || Number.isFinite(space.gap.y) && space.gap.y>=0 && space.gap.y<=1)) && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
         Number.isFinite(space.x) && space.x >= 0 && space.x <= 1 && Number.isFinite(space.y) && Math.abs(space.y) <= 1000;
 }
 
@@ -195,7 +197,7 @@ function documentColumn(editor) {
 }
 
 function captureDocumentSpace(editor, hit, point) {
-    if (hit.closest('[contenteditable="false"]')) return null;
+    if (hit.closest('[contenteditable="false"],img,video,audio,canvas,iframe,button,input,select,textarea')) return null;
     const column = documentColumn(editor);
     if (point.x < column.left || point.x > column.right) return null;
     let block = hit.closest('[data-node-id]');
@@ -233,7 +235,12 @@ function captureDocumentSpace(editor, hit, point) {
     if (!rect && !/[^\s\u200b]/.test(root.textContent)) { rect = root.getBoundingClientRect();index = 0; }
     if (!rect?.height || !rect.width) return null;
     const style = getComputedStyle(root), font = parseFloat(style.fontSize), line = parseFloat(style.lineHeight) || font * 1.2;
-    return { block, space: { offset: index, x: (point.x - column.left) / (column.right - column.left), y: (point.y - rect.top) / line } };
+    const side=point.x<rect.left ? 'before':point.x>rect.right ? 'after':'inside';
+    const left=side==='before' ? column.left:side==='after' ? rect.right:rect.left;
+    const right=side==='before' ? rect.left:side==='after' ? column.right:rect.right;
+    const gap={side,ratio:(point.x-left)/(right-left)};
+    if(point.y>=rect.top && point.y<=rect.bottom)gap.y=(point.y-rect.top)/rect.height;
+    return { block, space: { offset: index, x: (point.x - column.left) / (column.right - column.left), y: (point.y - rect.top) / line, gap } };
 }
 
 function captureDocumentCursor(point) {
@@ -271,9 +278,22 @@ function resolveDocumentCursor(cursor) {
             if (!rect?.height || !rect.width) continue;
             const style = getComputedStyle(root), font = parseFloat(style.fontSize), line = parseFloat(style.lineHeight) || font * 1.2;
             const editor = block.closest('.protyle-wysiwyg'), column = documentColumn(editor);
-            const x = column.left + (column.right - column.left) * relative.x;
-            const y = rect.top + relative.y * line, hit = document.elementFromPoint(x, y);
-            if (visibleElement(hit) && hit.closest('.protyle-wysiwyg') === editor) return { x, y };
+            let x = column.left + (column.right - column.left) * relative.x;
+            if(relative.gap){
+                const {side,ratio}=relative.gap,left=side==='before' ? column.left:side==='after' ? rect.right:rect.left;
+                const right=side==='before' ? rect.left:side==='after' ? column.right:rect.right;
+                if(right<=left)continue;x=left+(right-left)*ratio;
+            }
+            const y = relative.gap?.y!==undefined ? rect.top+rect.height*relative.gap.y:rect.top+relative.y*line, hit = document.elementFromPoint(x, y);
+            if (visibleElement(hit) && hit.closest('.protyle-wysiwyg') === editor){
+                if(relative.gap){
+                    const hitBlock=hit.closest('.protyle-wysiwyg [data-node-id]');
+                    if(hitBlock && hitBlock!==block || hit.closest('[contenteditable="false"],img,video,audio,canvas,iframe,button,input,select,textarea'))continue;
+                    const blank=captureDocumentSpace(editor,root,{x,y});
+                    if(blank?.block!==block || blank.space.offset!==relative.offset || blank.space.gap?.side!==relative.gap.side || captureTextPoint(root,{x,y},true))continue;
+                }
+                return { x, y };
+            }
             continue;
         }
         const character = characterAt(cursorTextRoot(block), cursor.text.offset);

@@ -3,7 +3,9 @@ const PAGE_COMMANDS = ['fileTree', 'outline', 'bookmark', 'tag', 'inbox', 'backl
 const PAGE_CONTROLS = ['barCommand','barWorkspace','barPlugins','barMode','barRiffCard','statusHelp'];
 
 function validDocumentSpace(space) {
-    return space && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
+    return space && (space.gap===undefined || space.gap && ['before','inside','after'].includes(space.gap.side) &&
+        Number.isFinite(space.gap.ratio) && space.gap.ratio>=0 && space.gap.ratio<=1 &&
+        (space.gap.y===undefined || Number.isFinite(space.gap.y) && space.gap.y>=0 && space.gap.y<=1)) && Number.isSafeInteger(space.offset) && space.offset >= 0 && space.offset <= 10000000 &&
         Number.isFinite(space.x) && space.x >= 0 && space.x <= 1 && Number.isFinite(space.y) && Math.abs(space.y) <= 1000;
 }
 
