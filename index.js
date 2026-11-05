@@ -1061,32 +1061,28 @@ function componentImageRect(image) {
 
 function componentPicker(element) {
     if(!element.matches('select:open') || element.closest('[data-private]'))return null;
-    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element,'::picker(select)'),timeline=typeof view.ViewTimeline==='function' && 'startOffset' in view.ViewTimeline.prototype && 'endOffset' in view.ViewTimeline.prototype;
-    // shortcut: axis-aligned horizontal pickers are measured here; vertical and transformed pickers still need a coordinate map.
-    if(css.appearance!=='base-select' || ['visible','clip'].includes(css.overflowX) || ['visible','clip'].includes(css.overflowY) || !(timeline ? ['block','flow-root','grid','flex']:['block']).includes(css.display) || css.visibility!=='visible' || Number(css.opacity)<=.01 || css.writingMode!=='horizontal-tb' || css.transform!=='none' || css.rotate!=='none' || css.scale!=='none' || css.columnCount!=='auto')return null;
+    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element,'::picker(select)'),anchored=view.CSS.supports('left','anchor(--collab-picker-measure left)') && view.CSS.supports('width','anchor-size(--collab-picker-measure width)'),horizontal=css.writingMode==='horizontal-tb';
+    // shortcut: transformed and multicolumn pickers still need a coordinate map.
+    if(css.appearance!=='base-select' || ['visible','clip'].includes(css.overflowX) || ['visible','clip'].includes(css.overflowY) || !(anchored ? ['block','flow-root','grid','flex']:['block']).includes(css.display) || css.visibility!=='visible' || Number(css.opacity)<=.01 || !(anchored ? ['horizontal-tb','vertical-rl','vertical-lr','sideways-rl','sideways-lr']:['horizontal-tb']).includes(css.writingMode) || css.transform!=='none' || css.rotate!=='none' || css.scale!=='none' || css.columnCount!=='auto')return null;
     const children=componentChildren(element).filter(child=>child!==element.firstElementChild || !child.matches('button')),before=children.map(child=>child.getBoundingClientRect());
-    const markers=(timeline ? ['absolute']:['sticky','absolute']).map(position=>{const marker=doc.createElement('div');marker.className='collab-text-measure';marker.setAttribute('aria-hidden','true');marker.inert=true;
-        marker.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;box-sizing:content-box!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+(position==='sticky' ? 'top:0!important;left:0!important;width:100%!important;height:1px!important;margin-bottom:-1px!important;':'inset:0!important;');return marker;});
-    if(!timeline)element.insertBefore(markers[0],children[0] || null);element.append(markers.at(-1));
+    const markers=[anchored ? 'fixed':'sticky','absolute'].map(position=>{const marker=doc.createElement('div');marker.className='collab-text-measure'+(position==='fixed' ? ' collab-picker-measure':'');marker.setAttribute('aria-hidden','true');marker.inert=true;
+        marker.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;box-sizing:content-box!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+(position==='sticky' ? 'top:0!important;left:0!important;width:100%!important;height:1px!important;margin-bottom:-1px!important;':position==='fixed' ? 'inset:auto!important;left:anchor(--collab-picker-measure left)!important;top:anchor(--collab-picker-measure top)!important;width:anchor-size(--collab-picker-measure width,0px)!important;height:anchor-size(--collab-picker-measure height,0px)!important;':'inset:0!important;');return marker;});
+    const style=anchored ? doc.createElement('style'):null;
+    if(style){style.className='collab-text-measure';style.textContent='select:has(> .collab-picker-measure)::picker(select){anchor-name:'+(css.anchorName==='none' ? '':css.anchorName+',')+'--collab-picker-measure!important}';doc.head.append(style);element.append(markers[0]);}else element.insertBefore(markers[0],children[0] || null);
+    element.append(markers[1]);
     try{
-        const port=markers.at(-1).getBoundingClientRect(),n=name=>parseFloat(css[name]);let top,sx,sy;
-        if(timeline){
-            const axes=['x','y'].map(axis=>{const t=new view.ViewTimeline({subject:markers[0],axis,inset:'0px'}),start=t.startOffset,end=t.endOffset,current=t.currentTime;
-                return t.source===element && start?.unit==='px' && end?.unit==='px' && current?.unit==='percent' ? {size:(end.value-start.value)/2,scroll:start.value+(end.value-start.value)*current.value/100}:null;});
-            if(axes.some(axis=>!axis || !Number.isFinite(axis.scroll) || !(axis.size>0)))return null;
-            sx=port.width/axes[0].size;sy=port.height/axes[1].size;
-            const left=port.left+axes[0].scroll*sx*(css.direction==='rtl' ? -1:1),y=port.top+axes[1].scroll*sy;
-            top={left:left+n('paddingLeft')*sx,right:left+port.width-n('paddingRight')*sx,top:y+n('paddingTop')*sy};
-        }else{top=markers[0].getBoundingClientRect();sx=top.width/parseFloat(view.getComputedStyle(markers[0]).width);sy=top.height;}
-        if(![sx,sy].every(value=>Number.isFinite(value)&&value>0) || children.some((child,index)=>{const rect=child.getBoundingClientRect(),old=before[index];return ['left','right','top','bottom'].some(side=>Math.abs(rect[side]-old[side])>.001);}))return null;
+        const port=markers[1].getBoundingClientRect(),top=markers[0].getBoundingClientRect(),n=name=>parseFloat(css[name]);
         const width=n('width')+(css.boxSizing==='border-box' ? 0:n('borderLeftWidth')+n('borderRightWidth')+n('paddingLeft')+n('paddingRight')),height=n('height')+(css.boxSizing==='border-box' ? 0:n('borderTopWidth')+n('borderBottomWidth')+n('paddingTop')+n('paddingBottom'));
-        const content={left:top.left,right:top.right,top:top.top,bottom:top.top+port.height-(n('paddingTop')+n('paddingBottom'))*sy},scrollbarX=Math.max(0,width-n('borderLeftWidth')-n('borderRightWidth')-port.width/sx),scrollbarY=Math.max(0,height-n('borderTopWidth')-n('borderBottomWidth')-port.height/sy);
-        const gutterLeft=css.scrollbarGutter.includes('both-edges') ? scrollbarX/2:css.direction==='rtl' ? scrollbarX:0;
-        const bounds={left:content.left-(n('paddingLeft')+n('borderLeftWidth')+gutterLeft)*sx,top:content.top-(n('paddingTop')+n('borderTopWidth'))*sy};bounds.right=bounds.left+width*sx;bounds.bottom=bounds.top+height*sy;
+        const sx=anchored ? top.width/width:top.width/parseFloat(view.getComputedStyle(markers[0]).width),sy=anchored ? top.height/height:top.height;
+        if(![sx,sy].every(value=>Number.isFinite(value)&&value>0) || children.some((child,index)=>{const rect=child.getBoundingClientRect(),old=before[index];return ['left','right','top','bottom'].some(side=>Math.abs(rect[side]-old[side])>.001);}))return null;
+        const scrollbarX=Math.max(0,width-n('borderLeftWidth')-n('borderRightWidth')-port.width/sx),scrollbarY=Math.max(0,height-n('borderTopWidth')-n('borderBottomWidth')-port.height/sy);
+        const both=css.scrollbarGutter.includes('both-edges'),gutterLeft=horizontal ? both ? scrollbarX/2:css.direction==='rtl' ? scrollbarX:0:0,gutterTop=!horizontal && both ? scrollbarY/2:0;
+        const bounds={left:anchored ? top.left:top.left-(n('paddingLeft')+n('borderLeftWidth')+gutterLeft)*sx,top:anchored ? top.top:top.top-(n('paddingTop')+n('borderTopWidth')+gutterTop)*sy};bounds.right=bounds.left+width*sx;bounds.bottom=bounds.top+height*sy;
+        const content={left:bounds.left+(n('borderLeftWidth')+gutterLeft+n('paddingLeft'))*sx,top:bounds.top+(n('borderTopWidth')+gutterTop+n('paddingTop'))*sy};content.right=content.left+port.width-(n('paddingLeft')+n('paddingRight'))*sx;content.bottom=content.top+port.height-(n('paddingTop')+n('paddingBottom'))*sy;
         const border={left:bounds.left+n('borderLeftWidth')*sx,right:bounds.right-n('borderRightWidth')*sx,top:bounds.top+n('borderTopWidth')*sy,bottom:bounds.bottom-n('borderBottomWidth')*sy},viewport={left:content.left-n('paddingLeft')*sx,right:content.right+n('paddingRight')*sx,top:content.top-n('paddingTop')*sy,bottom:content.bottom+n('paddingBottom')*sy};
         if(![...Object.values(bounds),...Object.values(content)].every(Number.isFinite) || content.bottom<content.top)return null;
-        return {bounds,border,viewport,content,children,twoAxes:css.display==='grid' || css.display==='flex',scrollbarX:scrollbarX*sx,scrollbarY:scrollbarY*sy};
-    }finally{markers.forEach(marker=>marker.remove());}
+        return {bounds,border,viewport,content,children,twoAxes:!horizontal || css.display==='grid' || css.display==='flex',scrollbarX:scrollbarX*sx,scrollbarY:scrollbarY*sy};
+    }finally{markers.forEach(marker=>marker.remove());style?.remove();}
 }
 
 function componentSelectImage(element) {
@@ -1227,13 +1223,16 @@ function componentGeometry(element,point) {
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
         }
         const references=(perimeter || onPicker && (axis==='x' && !picker.twoAxes || !inside(picker.content)) ? []:children).map(child=>({child,rect:child.getBoundingClientRect()})).filter(({rect})=>rect.width && rect.height);
-        const nearest=onPicker && picker.twoAxes ? Math.min(...references.map(({rect})=>Math.max(rect[otherStart]-other,other-rect[otherEnd],0))):0;
+        const beside=onPicker && picker.twoAxes && [otherEnd,otherStart].map((key,index)=>references.filter(({rect})=>point[axis]>=rect[start] && point[axis]<=rect[end] && (index ? rect[key]>=other:rect[key]<=other)).sort((a,b)=>index ? a.rect[key]-b.rect[key]:b.rect[key]-a.rect[key])[0]?.child);
+        const adjacent=beside && beside.every(Boolean) ? beside:null;
+        const distance=rect=>Math.max(rect[otherStart]-other,other-rect[otherEnd],0);
+        const nearest=onPicker && picker.twoAxes ? [start,end].map((key,index)=>Math.min(...references.filter(({rect})=>index ? rect[key]>=point[axis]:rect[key]<=point[axis]).map(({rect})=>distance(rect)))):[0,0];
         for(const {child,rect} of references){
-            if(Math.max(rect[otherStart]-other,other-rect[otherEnd],0)>nearest && !column)continue;
-            const step=componentStep(child);
-            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end]){
+            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end] && (column || (adjacent ? adjacent.includes(child):distance(rect)<=nearest[rect[key]>point[axis] ? 1:0]))){
+                // At grid crossings, keep shared row edges independent of column distance.
+                const step=componentStep(onPicker && !adjacent ? references.find(({rect:r})=>r[key]===rect[key]).child:child);
                 const entry={value:rect[key],edge:{kind:'child',side,step}};
-                if(column && child.hasAttribute('data-node-id'))entries.unshift(entry);else entries.push(entry);
+                if(onPicker || column && child.hasAttribute('data-node-id'))entries.unshift(entry);else entries.push(entry);
             }
         }
         for(const item of text)for(const [side,key] of [['start',start],['end',end]])if(item.rect[key]>=bounds[start] && item.rect[key]<=bounds[end])entries.push({value:item.rect[key],edge:{kind:'text',side,offset:item.offset}});
