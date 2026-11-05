@@ -91,7 +91,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='field-viewport' || edge.kind==='range-thumb' || edge.kind==='range-track' || edge.kind==='switch-thumb' || edge.kind==='switch-track' || edge.kind==='switch-halo' || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='field-viewport' || edge.kind==='range-thumb' || edge.kind==='range-track' || edge.kind==='switch-thumb' || edge.kind==='switch-track' || edge.kind==='switch-halo' || edge.kind==='checkbox-face' || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -606,6 +606,16 @@ function componentRange(element) {
     const points=[[0,0],[width,0],[0,height],[width,height]].map(([x,y])=>{const p=matrix.transformPoint({x:x-origin[0],y:y-origin[1]});return {x:left+origin[0]+p.x,y:top+parseFloat(thumb.marginTop)+origin[1]+p.y};});
     const painted={left:Math.min(...points.map(p=>p.x)),right:Math.max(...points.map(p=>p.x)),top:Math.min(...points.map(p=>p.y)),bottom:Math.max(...points.map(p=>p.y))};
     return {box,thumb:painted,content:{left:Math.max(box.bounds.left,Math.min(content.left,painted.left)),right:Math.min(box.bounds.right,Math.max(content.right,painted.right)),top:Math.max(box.bounds.top,Math.min(content.top,painted.top)),bottom:Math.min(box.bounds.bottom,Math.max(content.bottom,painted.bottom))},track:{left:content.left,right:content.right,top,bottom:top+trackHeight}};
+}
+
+function componentCheckbox(element) {
+    if(!element.matches('input[type="checkbox"]:not(.b3-switch)'))return null;
+    const view=element.ownerDocument.defaultView,css=view.getComputedStyle(element);
+    if(!['auto','checkbox'].includes(css.appearance) || !/Chrome\//.test(view.navigator.userAgent))return null;
+    const box=frameBox(element);if(!box)return null;
+    const width=box.bounds.right,height=box.bounds.bottom,size=Math.min(width,height),left=(width-size)/2,top=(height-size)/2;
+    // shortcut: native glyph contours and raster snapping need separate calibration; this map separates the face from surrounding gaps.
+    return {box,face:{left,top,right:left+size,bottom:top+size}};
 }
 
 function componentSwitch(element) {
@@ -1564,7 +1574,8 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
     const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
     if((slider || toggle) && !range)return null;
-    const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (onPicker&&picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
+    const checkbox=componentCheckbox(element);
+    const box=range?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (onPicker&&picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     if(box)point=box.toLocal(parentPoint);
     const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
     let bounds=textPlane ? textPlane.rect(element):box ? box.bounds:element.getBoundingClientRect();if(!bounds)return null;
@@ -1576,7 +1587,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
     const field=onPicker ? null:componentFieldContent(element),empty=field && !componentFieldText(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
-    const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
+    const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!checkbox&&!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     // Person-local badges must not change shared row gaps or their text offsets.
     let text=empty || onPicker || box&&!textPlane || padding && !element.matches('select,textarea') || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:fieldText || componentNearText(element,parentPoint,textPlane) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
@@ -1590,6 +1601,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
         const other=point[axis==='x' ? 'y':'x'];
         const column=axis==='x' && element.matches('.sb[data-sb-layout="col"]');
         const entries=[{value:bounds[start],edge:{kind:onPicker ? 'picker-box':box&&!textPlane ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:onPicker ? 'picker-box':box&&!textPlane ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
+        if(checkbox)for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:checkbox.face[key],edge:{kind:'checkbox-face',side}});
         if(onPicker && (other<picker.border[otherStart] || other>=picker.border[otherEnd]) && point[axis]>=picker.border[start] && point[axis]<picker.border[end]){edges[axis]=entries.map(item=>item.edge);relative[axis]=(point[axis]-bounds[start])/(bounds[end]-bounds[start]);continue;}
         if(onPicker)for(const part of point[axis]<picker.border[start] || point[axis]>=picker.border[end] ? ['content','viewport','border']:['border','viewport','content'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:picker[part][key],edge:{kind:'picker-'+part,side}});
         if(image && (!select || !glyph && other>=image[otherStart] && other<=image[otherEnd]))for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
@@ -1695,7 +1707,9 @@ function resolveComponent(cursor,plugin) {
     const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
     if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track',...(toggle?['switch-halo']:[]),'frame','frame-box'].includes(edge.kind))))return null;
     const haloAnchor=toggle && Object.values(anchor.edges).flat().every(edge=>edge.kind==='switch-halo');
-    const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
+    const checkbox=componentCheckbox(element);
+    if(checkbox && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='checkbox-face'))return null;
+    const box=range?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
     const point={};
@@ -1706,7 +1720,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind==='checkbox-face' ? checkbox?.face:edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
