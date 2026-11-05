@@ -91,7 +91,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='field-viewport' || edge.kind==='range-thumb' || edge.kind==='range-track' || edge.kind==='switch-thumb' || edge.kind==='switch-track' || edge.kind==='switch-halo' || ['checkbox-face','checkbox-background','checkbox-check','checkbox-dash'].includes(edge.kind) || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='field-viewport' || edge.kind==='range-thumb' || edge.kind==='range-track' || edge.kind==='switch-thumb' || edge.kind==='switch-track' || edge.kind==='switch-halo' || ['checkbox-face','checkbox-background','checkbox-check','checkbox-dash','color-swatch','color-fill'].includes(edge.kind) || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -544,13 +544,14 @@ const COMPONENT_TEXT_SETTINGS=new Map([
 ]);
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
+const componentColorStyles=new Map();
 const componentPickerStyles=new Map();
 const componentFieldStyles=new Map();
 const componentCheckboxPaint=new WeakMap();
 let componentMeasurements;
 
 function clearComponentStyles(doc) {
-    for(const styles of [componentRangeStyles,componentPickerStyles,componentFieldStyles]){
+    for(const styles of [componentRangeStyles,componentColorStyles,componentPickerStyles,componentFieldStyles]){
         if(doc){styles.get(doc)?.remove();styles.delete(doc);}
         else{for(const style of styles.values())style.remove();styles.clear();}
     }
@@ -564,15 +565,15 @@ function componentPickerStyle(doc) {
     return style;
 }
 
-function componentRangeStyle(doc) {
+function componentNativeRules(doc,kind) {
     if(!doc.head || !doc.styleSheets)return null;
     const extract=rule=>{
         if(rule.styleSheet){const rules=[...rule.styleSheet.cssRules].map(extract).filter(Boolean);let text=rules.join('\n');if(!text)return '';if(rule.media.mediaText)text='@media '+rule.media.mediaText+'{'+text+'}';if(rule.supportsText)text='@supports ('+rule.supportsText+'){'+text+'}';if(rule.layerName!==null && rule.layerName!==undefined)text='@layer '+rule.layerName+'{'+text+'}';return text;}
         if(rule.selectorText){
-            if(!rule.selectorText.includes('::-webkit-slider-'))return '';
-            let text=rule.cssText.replaceAll('::-webkit-slider-thumb',':where(input.b3-slider[type="range"])::before').replaceAll('::-webkit-slider-runnable-track',':where(input.b3-slider[type="range"])::after');
+            if(!rule.selectorText.includes(kind==='color'?'::-webkit-color-swatch':'::-webkit-slider-'))return '';
+            let text=rule.cssText.replaceAll('::-webkit-color-swatch-wrapper','::before').replaceAll('::-webkit-color-swatch','::after').replaceAll('::-webkit-slider-thumb',':where(input.b3-slider[type="range"])::before').replaceAll('::-webkit-slider-runnable-track',':where(input.b3-slider[type="range"])::after');
             const width=rule.style.getPropertyValue('width');
-            if(width && rule.selectorText.includes('::-webkit-slider-runnable-track'))text=text.slice(0,-1)+';--collab-range-auto:'+(width==='auto' ? 1:0)+(rule.style.getPropertyPriority('width') ? ' !important':'')+'}';
+            if(kind==='range' && width && rule.selectorText.includes('::-webkit-slider-runnable-track'))text=text.slice(0,-1)+';--collab-range-auto:'+(width==='auto' ? 1:0)+(rule.style.getPropertyPriority('width') ? ' !important':'')+'}';
             return text;
         }
         if(rule.cssRules){const rules=[...rule.cssRules].map(extract).filter(Boolean);return rules.length ? rule.cssText.slice(0,rule.cssText.indexOf('{')+1)+rules.join('\n')+'}':'';}
@@ -580,7 +581,11 @@ function componentRangeStyle(doc) {
     };
     let rules;
     try{rules=[...doc.styleSheets].filter(sheet=>!sheet.disabled && sheet.ownerNode?.className!=='collab-range-measure').flatMap(sheet=>{const rules=[...sheet.cssRules].map(extract).filter(Boolean);return sheet.media.mediaText && rules.length ? ['@media '+sheet.media.mediaText+'{'+rules.join('\n')+'}']:rules;});}catch{return null;}
-    if(!rules.length)return null;
+    return rules;
+}
+
+function componentRangeStyle(doc) {
+    const rules=componentNativeRules(doc,'range');if(!rules?.length)return null;
     // Generated, hidden pseudos expose native thumb transitions without changing the input box.
     const css=':where(input.b3-slider[type="range"])::after{--collab-range-auto:1}\n'+rules.join('\n')+'\n:where(input.b3-slider[type="range"])::before,:where(input.b3-slider[type="range"])::after{content:"" !important;position:fixed !important;left:0 !important;top:0 !important;visibility:hidden !important;pointer-events:none !important}';
     let style=componentRangeStyles.get(doc);
@@ -607,6 +612,23 @@ function componentRange(element) {
     const points=[[0,0],[width,0],[0,height],[width,height]].map(([x,y])=>{const p=matrix.transformPoint({x:x-origin[0],y:y-origin[1]});return {x:left+origin[0]+p.x,y:top+parseFloat(thumb.marginTop)+origin[1]+p.y};});
     const painted={left:Math.min(...points.map(p=>p.x)),right:Math.max(...points.map(p=>p.x)),top:Math.min(...points.map(p=>p.y)),bottom:Math.max(...points.map(p=>p.y))};
     return {box,thumb:painted,content:{left:Math.max(box.bounds.left,Math.min(content.left,painted.left)),right:Math.min(box.bounds.right,Math.max(content.right,painted.right)),top:Math.max(box.bounds.top,Math.min(content.top,painted.top)),bottom:Math.min(box.bounds.bottom,Math.max(content.bottom,painted.bottom))},track:{left:content.left,right:content.right,top,bottom:top+trackHeight}};
+}
+
+function componentColor(element) {
+    if(!element.matches('input[type="color"]') || element.closest('[data-private]'))return null;
+    if(element.closest('[data-panel="customEditor"]'))return null;
+    const cache=componentMeasurements && (componentMeasurements.colors ||= new WeakMap());if(cache?.has(element))return cache.get(element);
+    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),box=frameBox(element);
+    if(!box || !['none','auto'].includes(css.appearance) || !/Chrome\//.test(view.navigator.userAgent))return null;
+    const rules=componentNativeRules(doc,'color');if(!rules)return null;
+    const text=':where(input[type="color"])::before{display:flex;position:static;box-sizing:border-box;width:100%;height:100%;padding:4px 2px;border:0;margin:0}\n:where(input[type="color"])::after{display:block;position:static;box-sizing:content-box;width:auto;height:auto;flex:1;min-width:0;border:1px solid #777;margin:0;padding:0}\n'+rules.join('\n')+'\n:where(input[type="color"])::before,:where(input[type="color"])::after{content:none!important}';
+    let style=componentColorStyles.get(doc);if(!style){style=doc.createElement('style');style.className='collab-text-measure collab-color-measure';componentColorStyles.set(doc,style);}if(style.textContent!==text)style.textContent=text;if(!style.isConnected)doc.head.append(style);
+    const wrapper=view.getComputedStyle(element,'::before'),swatch=view.getComputedStyle(element,'::after'),n=(s,key)=>parseFloat(s[key]);
+    // shortcut: other native flex layouts, pseudo transforms and rounded swatches need their own geometry calibration.
+    if(wrapper.display!=='flex' || wrapper.boxSizing!=='border-box' || wrapper.width!=='100%' || wrapper.height!=='100%' || wrapper.flexDirection!=='row' || wrapper.flexWrap!=='nowrap' || !['normal','stretch'].includes(wrapper.alignItems) || ['Top','Right','Bottom','Left'].some(side=>n(wrapper,'margin'+side)!==0) || swatch.flexGrow!=='1' || swatch.flexBasis!=='0%' || !['auto','stretch'].includes(swatch.alignSelf) || swatch.width!=='auto' || swatch.height!=='auto' || [wrapper,swatch].some(s=>s.display==='none'||s.visibility!=='visible'||Number(s.opacity)<=.01||s.position!=='static'||s.writingMode!=='horizontal-tb'||s.minWidth!=='0px'||s.minHeight!=='0px'||s.maxWidth!=='none'||s.maxHeight!=='none'||s.filter!=='none'||s.clipPath!=='none'||s.transform!=='none'||s.rotate!=='none'||s.scale!=='none'||s.translate!=='none'||['borderTopLeftRadius','borderTopRightRadius','borderBottomLeftRadius','borderBottomRightRadius'].some(k=>parseFloat(s[k])!==0)))return null;
+    const rect={},fill={};for(const [side,axis]of [['left','Left'],['right','Right'],['top','Top'],['bottom','Bottom']]){const sign=['left','top'].includes(side)?1:-1,margin=n(swatch,'margin'+axis),inset=n(wrapper,'border'+axis+'Width')+n(wrapper,'padding'+axis);if(!Number.isFinite(margin+inset)||margin<0||inset<0)return null;rect[side]=box.content[side]+sign*(margin+inset);fill[side]=rect[side]+sign*n(swatch,'border'+axis+'Width');}
+    if(![...Object.values(rect),...Object.values(fill)].every(Number.isFinite) || fill.left>=fill.right || fill.top>=fill.bottom)return null;
+    const result={box,swatch:rect,fill};cache?.set(element,result);return result;
 }
 
 function componentCheckbox(element) {
@@ -894,6 +916,9 @@ function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-font-config-key','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('input[type="color"][data-field]'))values.push(['color-field',componentHash(element.dataset.field)]);
+    if(element.matches('[data-type="themeColorEditor"] > div')){const fields=[...element.querySelectorAll('input[type="color"][data-field]')].map(e=>e.dataset.field).sort();if(fields.length)values.push(['color-group',componentHash(JSON.stringify(fields))]);}
+    if(element.matches('[data-panel="builtinEditor"],[data-panel="customEditor"]')&&element.querySelector('[data-type="themeColorEditor"]'))values.push(['color-editor',element.dataset.panel,componentHash(textLabel(element.querySelector('[data-role="title"]')))]);
     if(font!==undefined)values.push(['font',componentHash(JSON.stringify(font))]);
     if(element.matches('.b3-menu')){const target=componentFontMenuTarget(element);if(target!==undefined)values.push(['font-target',componentHash(JSON.stringify(target))]);}
     if(element.matches('#configBazaarReadme'))values.push(['bazaar-package',componentHash(JSON.stringify(componentBazaarPackage(element)))]);
@@ -1589,11 +1614,13 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
     const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
     if((slider || toggle) && !range)return null;
+    const color=element.matches('input[type="color"]') ? componentColor(element):null;if(element.matches('input[type="color"]')&&!color)return null;
     const checkbox=componentCheckbox(element);
-    const box=range?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (onPicker&&picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
+    const box=range?.box || color?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (onPicker&&picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     if(box)point=box.toLocal(parentPoint);
     const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
     let bounds=textPlane ? textPlane.rect(element):box ? box.bounds:element.getBoundingClientRect();if(!bounds)return null;
+    if(color && inside(color.fill))return {edges:{x:[{kind:'color-fill',side:'start'},{kind:'color-fill',side:'end'}],y:[{kind:'color-fill',side:'start'},{kind:'color-fill',side:'end'}]},x:(point.x-color.fill.left)/(color.fill.right-color.fill.left),y:(point.y-color.fill.top)/(color.fill.bottom-color.fill.top)};
     if(checkbox && inside(checkbox.face)){
         const kind=componentCheckboxPart(element,checkbox,point);if(!kind)return null;
         return {edges:{x:[{kind,side:'start'},{kind,side:'end'}],y:[{kind,side:'start'},{kind,side:'end'}]},x:(point.x-checkbox.face.left)/(checkbox.face.right-checkbox.face.left),y:(point.y-checkbox.face.top)/(checkbox.face.bottom-checkbox.face.top)};
@@ -1606,7 +1633,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
     const field=onPicker ? null:componentFieldContent(element),empty=field && !componentFieldText(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
-    const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!checkbox&&!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
+    const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!checkbox&&!color&&!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     // Person-local badges must not change shared row gaps or their text offsets.
     let text=empty || onPicker || box&&!textPlane || padding && !element.matches('select,textarea') || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:fieldText || componentNearText(element,parentPoint,textPlane) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
@@ -1620,6 +1647,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
         const other=point[axis==='x' ? 'y':'x'];
         const column=axis==='x' && element.matches('.sb[data-sb-layout="col"]');
         const entries=[{value:bounds[start],edge:{kind:onPicker ? 'picker-box':box&&!textPlane ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:onPicker ? 'picker-box':box&&!textPlane ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
+        if(color)for(const kind of ['fill','swatch'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:color[kind][key],edge:{kind:'color-'+kind,side}});
         if(checkbox)for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:checkbox.face[key],edge:{kind:'checkbox-face',side}});
         if(onPicker && (other<picker.border[otherStart] || other>=picker.border[otherEnd]) && point[axis]>=picker.border[start] && point[axis]<picker.border[end]){edges[axis]=entries.map(item=>item.edge);relative[axis]=(point[axis]-bounds[start])/(bounds[end]-bounds[start]);continue;}
         if(onPicker)for(const part of point[axis]<picker.border[start] || point[axis]>=picker.border[end] ? ['content','viewport','border']:['border','viewport','content'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:picker[part][key],edge:{kind:'picker-'+part,side}});
@@ -1726,9 +1754,11 @@ function resolveComponent(cursor,plugin) {
     const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
     if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track',...(toggle?['switch-halo']:[]),'frame','frame-box'].includes(edge.kind))))return null;
     const haloAnchor=toggle && Object.values(anchor.edges).flat().every(edge=>edge.kind==='switch-halo');
+    const color=element.matches('input[type="color"]') ? componentColor(element):null;if(element.matches('input[type="color"]')&&!color)return null;
     const checkbox=componentCheckbox(element);
+    if(color && !Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('color-')))return null;
     if(checkbox && !Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('checkbox-')))return null;
-    const box=range?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
+    const box=range?.box || color?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
     const point={};
@@ -1739,7 +1769,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('checkbox-') ? checkbox?.face:edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('color-') ? color?.[edge.kind.slice(6)]:edge.kind.startsWith('checkbox-') ? checkbox?.face:edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -1761,7 +1791,8 @@ function resolveComponent(cursor,plugin) {
         if(!local)return null;
         const same=['x','y'].every(axis=>!precise && !gaps.includes(axis) || anchor.edges[axis].every((edge,index)=>{
             const match=local.edges[axis][index],collapsed=field && (axis==='x' ? field.left===field.right:field.top===field.bottom);
-            return edge.kind===match.kind && edge.offset===match.offset && (edge.side===match.side || edge.kind==='field' && collapsed) &&
+            const colorKey=axis==='x' ? edge.side==='start'?'left':'right':edge.side==='start'?'top':'bottom',sameColor=color && [edge.kind,match.kind].every(kind=>['color-fill','color-swatch'].includes(kind)) && color.fill[colorKey]===color.swatch[colorKey];
+            return (edge.kind===match.kind || sameColor) && edge.offset===match.offset && (edge.side===match.side || edge.kind==='field' && collapsed) &&
                 (edge.kind!=='child' || edge.step.key===match.step.key && edge.step.count===match.step.count && edge.step.index===match.step.index);
         }));
         if(select){
