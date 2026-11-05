@@ -14,7 +14,7 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>协
 ${fs.readFileSync(path.join(root, "index.css"), "utf8")}
 :root{--b3-theme-background:white;--b3-theme-on-background:#20252b;--b3-border-radius:4px;--b3-border-color:#d3d7dd;--b3-list-hover:#edf0f4;--b3-theme-primary:#3574c8}
 body{margin:24px;font:16px/1.5 sans-serif;color:#20252b;background:#fafafa}
-h1{font-size:24px}#results{font-size:14px;white-space:pre-wrap}
+h1{font-size:24px}#results{font-size:14px;white-space:pre-wrap;max-height:180px;overflow:auto}
 .workspace{display:flex;gap:20px;align-items:flex-start}.sy__file{width:280px;height:320px;overflow:auto;background:#fff}
 .sy__file li{display:flex;align-items:center;height:36px;box-sizing:border-box;padding:5px;list-style:none}.sy__file ul{margin:0;padding:0}
 .protyle{width:720px;background:white}.protyle-content{height:340px;overflow:auto;border:1px solid #888}
@@ -73,7 +73,53 @@ async function test(name, run) {
     catch(error) { results.push('FAIL ' + name + ': ' + error.message); }
     document.getElementById('results').textContent = results.join('\\n');
 }
+function fontDragFixture() {
+    const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='drag-font-test';fixture.style.cssText='position:fixed;left:10px;top:10px;width:300px;background:white;z-index:30';
+    fixture.innerHTML='<div class="config__tab-container" data-name="appearance"><div data-font-config-key="fontFamilies"><div class="config-font-family__chip b3-chip--dragging" data-family="Arial" data-weight="400"><span class="config-font-family__text">Arial</span><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2L10 10M10 2L2 10" stroke="black"/></svg></div></div></div>';
+    document.body.append(fixture);const chip=fixture.querySelector('.config-font-family__chip'),clone=chip.cloneNode(true);clone.classList.remove('b3-chip--dragging');clone.classList.add('b3-chip--dragclone');clone.style.cssText='position:fixed;left:420px;top:180px;width:180px;height:44px;box-sizing:border-box;display:flex;align-items:center;gap:12px;padding:8px 14px;margin:0;z-index:9999;pointer-events:none;transition:none;background:white;font:16px/24px Arial';document.body.append(clone);
+    const samples=()=>{const label=clone.firstElementChild,rect=clone.getBoundingClientRect(),glyph=rectAt(label,2),labelBox=label.getBoundingClientRect(),icon=clone.lastElementChild.getBoundingClientRect();return [
+        {kind:'glyph',point:{x:glyph.left+glyph.width*.4,y:glyph.top+glyph.height*.6}},
+        ...['left','right','top','bottom'].map(side=>({kind:side,point:side==='left'?{x:rect.left+(labelBox.left-rect.left)*.3,y:glyph.top+glyph.height*.6}:side==='right'?{x:icon.right+(rect.right-icon.right)*.7,y:icon.top+icon.height*.6}:side==='top'?{x:glyph.left+glyph.width*.4,y:rect.top+(labelBox.top-rect.top)*.4}:{x:glyph.left+glyph.width*.4,y:labelBox.bottom+(rect.bottom-labelBox.bottom)*.6}})),
+        {kind:'icon',point:{x:icon.left+icon.width*.3,y:icon.top+icon.height*.6}}
+    ];};
+    return {fixture,chip,clone,samples,remove:()=>{clone.remove();fixture.remove();}};
+}
 (async () => {
+    await test('字体拖拽克隆的文字、四边留白和图标跟随对应克隆',async()=>{
+        const f=fontDragFixture();try{
+            const anchors=f.samples().map(s=>{assert(f.clone.contains(componentHit(document,s.point)),'visual hit passed through font drag clone');const anchor=componentRoundTrip(s.point);assert(anchor.ui?.scope.kind==='floating','clone borrowed background scope');return {...s,anchor};});
+            f.clone.style.left='610px';f.clone.style.top='280px';f.clone.style.width='250px';
+            for(const [i,s]of f.samples().entries()){const p=resolveCursor(anchors[i].anchor);assert(p&&Math.hypot(p.x-s.point.x,p.y-s.point.y)<.1,'moved clone drift '+s.kind+' '+JSON.stringify({p,s}));}
+            f.clone.style.fontSize='22px';const glyph=f.samples()[0].point,p=resolveCursor(anchors[0].anchor);assert(p&&Math.hypot(p.x-glyph.x,p.y-glyph.y)<.1,'font resize moved glyph');for(const s of f.samples())componentRoundTrip(s.point);
+            f.clone.remove();assert(anchors.every(s=>resolveCursor(s.anchor)===null),'ended drag inherited original chip');
+        }finally{f.remove();}
+    });
+    await test('字体拖拽克隆只匹配原生来源、字体、字重和设置组',async()=>{
+        const f=fontDragFixture();try{
+            const point=f.samples()[0].point,anchor=componentRoundTrip(point),group=f.chip.parentElement;
+            for(const [element,key,value]of [[group,'fontConfigKey','globalFontFamilies'],[f.chip,'family','Georgia'],[f.chip,'weight','700'],[f.clone,'weight','700']]){const before=element.dataset[key];element.dataset[key]=value;assert(resolveCursor(anchor)===null,'mismatched native target stayed visible '+key);element.dataset[key]=before;}
+            for(const target of [f.chip,group,f.clone]){target.setAttribute('data-private','');assert(captureCursor(point)===null&&resolveCursor(anchor)===null,'private drag target exposed');target.removeAttribute('data-private');}
+            f.chip.style.display='none';assert(captureCursor(point)===null&&resolveCursor(anchor)===null,'hidden source accepted');f.chip.style.display='';
+            const other=f.chip.cloneNode(true);group.append(other);assert(captureCursor(point)===null&&resolveCursor(anchor)===null,'ambiguous dragging source accepted');other.remove();
+            const duplicate=f.clone.cloneNode(true);document.body.append(duplicate);assert(captureCursor(point)===null&&resolveCursor(anchor)===null,'ambiguous clone accepted');duplicate.remove();
+            f.chip.classList.remove('b3-chip--dragging');assert(captureCursor(point)===null&&resolveCursor(anchor)===null,'inactive drag accepted');f.chip.classList.add('b3-chip--dragging');assert(resolveCursor(anchor),'restored target did not recover');
+        }finally{f.remove();}
+    });
+    await test('字体拖拽克隆尊重同层菜单、上层弹窗并遮住正文与控件',async()=>{
+        const f=fontDragFixture(),overlay=document.createElement('div'),top=document.createElement('div');try{
+            const point=f.samples()[0].point,anchor=componentRoundTrip(point);overlay.style.cssText='position:fixed;left:400px;top:160px;width:300px;height:100px;background:white;z-index:9999';document.body.append(overlay);assert(componentHit(document,point)===overlay&&resolveCursor(anchor)===null,'later same-z overlay ignored');f.clone.after(overlay);f.clone.before(overlay);assert(f.clone.contains(componentHit(document,point))&&resolveCursor(anchor),'earlier same-z overlay blocked clone');
+            top.popover='manual';top.style.cssText='position:fixed;inset:0;width:100vw;height:100vh;margin:0';document.body.append(top);top.showPopover();assert(componentHit(document,point)===top&&resolveCursor(anchor)===null,'top layer ignored');top.hidePopover();overlay.remove();
+            f.clone.style.display='none';const p=await expose(block,3),background=componentRoundTrip(p),r=block.querySelector('[contenteditable]').getBoundingClientRect(),blankPoint={x:r.right-2,y:p.y},blank=componentRoundTrip(blankPoint);assert(background.text&&blank.space,'background fixtures missing');
+            for(const [q,c]of [[p,background],[blankPoint,blank]]){f.clone.style.left=(q.x-30)+'px';f.clone.style.top=(q.y-20)+'px';f.clone.style.display='flex';assert(captureDocumentCursor(q)===null&&resolveCursor(c)===null,'document showed through visual clone');assert(captureCursor(q)?.ui?.scope.kind==='floating','clone over document captured document');f.clone.style.display='none';}
+            f.clone.style.left='420px';f.clone.style.top='180px';const control=document.createElement('button');control.textContent='under clone';control.style.cssText='position:fixed;left:420px;top:180px;width:180px;height:44px;z-index:20';f.fixture.append(control);const underlying=componentRoundTrip(point);f.clone.style.display='flex';assert(resolveCursor(underlying)===null,'control showed through clone');
+        }finally{top.remove();overlay.remove();f.remove();}
+    });
+    await test('字体拖拽克隆命中测量不改变原件、焦点或布局且无残留',async()=>{
+        const f=fontDragFixture();try{
+            const input=document.createElement('input');input.value='保留输入';f.fixture.append(input);input.focus();const point=f.samples()[0].point,html=f.clone.outerHTML,source=f.chip.outerHTML,rect=JSON.stringify(f.clone.getBoundingClientRect()),records=[];const observer=new MutationObserver(rows=>records.push(...rows));observer.observe(document.body,{subtree:true,childList:true,attributes:true,characterData:true});
+            try{for(let i=0;i<20;i++){const anchor=componentRoundTrip(point);assert(resolveCursor(anchor),'repeat hit missing');}await Promise.resolve();assert(records.length>0,'measurement observer fixture missing');assert(records.every(r=>r.type==='childList'&&[...r.addedNodes,...r.removedNodes].every(n=>n.nodeType===1&&n.matches('.collab-text-measure'))),'measurement touched native nodes');assert(document.activeElement===input&&input.value==='保留输入','measurement altered input');assert(f.clone.outerHTML===html&&f.chip.outerHTML===source&&JSON.stringify(f.clone.getBoundingClientRect())===rect,'native drag DOM/layout changed');assert(!document.querySelector('.collab-text-measure'),'measurement leaked');}finally{observer.disconnect();}
+        }finally{f.remove();}
+    });
     await test('测量样式按文档复用，移除后恢复且清理不影响其他文档',async()=>{
         const first=document.implementation.createHTMLDocument(),second=document.implementation.createHTMLDocument();
         try{const a=componentPickerStyle(first),b=componentPickerStyle(second);assert(a===componentPickerStyle(first)&&a.isConnected&&b.isConnected,'picker stylesheet duplicated or missing');a.remove();assert(componentPickerStyle(first)===a&&a.isConnected,'removed picker stylesheet did not recover');clearComponentStyles(first);assert(!a.isConnected&&b.isConnected&&!componentPickerStyles.has(first),'document cleanup leaked or crossed documents');assert(componentPickerStyle({head:null})===null,'headless document accepted stylesheet');}
@@ -2008,6 +2054,11 @@ async function test(name, run) {
                     assert(captureEditing()===null,'stale editor selection reported while typing outside');
                     await plugin.sendEditing();assert(sent.at(-1)[3]===null,'leaving editor did not clear');outside.remove();
                 } finally {plugin.kernel.rpc.call=realUpdate;}
+            });
+            await test('字体拖拽克隆十六光标同帧复用命中副本并在异常时清理',async()=>{
+                const f=fontDragFixture(),old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing},observer=new MutationObserver(()=>{});
+                try{const anchor=componentRoundTrip(f.samples()[0].point,plugin),names=Array.from({length:16},(_,i)=>'font-drag-'+i);plugin.clients=[...old.clients,...names.map(name=>({name,hue:120}))];plugin.remoteCursors=names.map(name=>({name,hue:120,cursor:anchor}));plugin.remoteSelections=[];plugin.remoteEditing=[];plugin.presenceReceivedAt=Date.now();observer.observe(document.body,{childList:true,subtree:true});plugin.renderCursors(false);const records=observer.takeRecords(),added=records.flatMap(r=>[...r.addedNodes]).filter(n=>n.nodeType===1&&n.matches('.collab-text-measure'));assert(added.length===1&&names.every(name=>plugin.cursorMarkers.has(name)),'hit proxies not shared by sixteen visible cursors');assert(!document.querySelector('.collab-text-measure:not(style)'),'frame hit proxy leaked');const render=plugin.renderSelections;plugin.renderSelections=()=>{throw Error('injected render failure');};try{let failed=false;try{plugin.renderCursors(false);}catch(e){failed=e.message==='injected render failure';}assert(failed&&!document.querySelector('.collab-text-measure:not(style)')&&!componentMeasurements,'failed render leaked hit proxy or cache');}finally{plugin.renderSelections=render;}}
+                finally{observer.disconnect();Object.assign(plugin,old);f.remove();plugin.renderCursors(false);}
             });
             await test('原生下拉弹层上的光标实际可见，关闭重开不抢焦点且选项照常点击',async()=>{
                 const fixture=document.createElement('div');fixture.dataset.key='dialog-native-picker';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:30px;top:30px;width:420px;height:100px;z-index:100;background:white"><div class="b3-dialog__container"><select id="native-picker" style="appearance:base-select;width:280px"><option value="first">中文 English 😀</option><option value="second">第二项</option></select></div></div><style>#native-picker::picker(select){appearance:base-select}#native-picker option{font:16px/24px sans-serif}</style>';document.body.append(fixture);

@@ -36,7 +36,7 @@ function cursorTextRoot(block) {
 }
 
 function visibleTextPoint(node, point) {
-    const hit = document.elementFromPoint(point.x, point.y);
+    const hit = componentVisualHit(document,point);
     if (!visibleElement(hit) || !hit.contains(node) || getComputedStyle(node.parentElement).visibility === 'hidden') return false;
     // An ancestor hit can still contain text that an inner scroller has clipped.
     for (let element = node.parentElement; element && element !== hit; element = element.parentElement) {
@@ -129,7 +129,7 @@ function captureDocumentSpace(editor, hit, point) {
 
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
-    const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
+    const hit = componentVisualHit(document,point), editor = hit?.closest('.protyle-wysiwyg');
     if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"]')) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
@@ -168,7 +168,7 @@ function resolveDocumentCursor(cursor) {
                 const right=side==='before' ? rect.left:side==='after' ? column.right:rect.right;
                 if(right<=left)continue;x=left+(right-left)*ratio;
             }
-            const y = relative.gap?.y!==undefined ? rect.top+rect.height*relative.gap.y:rect.top+relative.y*line, hit = document.elementFromPoint(x, y);
+            const y = relative.gap?.y!==undefined ? rect.top+rect.height*relative.gap.y:rect.top+relative.y*line, hit = componentVisualHit(document,{x,y});
             if (visibleElement(hit) && hit.closest('.protyle-wysiwyg') === editor){
                 if(relative.gap){
                     const hitBlock=hit.closest('.protyle-wysiwyg [data-node-id]');

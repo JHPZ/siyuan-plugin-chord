@@ -173,7 +173,7 @@ function cursorTextRoot(block) {
 }
 
 function visibleTextPoint(node, point) {
-    const hit = document.elementFromPoint(point.x, point.y);
+    const hit = componentVisualHit(document,point);
     if (!visibleElement(hit) || !hit.contains(node) || getComputedStyle(node.parentElement).visibility === 'hidden') return false;
     // An ancestor hit can still contain text that an inner scroller has clipped.
     for (let element = node.parentElement; element && element !== hit; element = element.parentElement) {
@@ -266,7 +266,7 @@ function captureDocumentSpace(editor, hit, point) {
 
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
-    const hit = document.elementFromPoint(point.x, point.y), editor = hit?.closest('.protyle-wysiwyg');
+    const hit = componentVisualHit(document,point), editor = hit?.closest('.protyle-wysiwyg');
     if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"]')) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
@@ -305,7 +305,7 @@ function resolveDocumentCursor(cursor) {
                 const right=side==='before' ? rect.left:side==='after' ? column.right:rect.right;
                 if(right<=left)continue;x=left+(right-left)*ratio;
             }
-            const y = relative.gap?.y!==undefined ? rect.top+rect.height*relative.gap.y:rect.top+relative.y*line, hit = document.elementFromPoint(x, y);
+            const y = relative.gap?.y!==undefined ? rect.top+rect.height*relative.gap.y:rect.top+relative.y*line, hit = componentVisualHit(document,{x,y});
             if (visibleElement(hit) && hit.closest('.protyle-wysiwyg') === editor){
                 if(relative.gap){
                     const hitBlock=hit.closest('.protyle-wysiwyg [data-node-id]');
@@ -631,6 +631,7 @@ function componentFontField(element) {
 }
 
 function componentFontIdentity(element) {
+    if(element.matches('.config-font-family__chip.b3-chip--dragclone'))return componentFontDragTarget(element)?.font || null;
     const row=element.matches('.b3-list-item') && element.parentElement?.matches('[data-type="available-fonts"]') && element.closest(COMPONENT_FONT_MENU),chip=element.matches('.config-font-family__chip') && element.closest('.config__tab-container')?.dataset.name==='appearance' && ['globalFontFamilies','fontFamilies','codeFontFamilies'].includes(element.closest('[data-font-config-key]')?.dataset.fontConfigKey);
     const menu=!row && !chip && element.matches('.b3-menu__item') && componentFontMenuTarget(element.closest('.b3-menu'));
     if(!row && !chip && !menu)return menu===null ? null:undefined;
@@ -645,6 +646,16 @@ function componentFontMenuTarget(element) {
     const font=componentFontIdentity(target),group=target.closest('[data-font-config-key]');
     if(!font || !target.isConnected || !visibleElement(target) || target.closest('[data-private]') || [...group.querySelectorAll('.config-font-family__chip')].filter(chip=>chip.dataset.family===font[0]).length!==1)return null;
     return {group:group.dataset.fontConfigKey,family:font[0]};
+}
+
+function componentFontDragTarget(clone) {
+    const doc=clone.ownerDocument;
+    if(clone.parentElement!==doc.body || clone.closest('[data-private]') || !visibleElement(clone) || doc.defaultView.getComputedStyle(clone).position!=='fixed' || doc.querySelectorAll('.config-font-family__chip.b3-chip--dragclone:not(.collab-text-measure)').length!==1)return null;
+    const sources=[...doc.querySelectorAll('.config-font-family__chip.b3-chip--dragging:not(.b3-chip--dragclone)')].filter(source=>visibleElement(source) && !source.closest('[data-private]'));
+    if(sources.length!==1)return null;
+    const source=sources[0],font=componentFontIdentity(source),group=source.closest('[data-font-config-key]');
+    if(!font || clone.dataset.family!==font[0] || Number(clone.dataset.weight)!==font[1] || [...group.querySelectorAll('.config-font-family__chip')].filter(chip=>chip.dataset.family===font[0]).length!==1)return null;
+    return {source,font,group:group.dataset.fontConfigKey};
 }
 
 function componentTextField(element) {
@@ -729,8 +740,29 @@ function componentFieldMeasure(field,run) {
         return run(mirror,character,position,segments);
     }finally{mirror.remove();}
 }
+function componentVisualHit(doc,point) {
+    const cache=componentMeasurements?.visualHits;let probes=cache?.get(doc);
+    try{
+        if(!probes){
+            probes=[];
+            const clones=[...doc.querySelectorAll('.config-font-family__chip.b3-chip--dragclone:not(.collab-text-measure)')].filter(visibleElement);
+            if(clones.some(clone=>{const rect=clone.getBoundingClientRect();return point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;}))for(const clone of clones){
+                // A hidden hit proxy preserves native stacking order without mutating the pointer-transparent drag node.
+                const probe=clone.cloneNode(true),original=[clone,...clone.querySelectorAll('*')],nodes=[probe,...probe.querySelectorAll('*')];probe.classList.add('collab-text-measure');probe.setAttribute('aria-hidden','true');probe.style.setProperty('opacity','0','important');
+                for(const node of nodes)node.style.setProperty('pointer-events','auto','important');
+                probes.push({probe,original,nodes});clone.after(probe);
+            }
+            // Geometry is stable during this synchronous render; all peers share its hit proxies.
+            if(probes.length || !clones.length)cache?.set(doc,probes);
+        }
+        const hit=doc.elementFromPoint(point.x,point.y);
+        for(const {original,nodes}of probes){const index=nodes.indexOf(hit);if(index>=0)return original[index];}
+        return hit;
+    }finally{if(!cache?.has(doc))for(const {probe}of probes || [])probe.remove();}
+}
+
 function componentHit(doc,point) {
-    const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
+    const hit=componentVisualHit(doc,point),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
     if(!hit?.closest('[data-private]'))for(let element=hit;element;element=element.parentElement){
         const scrollbar=componentScrollbar(element,point,false);
         // Chromium can hit the clipped content beneath a native scrollbar corner.
@@ -889,7 +921,7 @@ function componentFollow(root,route) {
     return root;
 }
 
-const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip';
+const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip,.config-font-family__chip.b3-chip--dragclone';
 const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id],.av__gallery-field,.av__firstcol,.av__row[data-id],.av__gallery-item[data-id],.av__row--header,.av__row--footer,.av__group-title,.av__body[data-group-id]';
 const COMPONENT_CALENDAR_REGIONS='.av__calendar,.av__calendar-day,.av__calendar-week,.av__calendar-week-row,.av__calendar-week-number,.av__calendar-days,.av__calendar-events,.av__calendar-weekdays > div,.av__calendar-item,.av__calendar-field,.av__calendar-undated-item[data-calendar-undated-row]';
 
@@ -1023,6 +1055,10 @@ function componentScope(element,plugin) {
     if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
     const floating=element.closest(COMPONENT_FLOATING);
     if(floating && !floating.closest('.protyle,.dockPanel')){
+        if(floating.matches('.b3-chip--dragclone')){
+            const target=componentFontDragTarget(floating),base=target && componentScope(target.source,plugin);
+            return base ? make(floating,'floating',JSON.stringify(['font-drag',base.scope,target.group,...target.font])):null;
+        }
         if(componentFontMenuTarget(floating)===null)return null;
         const pdf=floating.closest('.pdf__outer') && pdfModel(floating),context=pdf ? 'pdf:'+pdf.pdfObject.pdfDocument.fingerprints[0]:plugin ? pageKey(plugin.dialogBase || currentPage(plugin,false)):'';
         return make(floating,'floating',componentKey(floating)+'|'+(floating.getAttribute('data-oid') || '')+'|'+context);
@@ -1128,9 +1164,9 @@ function componentNearText(element,point,plane) {
     if(plane)point=plane.toLocal(point);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
     if(node?.nodeType!==3 || !element.contains(node)){
-        // Native upload inputs intercept caret hit testing above their visible label text.
+        // Native upload inputs and pointer-transparent drag clones hide visible labels from caret hit testing.
         const upload=element.matches('.b3-menu__label') && element.querySelector('input.b3-form__upload[type="file"]');
-        if(!upload || Number(doc.defaultView.getComputedStyle(upload).opacity)>.01)return null;
+        if((!upload || Number(doc.defaultView.getComputedStyle(upload).opacity)>.01) && !element.closest('.config-font-family__chip.b3-chip--dragclone'))return null;
         let nearest;
         for(let index=0;index<element.textContent.length;index++){
             const rect=componentCharacter(element,index,plane);if(!rect)continue;
@@ -2502,7 +2538,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderCursors(animate) {
         const previousMeasurements=componentMeasurements;
-        componentMeasurements={fields:new WeakMap(),scrollbars:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap()};
+        componentMeasurements={fields:new WeakMap(),scrollbars:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap(),visualHits:new Map()};
         try {
             const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
             if(picker && this.cursorLayer.showPopover){
@@ -2564,7 +2600,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             }
             this.renderSelections();
             this.renderEditing();
-        }finally{componentMeasurements=previousMeasurements;}
+        }finally{for(const probes of componentMeasurements.visualHits.values())for(const {probe}of probes)probe.remove();componentMeasurements=previousMeasurements;}
     }
 
     renderEditing() {
