@@ -144,3 +144,5 @@ search__header 中的 b3-text-field 输入框也属于公开搜索字段，涵�
 每次 renderCursors 的同步读取阶段共享滚动条及原生 picker 测量、作用域和组件路径解析，完成后在 finally 丢弃缓存，不跨帧复用几何与身份。同一 select 的 picker 几何（含二维局部平面及无法测量的 null）由当次 WeakMap 共享，下一次绘制重新检查打开、布局和可见性。所有远端坐标及旧标记矩形先读取，再统一写入光标；人员身份用 Set 查找。已有标记跨组件及布局变化使用 transform 过渡，同一目标位置不改写 transform 或过渡时长，避免将进行中的动画跳到终点；新出现的标记直接放到首次有效坐标，目标不可见仍立即移除。过渡保持现有 reduced-motion 偏好，不改变内核节流、原生输入、撤销和选区行为。
 
 picker 锚点测量的条件规则按文档持有，测量结束仅移除临时节点，避免每帧插入与移除整张样式表。只有原生 anchor-name 为 none 时，标记才带 collab-picker-unanchored，规则才生效；主题显式锚点继续直接复用。clearComponentStyles 按文档或全部清理 slider/picker 测量样式，嵌入导航及移除时从绑定的旧文档删除，插件卸载清空全部持有引用；样式被移除后可重新接入。持有静态规则不跨帧缓存几何。
+
+同源嵌入文档的观察器过滤 collab-text-measure、collab-range-measure、collab-picker-anchor 自身与子树的临时变动，混合批次保留真实节点和文字变化，避免测量触发下一帧测量。公开字段值的原生 input/change 通过捕获监听重新调度布局核验；文档替换或移除时同步解除监听，保持原生输入和撤销。

@@ -2306,17 +2306,24 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!reachedRoot)return;
                 this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
-            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
             const load=()=>{
                 let next;try{next=frame.contentDocument;}catch{}
                 if(next===doc)return;
                 stopDocument();
                 doc=next;if(!doc)return;
-                doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
+                doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
                 observer=new MutationObserver(records=>{
                     if(this.stopped)return;
+                    // Hidden measurement nodes must not schedule their own next render.
+                    const changed=records.filter(record=>{
+                        const target=record.target.nodeType===3 ? record.target.parentElement:record.target;
+                        if(target?.closest?.('.collab-text-measure,.collab-range-measure,.collab-picker-anchor'))return false;
+                        return record.type!=='childList' || [...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===3 || node.nodeType===1&&!node.matches('.collab-text-measure,.collab-range-measure,.collab-picker-anchor'));
+                    });
+                    if(!changed.length)return;
                     this.handleCursorLayout();
-                    if(records.some(record=>[...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1 && (node.matches('iframe') || node.querySelector('iframe')))))this.bindFrames();
+                    if(changed.some(record=>[...record.addedNodes,...record.removedNodes].some(node=>node.nodeType===1 && (node.matches('iframe') || node.querySelector('iframe')))))this.bindFrames();
                 });
                 observer.observe(doc,{childList:true,characterData:true,subtree:true,attributes:true});
             };
