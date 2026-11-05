@@ -24,6 +24,7 @@ const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
 const componentPickerStyles=new Map();
 const componentFieldStyles=new Map();
+const componentCheckboxPaint=new WeakMap();
 let componentMeasurements;
 
 function clearComponentStyles(doc) {
@@ -92,8 +93,22 @@ function componentCheckbox(element) {
     if(!['auto','checkbox'].includes(css.appearance) || !/Chrome\//.test(view.navigator.userAgent))return null;
     const box=frameBox(element);if(!box)return null;
     const width=box.bounds.right,height=box.bounds.bottom,size=Math.min(width,height),left=(width-size)/2,top=(height-size)/2;
-    // shortcut: native glyph contours and raster snapping need separate calibration; this map separates the face from surrounding gaps.
+    // shortcut: native raster snapping and border/corner geometry still need separate calibration.
     return {box,face:{left,top,right:left+size,bottom:top+size}};
+}
+
+function componentCheckboxPart(element,checkbox,point) {
+    const face=checkbox.face,size=face.right-face.left,x=(point.x-face.left)/size,y=(point.y-face.top)/size;
+    if(size>2 && element.matches(':indeterminate')){
+        const left=5/26,right=21/26,top=11/26,bottom=15/26,radius=Math.min(2/size,(right-left)/2,(bottom-top)/2);
+        const dx=Math.max(left+radius-x,0,x-right+radius),dy=Math.max(top+radius-y,0,y-bottom+radius);
+        if(x>=left && x<=right && y>=top && y<=bottom && dx*dx+dy*dy<=radius*radius)return 'checkbox-dash';
+    }else if(size>2 && element.matches(':checked')){
+        const doc=element.ownerDocument;let paint=componentCheckboxPaint.get(doc);
+        if(!paint){const context=doc.createElement('canvas').getContext('2d');if(!context)return null;context.lineWidth=.16;context.lineCap='butt';context.lineJoin='miter';paint={context,path:new doc.defaultView.Path2D('M.2 .5L.4 .7L.8 .2')};componentCheckboxPaint.set(doc,paint);}
+        if(paint.context.isPointInStroke(paint.path,x,y))return 'checkbox-check';
+    }
+    return 'checkbox-background';
 }
 
 function componentSwitch(element) {
@@ -1057,6 +1072,10 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(box)point=box.toLocal(parentPoint);
     const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
     let bounds=textPlane ? textPlane.rect(element):box ? box.bounds:element.getBoundingClientRect();if(!bounds)return null;
+    if(checkbox && inside(checkbox.face)){
+        const kind=componentCheckboxPart(element,checkbox,point);if(!kind)return null;
+        return {edges:{x:[{kind,side:'start'},{kind,side:'end'}],y:[{kind,side:'start'},{kind,side:'end'}]},x:(point.x-checkbox.face.left)/(checkbox.face.right-checkbox.face.left),y:(point.y-checkbox.face.top)/(checkbox.face.bottom-checkbox.face.top)};
+    }
     if(toggle && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom)){
         if(!componentSwitchHaloContains(range.halo,point))return null;
         return {edges:{x:[{kind:'switch-halo',side:'start'},{kind:'switch-halo',side:'end'}],y:[{kind:'switch-halo',side:'start'},{kind:'switch-halo',side:'end'}]},x:(point.x-range.halo.left)/(range.halo.right-range.halo.left),y:(point.y-range.halo.top)/(range.halo.bottom-range.halo.top)};
@@ -1186,7 +1205,7 @@ function resolveComponent(cursor,plugin) {
     if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track',...(toggle?['switch-halo']:[]),'frame','frame-box'].includes(edge.kind))))return null;
     const haloAnchor=toggle && Object.values(anchor.edges).flat().every(edge=>edge.kind==='switch-halo');
     const checkbox=componentCheckbox(element);
-    if(checkbox && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='checkbox-face'))return null;
+    if(checkbox && !Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('checkbox-')))return null;
     const box=range?.box || checkbox?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
@@ -1198,7 +1217,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind==='checkbox-face' ? checkbox?.face:edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('checkbox-') ? checkbox?.face:edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];

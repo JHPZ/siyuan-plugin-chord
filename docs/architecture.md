@@ -1,6 +1,6 @@
 # 架构：多人同步展示
 
-普通 Chromium 原生复选框复用 frameBox 的局部平面，将居中内接方形记为 checkbox-face，外围输入框记为 frame-box。采集和解析复用同一相邻边界选择，接收端方形变宽高、消失的外围留白及实际命中均即时复核；旧整框 self 锚点不再绘制。协议只增加边界枚举，不传 checked、indeterminate、value 或 CSS。该映射不区分原生勾选图形轮廓、描边圆角或像素取整，不能由方形区域回归推导这些内部细节精度，也不能推导其他浏览器或自定义外观。
+普通 Chromium 原生复选框复用 frameBox 的局部平面，将居中内接方形记为 checkbox-face，外围输入框记为 frame-box。采集和解析复用同一相邻边界选择，接收端方形变宽高、消失的外围留白及实际命中均即时复核；旧整框 self 锚点不再绘制。协议只增加边界枚举，不传 checked、indeterminate、value 或 CSS。方形内部另使用 checkbox-check、checkbox-dash、checkbox-background，坐标继续沿本地方形映射；解析时重新分类并与源边界比较，图形消失、勾选与半选互换、背景被新图形覆盖均隐藏。只观察 :checked/:indeterminate 可见伪状态，不读取对应 JS 属性；脱离 DOM 的 canvas 与 Path2D 按文档弱缓存勾选描边，半选使用原生圆角矩形轮廓，极小尺寸不生成未绘制的图形。外侧留白仍使用 checkbox-face 边界。当前依照已核验 Chromium 原生矢量形状；描边圆角、像素取整、抗锯齿边界、其他浏览器和自定义外观仍待校准，不能由矢量采样推导所有栅格边界达到 0.1px。
 
 和弦只同步并展示参与者状态。正文同步、输入、粘贴、拖拽、保存、撤销与重做由思源自身处理。
 
