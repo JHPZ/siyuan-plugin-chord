@@ -615,7 +615,7 @@ function componentTextField(element) {
         const option=element.selectedOptions[0];return !option?.children.length && !option?.closest('[data-private]');
     }
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
-    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {
@@ -2129,7 +2129,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.queueActivity();
             }
         });
-        this.domObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "data-node-id", "hidden", "open"], attributeOldValue: true });
+        this.domObserver.observe(document.body, { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "data-node-id", "data-private", "hidden", "open"], attributeOldValue: true });
     }
 
     initSettings() {
@@ -2278,6 +2278,8 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.queueActivity();
         };
         document.addEventListener('input',this.handleTyping,{capture:true,passive:true});
+        document.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});
+        document.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});
         this.bindFrames();
         this.startCursorTimer();
     }
@@ -2777,6 +2779,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         for(const layer of this.editingLayers.values())layer.remove();this.editingLayers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
         document.removeEventListener('input',this.handleTyping,true);
+        document.removeEventListener('input',this.handleCursorLayout,true);
+        document.removeEventListener('change',this.handleCursorLayout,true);
         document.removeEventListener('selectionchange',this.handleSelectionActivity);
         document.removeEventListener('focusin',this.handleSceneActivity);
         document.removeEventListener('pointerdown',this.handleSceneActivity);

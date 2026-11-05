@@ -146,3 +146,7 @@ search__header 中的 b3-text-field 输入框也属于公开搜索字段，涵�
 picker 锚点测量的条件规则按文档持有，测量结束仅移除临时节点，避免每帧插入与移除整张样式表。只有原生 anchor-name 为 none 时，标记才带 collab-picker-unanchored，规则才生效；主题显式锚点继续直接复用。clearComponentStyles 按文档或全部清理 slider/picker 测量样式，嵌入导航及移除时从绑定的旧文档删除，插件卸载清空全部持有引用；样式被移除后可重新接入。持有静态规则不跨帧缓存几何。
 
 同源嵌入文档的观察器过滤 collab-text-measure、collab-range-measure、collab-picker-anchor 自身与子树的临时变动，混合批次保留真实节点和文字变化，避免测量触发下一帧测量。公开字段值的原生 input/change 通过捕获监听重新调度布局核验；文档替换或移除时同步解除监听，保持原生输入和撤销。
+
+公开搜索字段还包括 config__panel 内的 config__tab-head 搜索、bazaar 栏的 config-bazaar__filter，以及 keymap 栏的 keymapInput/searchByKey；按原生结构限定范围，仍要求 text/search 类型且未标记私有或文本遮掩。复用字段字素、占位文字和内边距测量，不读取其他设置输入值。
+
+主文档与嵌入文档都捕获 input/change 安排光标核验；主布局观察器同时观察 data-private，避免仅改变值或隐私标记时等待其他 DOM 变动。监听在卸载时对称清理。
