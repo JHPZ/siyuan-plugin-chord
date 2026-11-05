@@ -533,6 +533,12 @@ const COMPONENT_NUMBER_SETTINGS=new Map([
     ["access",["notebookCrypto.autoLockMinutes","publish.port"]],
     ["app",["networkProxyPort"]]
 ]);
+const COMPONENT_TEXT_SETTINGS=new Map([
+    ['editor',['editor.plantUMLServePath']],
+    ['file',['fileTree.docCreateSavePath','fileTree.docCreateTemplatePath','fileTree.refCreateSavePath']],
+    ['flashcard',['flashcard.weights']],
+    ['export',['export.blockRefTextLeft','export.blockRefTextRight','export.tagOpenMarker','export.tagCloseMarker','export.pdfFooter','export.pdfWatermarkStr','export.imageWatermarkStr','export.pdfWatermarkDesc','export.imageWatermarkDesc']]
+]);
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
 const componentPickerStyles=new Map();
@@ -629,8 +635,8 @@ function componentTextField(element) {
     }
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     const settingField=element.matches('.config__tab-container[data-name="editor"] textarea.b3-text-field[id^="editor."]') || element.matches('input.b3-text-field[type="number"]') && COMPONENT_NUMBER_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
-    const exportField=element.closest('.config__tab-container')?.dataset.name==='export' && element.matches('input.b3-text-field,textarea.b3-text-field') && ['text','textarea'].includes(element.type) && ['export.blockRefTextLeft','export.blockRefTextRight','export.tagOpenMarker','export.tagCloseMarker','export.pdfFooter','export.pdfWatermarkStr','export.imageWatermarkStr','export.pdfWatermarkDesc','export.imageWatermarkDesc'].includes(element.id);
-    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || exportField) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    const textSetting=element.matches('input.b3-text-field,textarea.b3-text-field') && ['text','textarea'].includes(element.type) && COMPONENT_TEXT_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
+    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {

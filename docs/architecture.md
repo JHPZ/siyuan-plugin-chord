@@ -168,3 +168,5 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 导出设置仅准入 config__tab-container[data-name="export"] 内的 b3-text-field，element.type 为 text 或 textarea，且 ID 在 blockRefTextLeft、blockRefTextRight、tagOpenMarker、tagCloseMarker、pdfFooter、pdfWatermarkStr、imageWatermarkStr、pdfWatermarkDesc、imageWatermarkDesc 这九个 export.* 字段中。使用实际 type 属性值兼容 HTML 中省略 type 的原生 input，密码与私有/遮掩检查仍先执行；未知 ID、栏目、class 或类型不读取值。字段内容只生成现有有界哈希，水印描述作为文本测量，不解析 HTML。
 
 字段非字形留白先寻找最近文字行，再取该行水平方向最近的端点，重合端点按字符位置确定，避免依赖原生 caret 四舍五入顺序。测量副本末尾哨兵只在原文本为空或以换行结尾时参与候选，防止其取整后的零宽边界替代普通末尾字形；真实末尾空行仍可定位。字形内部命中保留原快速路径，候选端点线性扫描，不新增协议或缓存。
+
+公开设置文本通过 COMPONENT_TEXT_SETTINGS 按栏目和具体 ID 注册：editor.plantUMLServePath、file 栏目的 fileTree.docCreateSavePath/docCreateTemplatePath/refCreateSavePath、flashcard.weights，以及上述九项 export 字段，共 14 项。沿用公开字段只读字素测量及本端滚动裁剪，不增加协议字段；原生输入未写 type 时仍按 element.type 判断。条件出现的 shorthandSavePath、字体选择和未知动态字段尚未验收，不由此表自动放行。
