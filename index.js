@@ -521,6 +521,18 @@ function resolvePDF(element,anchor) {
 
 // Component identities are bounded hashes; input values and document text never enter the wire format.
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
+const COMPONENT_NUMBER_SETTINGS=new Map([
+    ["editor",["editor.cursorSurroundingLines","editor.dynamicLoadBlocks","editor.blockRefDynamicAnchorTextMaxLen","editor.backlinkExpandCount","editor.backmentionExpandCount"]],
+    ["file",["fileTree.maxOpenTabCount","editor.generateHistoryInterval","editor.historyRetentionDays","fileTree.maxListCount","fileTree.largeFileWarningSize","fileTree.recentDocsMaxListCount"]],
+    ["appearance",["editor.floatWindowDelay"]],
+    ["flashcard",["flashcard.newCardLimit","flashcard.reviewCardLimit","flashcard.requestRetention","flashcard.maximumInterval"]],
+    ["ai",["ai.editing.maxCompletionTokens","ai.editing.maxHistoryMessages","ai.editing.temperature","ai.agent.maxCompletionTokens","ai.agent.maxToolCallRounds","ai.agent.temperature","ai.agent.sessionTimeout","ai.agent.streamIdleTimeout","ai.agent.confirmTimeout","ai.agent.maxRetries","ai.web.timeout","ai.imageGeneration.requestTimeout","ai.embedding.dimensions","ai.embedding.timeout","ai.embedding.concurrency","ai.embedding.batchSize","ai.rerank.candidateCount","ai.rerank.timeout"]],
+    ["ocr",["ocrThreshold_detection","ocrThreshold_box","ocrThreshold_recognition"]],
+    ["search",["search.backlinkMentionKeywordsLimit","search.limit"]],
+    ["sync",["sync.interval","repo.indexRetentionDays","repo.retentionIndexesDaily"]],
+    ["access",["notebookCrypto.autoLockMinutes","publish.port"]],
+    ["app",["networkProxyPort"]]
+]);
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
 const componentPickerStyles=new Map();
@@ -616,7 +628,7 @@ function componentTextField(element) {
         const option=element.selectedOptions[0];return !option?.children.length && !option?.closest('[data-private]');
     }
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
-    const settingField=element.matches('.config__tab-container[data-name="editor"] :is(input[type="number"],textarea).b3-text-field[id^="editor."]');
+    const settingField=element.matches('.config__tab-container[data-name="editor"] textarea.b3-text-field[id^="editor."]') || element.matches('input.b3-text-field[type="number"]') && COMPONENT_NUMBER_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
     return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 

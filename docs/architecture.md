@@ -152,7 +152,7 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 主文档与嵌入文档都捕获 input/change 安排光标核验；主布局观察器同时观察 data-private，避免仅改变值或隐私标记时等待其他 DOM 变动。监听在卸载时对称清理。
 
 
-编辑器设置的 config__tab-container[data-name="editor"] 内，b3-text-field[type="number"] 且 id 以 editor. 开头的原生数值控件接入现有公开字段字形与留白测量。复用数字字段的 appearance:none 与 validity.badInput 校验，仅传有界文本哈希、字符位置和边界比例；不增加协议字段，不读取其他设置分区的未知数字值。旧组件整框边界和 v2 设置比例锚点拒绝绘制，数值改变后字形与内容间隙隐藏，仍存在的内边距继续按本端边界核验。
+数字设置使用 COMPONENT_NUMBER_SETTINGS 按栏目与具体 ID 注册 45 个原生 input.b3-text-field[type="number"]：editor 5、file 6、appearance 1、flashcard 4、ai 18、ocr 3、search 2、sync 3、access 2、app 1；未知 ID 或正确 ID 出现在其他栏目时不读取值。注册控件接入现有公开字段字形、占位文字与留白测量。复用数字字段的 appearance:none 与 validity.badInput 校验，仅传有界文本哈希、字符位置和边界比例；不增加协议字段，不读取其他设置分区的未知数字值。旧组件整框边界和 v2 设置比例锚点拒绝绘制，数值改变后字形与内容间隙隐藏，仍存在的内边距继续按本端边界核验。
 
 公开 textarea 复用字段字素测量，并用独立 field 内容边界与 field-viewport 可见窗口边界限定内边距，避免把原生滚动条槽混入留白比例。窗口由测量副本内 absolute/inset:0 标记读取，排除原生滚动条与保留槽；副本复制实际 WebKit 滚动条尺寸、标准 scrollbar 属性并按文档复用静态规则。文字优先于内边距：textarea 滚动后可见字形可进入原内边距区域，接收端仍核对实际命中与相同字形边界；单行 input 保持固定内容区裁剪。field-viewport 只传边界种类与 start/end，经内核白名单过滤，不携带字段值。
 
@@ -160,6 +160,6 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 
 接收端已有字形矩形且两轴四条边界都指向同一字素时，复用该矩形完成本地几何核验，避免为同一个字形再次创建测量副本。输入框仍先裁剪到内容区，textarea 裁剪到排除边框与槽的可见窗口；随后继续实际命中核验，不能用复用矩形绕过遮挡或隐私检查。
 
-编辑器设置中的公开字段扩展到 config__tab-container[data-name="editor"] 内 b3-text-field 且 id 以 editor. 开头的 input[type=number] 与 textarea；仍拒绝私有和文本遮掩，不读取其他设置栏目中未知字段的值。沿用字素、内容区与 field-viewport 几何、值哈希及原生命中核验，旧设置比例锚点拒绝绘制。
+编辑器设置中的公开 textarea 仍限定 config__tab-container[data-name="editor"] 内 b3-text-field 且 id 以 editor. 开头；数字输入改用上述逐栏目、逐 ID 注册。两种字段都拒绝私有和文本遮掩，不读取未知字段的值。沿用字素、内容区与 field-viewport 几何、值哈希及原生命中核验，旧设置比例锚点拒绝绘制。
 
 当已准入字段的值与占位文字均为空时，测量副本中的零宽哨兵不参与几何边界，内容留白直接使用真实 field 边界，不携带虚构字形的文本哈希；出现可见文字后重新核对几何。此路径同时适用于公开输入框、多行框和无选项下拉。数字控件必须先排除 validity.badInput，避免浏览器界面仍显示未完成字符、DOM值为空时误入空白路径。
