@@ -90,7 +90,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='field-viewport' || edge.kind==='range-thumb' || edge.kind==='range-track' || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='field-viewport' || edge.kind==='range-thumb' || edge.kind==='range-track' || edge.kind==='switch-thumb' || edge.kind==='switch-track' || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }

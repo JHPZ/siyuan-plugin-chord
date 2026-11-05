@@ -86,6 +86,21 @@ function componentRange(element) {
     return {box,thumb:painted,content:{left:Math.max(box.bounds.left,Math.min(content.left,painted.left)),right:Math.min(box.bounds.right,Math.max(content.right,painted.right)),top:Math.max(box.bounds.top,Math.min(content.top,painted.top)),bottom:Math.min(box.bounds.bottom,Math.max(content.bottom,painted.bottom))},track:{left:content.left,right:content.right,top,bottom:top+trackHeight}};
 }
 
+function componentSwitch(element) {
+    if(!element.matches('input.b3-switch[type="checkbox"]') || element.closest('[data-private]'))return null;
+    const view=element.ownerDocument.defaultView,css=view.getComputedStyle(element),thumb=view.getComputedStyle(element,'::after'),box=frameBox(element);
+    if(!box || css.appearance!=='none' || !['relative','absolute','fixed'].includes(css.position) || thumb.content!=='""' || thumb.position!=='absolute' || thumb.display==='none' || thumb.visibility!=='visible' || Number(thumb.opacity)===0 || thumb.rotate!=='none' || thumb.scale!=='none' || thumb.translate!=='none')return null;
+    const size=axis=>parseFloat(thumb[axis])+(thumb.boxSizing==='border-box' ? 0:(axis==='width'?['Left','Right']:['Top','Bottom']).reduce((n,side)=>n+parseFloat(thumb['padding'+side])+parseFloat(thumb['border'+side+'Width']),0)),width=size('width'),height=size('height');
+    const inset=side=>parseFloat(css['border'+side+'Width']),position=(value,total)=>/^[-\d.]+(px|%)$/.test(value) ? parseFloat(value)*(value.endsWith('%')?total/100:1):NaN;
+    const left=inset('Left')+position(thumb.left,box.bounds.right-inset('Left')-inset('Right'))+parseFloat(thumb.marginLeft),top=inset('Top')+position(thumb.top,box.bounds.bottom-inset('Top')-inset('Bottom'))+parseFloat(thumb.marginTop);
+    const matrix=new view.DOMMatrix(thumb.transform==='none'?undefined:thumb.transform),origin=thumb.transformOrigin.split(' ').map((v,i)=>position(v,i?height:width));
+    // shortcut: native switch knobs only translate and scale; reject custom rotated knobs until their local plane is calibrated.
+    if(![width,height,left,top,...origin.slice(0,2)].every(Number.isFinite) || width<=0 || height<=0 || !matrix.is2D || matrix.b!==0 || matrix.c!==0 || matrix.a<=0 || matrix.d<=0)return null;
+    const first=matrix.transformPoint({x:-origin[0],y:-origin[1]}),last=matrix.transformPoint({x:width-origin[0],y:height-origin[1]}),rect={left:left+origin[0]+first.x,top:top+origin[1]+first.y,right:left+origin[0]+last.x,bottom:top+origin[1]+last.y};
+    if(rect.left<0 || rect.top<0 || rect.right>box.bounds.right || rect.bottom>box.bounds.bottom)return null;
+    return {box,content:box.content,track:box.content,thumb:rect};
+}
+
 function rememberRenderTarget({detail}) {
     const {protyle,toolbar,blockElement,renderElement}=detail || {},popup=toolbar?.subElement;
     if(!popup?.matches('.protyle-util') || !protyle?.element?.contains(popup) || !blockElement?.contains(renderElement))return;
@@ -999,8 +1014,8 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(!onPicker)point=parentPoint;
     // Native scrollbar thumbs need their own geometry; a reserved gutter is never ordinary padding.
     if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
-    const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
-    if(slider && !range)return null;
+    const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
+    if((slider || toggle) && !range)return null;
     const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (onPicker&&picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     if(box)point=box.toLocal(parentPoint);
     const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
@@ -1026,10 +1041,10 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
         if(onPicker && (other<picker.border[otherStart] || other>=picker.border[otherEnd]) && point[axis]>=picker.border[start] && point[axis]<picker.border[end]){edges[axis]=entries.map(item=>item.edge);relative[axis]=(point[axis]-bounds[start])/(bounds[end]-bounds[start]);continue;}
         if(onPicker)for(const part of point[axis]<picker.border[start] || point[axis]>=picker.border[end] ? ['content','viewport','border']:['border','viewport','content'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:picker[part][key],edge:{kind:'picker-'+part,side}});
         if(image && (!select || !glyph && other>=image[otherStart] && other<=image[otherEnd]))for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
-        if(frame && !onThumb && !(range && axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right))for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:'frame',side}});
+        if(frame && !onThumb && !(range && axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right))for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:toggle?'switch-track':'frame',side}});
         if(range)for(const part of onThumb || axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right ? ['thumb']:['thumb','track']){
             const rect=range[part];if(axis==='y' && (point.x<rect.left || point.x>rect.right))continue;
-            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'range-'+part,side}});
+            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:(toggle?'switch-':'range-')+part,side}});
         }
         if(field?.viewport)for(const [side,key] of [['start',start],['end',end]])entries.push({value:field.viewport[key],edge:{kind:'field-viewport',side}});
         // A collapsed content box still has visible padding on each outward side.
@@ -1125,8 +1140,8 @@ function resolveComponent(cursor,plugin) {
     const select=(element.matches('select') || componentSelectField(element)) && !picker;
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || select && edge.kind==='image'))return null;
-    const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
-    if(slider && (!range || !Object.values(anchor.edges).flat().some(edge=>['range-thumb','range-track','frame','frame-box'].includes(edge.kind))))return null;
+    const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
+    if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track','frame','frame-box'].includes(edge.kind))))return null;
     const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
@@ -1138,7 +1153,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('switch-') ? toggle && range?.[edge.kind.slice(7)]:edge.kind.startsWith('range-') ? slider && range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
