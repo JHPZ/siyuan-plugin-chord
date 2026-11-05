@@ -548,9 +548,12 @@ const componentColorStyles=new Map();
 const componentPickerStyles=new Map();
 const componentFieldStyles=new Map();
 const componentCheckboxPaint=new WeakMap();
+let componentColorEditors=new WeakMap();
 let componentMeasurements;
 
 function clearComponentStyles(doc) {
+    if(doc)for(const panel of doc.querySelectorAll('[data-panel="customEditor"]'))componentColorEditors.delete(panel);
+    else componentColorEditors=new WeakMap();
     for(const styles of [componentRangeStyles,componentColorStyles,componentPickerStyles,componentFieldStyles]){
         if(doc){styles.get(doc)?.remove();styles.delete(doc);}
         else{for(const style of styles.values())style.remove();styles.clear();}
@@ -614,9 +617,41 @@ function componentRange(element) {
     return {box,thumb:painted,content:{left:Math.max(box.bounds.left,Math.min(content.left,painted.left)),right:Math.min(box.bounds.right,Math.max(content.right,painted.right)),top:Math.max(box.bounds.top,Math.min(content.top,painted.top)),bottom:Math.min(box.bounds.bottom,Math.max(content.bottom,painted.bottom))},track:{left:content.left,right:content.right,top,bottom:top+trackHeight}};
 }
 
+function rememberColorEditor(event) {
+    const action=event.target?.closest?.('[data-action="edit"],[data-action="new"]');
+    if(!action || action.closest('[data-private]') || action.matches(':disabled,[aria-disabled="true"]') || !visibleElement(action))return;
+    const listPanel=action.closest('[data-panel="list"]'),root=listPanel?.parentElement,panel=root?.querySelector(':scope > [data-panel="customEditor"]');
+    if(!panel || visibleElement(panel))return;
+    componentColorEditors.delete(panel);
+    const lists=listPanel.querySelectorAll('[data-type="inlineStyleList"],[data-type="avCustomColorList"]');if(lists.length!==1)return;
+    const list=lists[0],kind=list.dataset.type,row=action.closest('.b3-list-item[data-kind="custom"][data-key]'),fresh=action.dataset.action==='new';
+    if(fresh ? !action.closest('[data-type="'+(kind==='inlineStyleList'?'inlineStyleButtons':'avColorButtons')+'"]') : !row || row.parentElement!==list)return;
+    const key=fresh ? 'new':row.dataset.key;
+    if(!fresh && !(kind==='inlineStyleList' ? DOCUMENT_ID.test(key):/^[1-9]\d*$/.test(key) && Number(key)>=15 && Number(key)<=78))return;
+    const record={list,key,kind,ready:false};componentColorEditors.set(panel,record);
+    // Native handlers stop bubbling; a new task runs after real click dispatch has finished.
+    panel.ownerDocument.defaultView.setTimeout(()=>{
+        if(componentColorEditors.get(panel)!==record || !visibleElement(panel) || !panel.closest('.b3-dialog')?.querySelector('[data-action="confirmEdit"]'))return;
+        record.label=textLabel(panel.querySelector(kind==='inlineStyleList'?'[data-field="typeLabel"]':'[data-field="colorIndex"]'));
+        record.ready=!!record.label;
+    });
+}
+
+function componentColorContext(element) {
+    const panel=element.closest('[data-panel="customEditor"]');if(!panel)return undefined;
+    const record=componentColorEditors.get(panel);
+    // shortcut: editors already open at plugin startup stay hidden until a native edit/new click supplies identity.
+    if(!record?.ready || !visibleElement(panel) || panel.closest('[data-private]'))return null;
+    const {list,key,kind,label}=record;
+    if(!list.isConnected || list.dataset.type!==kind || list.closest('[data-private]') || list.closest('[data-panel="list"]')?.parentElement!==panel.parentElement ||
+        textLabel(panel.querySelector(kind==='inlineStyleList'?'[data-field="typeLabel"]':'[data-field="colorIndex"]'))!==label)return null;
+    if(key!=='new' && [...list.children].filter(row=>row.matches('.b3-list-item[data-kind="custom"]') && row.dataset.key===key).length!==1)return null;
+    return [kind,key,label];
+}
+
 function componentColor(element) {
     if(!element.matches('input[type="color"]') || element.closest('[data-private]'))return null;
-    if(element.closest('[data-panel="customEditor"]'))return null;
+    if(componentColorContext(element)===null)return null;
     const cache=componentMeasurements && (componentMeasurements.colors ||= new WeakMap());if(cache?.has(element))return cache.get(element);
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),box=frameBox(element);
     if(!box || !['none','auto'].includes(css.appearance) || !/Chrome\//.test(view.navigator.userAgent))return null;
@@ -751,7 +786,8 @@ function componentTextField(element) {
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     const settingField=element.matches('.config__tab-container[data-name="editor"] textarea.b3-text-field[id^="editor."]') || element.matches('input.b3-text-field[type="number"]') && COMPONENT_NUMBER_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
     const textSetting=element.matches('input.b3-text-field,textarea.b3-text-field') && ['text','textarea'].includes(element.type) && COMPONENT_TEXT_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
-    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting || componentSelectField(element) || element.matches('input.b3-text-field[data-type="font-search"]') && element.type==='text' && !!element.closest(COMPONENT_FONT_MENU)) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    const colorName=element.matches('label > input.b3-text-field[data-field="name"]') && element.type==='text' && componentColorContext(element)?.[0]==='inlineStyleList' && element.closest('[data-panel="customEditor"]').querySelectorAll('[data-field="name"]').length===1;
+    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting || colorName || componentSelectField(element) || element.matches('input.b3-text-field[data-type="font-search"]') && element.type==='text' && !!element.closest(COMPONENT_FONT_MENU)) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {
@@ -918,7 +954,7 @@ function componentKey(element) {
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
     if(element.matches('input[type="color"][data-field]'))values.push(['color-field',componentHash(element.dataset.field)]);
     if(element.matches('[data-type="themeColorEditor"] > div')){const fields=[...element.querySelectorAll('input[type="color"][data-field]')].map(e=>e.dataset.field).sort();if(fields.length)values.push(['color-group',componentHash(JSON.stringify(fields))]);}
-    if(element.matches('[data-panel="builtinEditor"],[data-panel="customEditor"]')&&element.querySelector('[data-type="themeColorEditor"]'))values.push(['color-editor',element.dataset.panel,componentHash(textLabel(element.querySelector('[data-role="title"]')))]);
+    if(element.matches('[data-panel="builtinEditor"],[data-panel="customEditor"]')&&element.querySelector('[data-type="themeColorEditor"]'))values.push(['color-editor',element.dataset.panel,componentHash(element.dataset.panel==='customEditor' ? JSON.stringify(componentColorContext(element)):textLabel(element.querySelector('[data-role="title"]')))]);
     if(font!==undefined)values.push(['font',componentHash(JSON.stringify(font))]);
     if(element.matches('.b3-menu')){const target=componentFontMenuTarget(element);if(target!==undefined)values.push(['font-target',componentHash(JSON.stringify(target))]);}
     if(element.matches('#configBazaarReadme'))values.push(['bazaar-package',componentHash(JSON.stringify(componentBazaarPackage(element)))]);
@@ -1167,6 +1203,7 @@ function componentAVScope(av,plugin) {
 }
 
 function componentScope(element,plugin) {
+    if(componentColorContext(element)===null)return null;
     const make=(root,kind,key)=>({root,scope:{kind,key:componentHash(key),...(kind==='document' ? {pane:componentHash(componentPane(root))}:{})}});
     const popup=element.closest('.protyle-util');
     if(popup?.querySelector('textarea') && !componentRenderTarget(popup))return null;
@@ -1740,7 +1777,7 @@ function resolveComponent(cursor,plugin) {
         frames.push(element);let doc;try{doc=element.contentDocument;}catch{}
         element=doc?.body && componentFollow(doc.body,route);if(!element)return null;
     }
-    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') || componentBazaarPackage(element)===null ||
+    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') || componentBazaarPackage(element)===null || componentColorContext(element)===null ||
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
     const scrollbarAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('scrollbar-')),scrollbar=scrollbarAnchor&&componentScrollbar(element);
     if(scrollbarAnchor&&!scrollbar)return null;
@@ -2393,6 +2430,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.addEventListener('focusin',this.handleSceneActivity,{passive:true});
         document.addEventListener('pointerdown',this.handleSceneActivity,{passive:true});
         document.addEventListener('click',this.handleSceneActivity,{passive:true});
+        document.addEventListener('click',rememberColorEditor,{capture:true,passive:true});
         document.addEventListener('keydown',this.handleKey,{capture:true,passive:true});
         this.handleTyping=(event)=>{
             if(!event.target?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') || event.target.closest('[data-private]'))return;
@@ -2432,13 +2470,13 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!reachedRoot)return;
                 this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
-            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('click',rememberColorEditor,true);doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
             const load=()=>{
                 let next;try{next=frame.contentDocument;}catch{}
                 if(next===doc)return;
                 stopDocument();
                 doc=next;if(!doc)return;
-                doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
+                doc.addEventListener('click',rememberColorEditor,{capture:true,passive:true});doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
                 observer=new MutationObserver(records=>{
                     if(this.stopped)return;
                     // Hidden measurement nodes must not schedule their own next render.
@@ -2909,6 +2947,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.removeEventListener('focusin',this.handleSceneActivity);
         document.removeEventListener('pointerdown',this.handleSceneActivity);
         document.removeEventListener('click',this.handleSceneActivity);
+        document.removeEventListener('click',rememberColorEditor,true);
         document.removeEventListener('keydown',this.handleKey,true);
         document.removeEventListener("pointermove", this.handlePointer);
         document.removeEventListener("pointerout", this.handlePointerOut);

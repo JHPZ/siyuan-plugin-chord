@@ -377,6 +377,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.addEventListener('focusin',this.handleSceneActivity,{passive:true});
         document.addEventListener('pointerdown',this.handleSceneActivity,{passive:true});
         document.addEventListener('click',this.handleSceneActivity,{passive:true});
+        document.addEventListener('click',rememberColorEditor,{capture:true,passive:true});
         document.addEventListener('keydown',this.handleKey,{capture:true,passive:true});
         this.handleTyping=(event)=>{
             if(!event.target?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') || event.target.closest('[data-private]'))return;
@@ -416,13 +417,13 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!reachedRoot)return;
                 this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
-            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('click',rememberColorEditor,true);doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
             const load=()=>{
                 let next;try{next=frame.contentDocument;}catch{}
                 if(next===doc)return;
                 stopDocument();
                 doc=next;if(!doc)return;
-                doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
+                doc.addEventListener('click',rememberColorEditor,{capture:true,passive:true});doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
                 observer=new MutationObserver(records=>{
                     if(this.stopped)return;
                     // Hidden measurement nodes must not schedule their own next render.
@@ -893,6 +894,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         document.removeEventListener('focusin',this.handleSceneActivity);
         document.removeEventListener('pointerdown',this.handleSceneActivity);
         document.removeEventListener('click',this.handleSceneActivity);
+        document.removeEventListener('click',rememberColorEditor,true);
         document.removeEventListener('keydown',this.handleKey,true);
         document.removeEventListener("pointermove", this.handlePointer);
         document.removeEventListener("pointerout", this.handlePointerOut);
