@@ -983,14 +983,27 @@ function componentRoots(scope,plugin) {
     return roots.length===1 ? roots[0]:null;
 }
 
-function componentCharacter(element,offset) {
+function componentCharacter(element,offset,plane) {
     const character=characterAt(element,offset);
     if(!character)return null;
     const range=element.ownerDocument.createRange();range.setStart(character.node,character.offset);range.setEnd(character.node,character.offset+1);
-    const rect=range.getBoundingClientRect();return rect.width && rect.height ? rect:null;
+    const rect=range.getBoundingClientRect();
+    if(!plane)return rect.width && rect.height ? rect:null;
+    if(range.getClientRects().length!==1)return null;
+    const vertical=element.ownerDocument.defaultView.getComputedStyle(character.node.parentElement).writingMode!=='horizontal-tb';
+    if(typeof Intl.Segmenter!=='function')return null;
+    plane.segments ||= new WeakMap();let segments=plane.segments.get(character.node);if(!segments){segments=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(character.node.textContent);plane.segments.set(character.node,segments);}
+    // A caret inside a surrogate pair or joined glyph can report the whole glyph box.
+    range.setStart(character.node,segments.containing(character.offset).index);range.collapse(true);const caret=range.getBoundingClientRect(),{a,b,c,d}=plane;
+    const center=plane.toLocal({x:(rect.left+rect.right)/2,y:(rect.top+rect.bottom)/2});
+    let width,height;
+    if(vertical){width=Math.abs(a)>=Math.abs(b) ? caret.width/Math.abs(a):caret.height/Math.abs(b);height=Math.abs(c)>=Math.abs(d) ? (rect.width-Math.abs(a)*width)/Math.abs(c):(rect.height-Math.abs(b)*width)/Math.abs(d);}
+    else{height=Math.abs(c)>=Math.abs(d) ? caret.width/Math.abs(c):caret.height/Math.abs(d);width=Math.abs(a)>=Math.abs(b) ? (rect.width-Math.abs(c)*height)/Math.abs(a):(rect.height-Math.abs(d)*height)/Math.abs(b);}
+    if(![width,height,center.x,center.y].every(Number.isFinite) || width<=0 || height<=0)return null;
+    return {left:center.x-width/2,right:center.x+width/2,top:center.y-height/2,bottom:center.y+height/2,width,height};
 }
 
-function componentNearText(element,point) {
+function componentNearText(element,point,plane) {
     if(componentTextField(element))return componentFieldMeasure(element,(mirror,character,position,segments)=>{
         const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y),node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
         if(node!==mirror.firstChild)return null;
@@ -1004,6 +1017,7 @@ function componentNearText(element,point) {
     if(element.matches('input,select,textarea,[data-type="NodeSuperBlock"]') || element.closest('[data-private]'))return null;
     if(componentTreeRegion(element)?.root===element || element.matches('.backlinkList__header,.backlinkMList__header') && element.closest('.sy__backlink,.sy__backlink--bottom'))return null;
     const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);
+    if(plane)point=plane.toLocal(point);
     const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
     if(node?.nodeType!==3 || !element.contains(node)){
         // Native upload inputs intercept caret hit testing above their visible label text.
@@ -1011,7 +1025,7 @@ function componentNearText(element,point) {
         if(!upload || Number(doc.defaultView.getComputedStyle(upload).opacity)>.01)return null;
         let nearest;
         for(let index=0;index<element.textContent.length;index++){
-            const rect=componentCharacter(element,index);if(!rect)continue;
+            const rect=componentCharacter(element,index,plane);if(!rect)continue;
             const distance=Math.hypot(Math.max(rect.left-point.x,point.x-rect.right,0),Math.max(rect.top-point.y,point.y-rect.bottom,0));
             if(!nearest || distance<nearest.distance)nearest={offset:index,rect,distance};
             if(distance===0)break;
@@ -1023,14 +1037,14 @@ function componentNearText(element,point) {
     if(node.parentElement.closest('.b3-menu__item,.b3-list-item')!==element.closest('.b3-menu__item,.b3-list-item'))return null;
     if(element.closest('[data-type="NodeAttributeView"]') && componentAVRegion(node.parentElement)?.root!==componentAVRegion(element)?.root)return null;
     const prefix=doc.createRange();prefix.selectNodeContents(element);prefix.setEnd(node,offset);
-    const candidates=[prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index)})).filter(item=>item.rect);
+    const candidates=[prefix.toString().length-1,prefix.toString().length].filter(index=>index>=0).map(index=>({offset:index,rect:componentCharacter(element,index,plane)})).filter(item=>item.rect);
     const inside=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
     if(inside)return [inside];
     // Bidi run boundaries can return a caret at the opposite visual end.
     const start=prefix.toString().length-offset;
     for(let index=0;index<node.length;index++){
         const position=start+index;
-        const rect=componentCharacter(element,position);if(rect)candidates.push({offset:position,rect});
+        const rect=componentCharacter(element,position,plane);if(rect)candidates.push({offset:position,rect});
     }
     const hit=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
     if(hit)return [hit];
@@ -1038,12 +1052,12 @@ function componentNearText(element,point) {
     return candidates.filter(item=>distance(item.rect)===nearest);
 }
 
-function componentImageRect(image) {
+function componentImageRect(image,plane) {
     if(image.matches('select'))return componentSelectImage(image);
     if(image.matches('.av__gallery-cover'))image=image.querySelector(':scope > img.av__gallery-img');
     if(!image || !visibleElement(image))return null;
     if(!image.matches('img') || !image.naturalWidth || !image.naturalHeight)return null;
-    const style=image.ownerDocument.defaultView.getComputedStyle(image),rect=image.getBoundingClientRect();
+    const style=image.ownerDocument.defaultView.getComputedStyle(image),rect=plane ? plane.rect(image):image.getBoundingClientRect();if(!rect)return null;
     const left=parseFloat(style.paddingLeft),right=parseFloat(style.paddingRight),top=parseFloat(style.paddingTop),bottom=parseFloat(style.paddingBottom);
     const width=image.clientWidth-left-right,height=image.clientHeight-top-bottom;
     let factor=1,w=image.naturalWidth,h=image.naturalHeight;
@@ -1059,11 +1073,48 @@ function componentImageRect(image) {
         right:rect.left+(image.clientLeft+left+x+w)*sx,bottom:rect.top+(image.clientTop+top+y+h)*sy,width:w*sx,height:h*sy};
 }
 
+function componentPickerTransformed(css) {
+    const matrix=new DOMMatrix(css.transform==='none' ? undefined:css.transform);
+    return !matrix.is2D || matrix.a<=0 || matrix.d<=0 || Math.abs(matrix.b)>1e-10 || Math.abs(matrix.c)>1e-10 || css.rotate!=='none' || css.scale!=='none' && css.scale.split(' ').some(value=>!(parseFloat(value)>0));
+}
+
+function componentPickerPlane(element,css) {
+    const doc=element.ownerDocument,view=doc.defaultView,children=componentChildren(element).filter(child=>(child!==element.firstElementChild || !child.matches('button'))&&child.getBoundingClientRect().width&&child.getBoundingClientRect().height),before=children.map(child=>child.getBoundingClientRect()),style=doc.createElement('style'),markers=[];
+    const marker=(position,rules,parent=element)=>{const m=doc.createElement('div');m.className='collab-text-measure';m.inert=true;m.setAttribute('aria-hidden','true');m.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;inset:auto!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+rules;parent.append(m);return m;};
+    const anchor=css.anchorName==='none' ? '--collab-picker-measure':css.anchorName.split(',')[0].trim(),n=name=>parseFloat(css[name]);
+    style.className='collab-text-measure';if(css.anchorName==='none')style.textContent='select:has(> .collab-picker-measure)::picker(select){anchor-name:--collab-picker-measure!important}';doc.head.append(style);
+    try{
+        const top=marker('fixed','left:anchor('+anchor+' left)!important;top:anchor('+anchor+' top)!important;width:anchor-size('+anchor+' width,0px)!important;height:anchor-size('+anchor+' height,0px)!important;');top.classList.add('collab-picker-measure');top.setAttribute('popover','manual');markers.push(top);top.showPopover();
+        const port=marker('absolute','inset:0!important;');markers.push(port);
+        for(const [x,y]of [[0,0],[100,0],[0,100],[100,100]])markers.push(marker('absolute','left:'+x+'%!important;top:'+y+'%!important;width:0!important;height:0!important;'));
+        const points=markers.slice(2).map(m=>m.getBoundingClientRect()),portCSS=view.getComputedStyle(port),pw=parseFloat(portCSS.width),ph=parseFloat(portCSS.height),width=n('width')+(css.boxSizing==='border-box' ? 0:n('borderLeftWidth')+n('borderRightWidth')+n('paddingLeft')+n('paddingRight')),height=n('height')+(css.boxSizing==='border-box' ? 0:n('borderTopWidth')+n('borderBottomWidth')+n('paddingTop')+n('paddingBottom'));
+        const a=(points[1].x-points[0].x)/pw,b=(points[1].y-points[0].y)/pw,c=(points[2].x-points[0].x)/ph,d=(points[2].y-points[0].y)/ph,det=a*d-b*c,rect=top.getBoundingClientRect();
+        if(![a,b,c,d,det,width,height,pw,ph].every(Number.isFinite) || Math.abs(det)<1e-10 || Math.min(width,height,pw,ph)<=0 || Math.hypot(points[3].x-points[1].x-points[2].x+points[0].x,points[3].y-points[1].y-points[2].y+points[0].y)>.01 || Math.abs(rect.width-Math.abs(a)*width-Math.abs(c)*height)>.1 || Math.abs(rect.height-Math.abs(b)*width-Math.abs(d)*height)>.1)return null;
+        const x=rect.left-Math.min(0,a*width,c*height,a*width+c*height),y=rect.top-Math.min(0,b*width,d*height,b*width+d*height),toLocal=p=>({x:(d*(p.x-x)-c*(p.y-y))/det,y:(a*(p.y-y)-b*(p.x-x))/det}),toParent=p=>({x:x+a*p.x+c*p.y,y:y+b*p.x+d*p.y}),origin=toLocal(points[0]),rects=new Map();
+        const localRect=target=>{
+            if(rects.has(target))return rects.get(target);
+            // shortcut: descendants with their own transforms need a separate plane; do not reuse the picker's axes.
+            let zoom=1;for(let e=target;e&&e!==element;e=e.parentElement){const s=view.getComputedStyle(e);if(s.transform!=='none'||s.rotate!=='none'||s.scale!=='none'||s.translate!=='none')return null;zoom*=parseFloat(s.zoom)||1;}
+            const native=target.getBoundingClientRect(),css=view.getComputedStyle(target),n=name=>parseFloat(css[name]),width=(n('width')+(css.boxSizing==='border-box'?0:n('paddingLeft')+n('paddingRight')+n('borderLeftWidth')+n('borderRightWidth')))*zoom,height=(n('height')+(css.boxSizing==='border-box'?0:n('paddingTop')+n('paddingBottom')+n('borderTopWidth')+n('borderBottomWidth')))*zoom;
+            if(width>0&&height>0&&Math.abs(native.width-Math.abs(a)*width-Math.abs(c)*height)<.01&&Math.abs(native.height-Math.abs(b)*width-Math.abs(d)*height)<.01){const center=toLocal({x:(native.left+native.right)/2,y:(native.top+native.bottom)/2}),r={left:center.x-width/2,right:center.x+width/2,top:center.y-height/2,bottom:center.y+height/2,width,height};rects.set(target,r);return r;}
+            const original=target.getBoundingClientRect(),indicator=marker('absolute','left:0!important;top:0!important;width:0!important;height:0!important;',target),rule=doc.createElement('style');indicator.classList.add('collab-plane-box');rule.className='collab-text-measure';const names=view.getComputedStyle(target).anchorName;rule.textContent='*:has(> .collab-plane-box){anchor-name:'+(names==='none' ? '':names+', ')+'--collab-plane-target!important}';doc.head.append(rule);
+            const probe=marker('absolute','left:anchor(--collab-plane-target left,-1234567px)!important;top:anchor(--collab-plane-target top,-1234567px)!important;width:anchor-size(--collab-plane-target width,0px)!important;height:anchor-size(--collab-plane-target height,0px)!important;');
+            try{const s=view.getComputedStyle(probe),left=parseFloat(s.left),top=parseFloat(s.top),width=parseFloat(s.width),height=parseFloat(s.height),during=target.getBoundingClientRect();if(left===-1234567||top===-1234567||![left,top,width,height].every(Number.isFinite)||width<=0||height<=0||['left','right','top','bottom'].some(k=>Math.abs(original[k]-during[k])>.001))return null;const r={left:origin.x+left,top:origin.y+top,right:origin.x+left+width,bottom:origin.y+top+height,width,height};rects.set(target,r);return r;}finally{probe.remove();indicator.remove();rule.remove();}
+        };
+        for(const child of children)if(!localRect(child))return null;
+        if(children.some((child,index)=>{const r=child.getBoundingClientRect();return ['left','right','top','bottom'].some(k=>Math.abs(r[k]-before[index][k])>.001);}))return null;
+        const horizontal=css.writingMode==='horizontal-tb',scrollbarX=css.scrollbarWidth==='none' ? 0:Math.max(0,width-n('borderLeftWidth')-n('borderRightWidth')-pw),scrollbarY=css.scrollbarWidth==='none' ? 0:Math.max(0,height-n('borderTopWidth')-n('borderBottomWidth')-ph),both=css.scrollbarGutter.includes('both-edges'),gl=horizontal ? both ? scrollbarX/2:css.direction==='rtl' ? scrollbarX:0:0,gt=!horizontal&&both ? scrollbarY/2:0;
+        const bounds={left:0,top:0,right:width,bottom:height},border={left:n('borderLeftWidth'),right:width-n('borderRightWidth'),top:n('borderTopWidth'),bottom:height-n('borderBottomWidth')},viewport={left:border.left+gl,right:border.right-(scrollbarX-gl),top:border.top+gt,bottom:border.bottom-(scrollbarY-gt)},content={left:viewport.left+n('paddingLeft'),right:viewport.right-n('paddingRight'),top:viewport.top+n('paddingTop'),bottom:viewport.bottom-n('paddingBottom')};
+        return {bounds,border,viewport,content,children,twoAxes:!horizontal||css.display==='grid'||css.display==='flex',scrollbarX,scrollbarY,a,b,c,d,toLocal,toParent,rect:localRect};
+    }finally{markers.forEach(m=>m.remove());style.remove();}
+}
+
 function componentPicker(element) {
     if(!element.matches('select:open') || element.closest('[data-private]'))return null;
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element,'::picker(select)'),anchored=typeof view.HTMLElement.prototype.showPopover==='function' && view.CSS.supports('left','anchor(--collab-picker-measure left)') && view.CSS.supports('width','anchor-size(--collab-picker-measure width)'),horizontal=css.writingMode==='horizontal-tb',matrix=new view.DOMMatrix(css.transform==='none' ? undefined:css.transform);
-    // shortcut: rotated, reflected and multicolumn pickers still need a local coordinate map.
-    if(css.appearance!=='base-select' || !anchored && (['visible','clip'].includes(css.overflowX) || ['visible','clip'].includes(css.overflowY)) || !(anchored ? ['block','flow-root','grid','flex']:['block']).includes(css.display) || css.visibility!=='visible' || Number(css.opacity)<=.01 || !(anchored ? ['horizontal-tb','vertical-rl','vertical-lr','sideways-rl','sideways-lr']:['horizontal-tb']).includes(css.writingMode) || !matrix.is2D || matrix.a<=0 || matrix.d<=0 || Math.abs(matrix.b)>1e-10 || Math.abs(matrix.c)>1e-10 || css.rotate!=='none' || css.scale!=='none' && css.scale.split(' ').some(value=>!(parseFloat(value)>0)) || !anchored && (css.transform!=='none' || css.scale!=='none' || css.translate!=='none') || css.columnCount!=='auto')return null;
+    // shortcut: projective and multicolumn pickers still need a projective fragment map.
+    if(css.appearance!=='base-select' || !anchored && (['visible','clip'].includes(css.overflowX) || ['visible','clip'].includes(css.overflowY)) || !(anchored ? ['block','flow-root','grid','flex']:['block']).includes(css.display) || css.visibility!=='visible' || Number(css.opacity)<=.01 || !(anchored ? ['horizontal-tb','vertical-rl','vertical-lr','sideways-rl','sideways-lr']:['horizontal-tb']).includes(css.writingMode) || !matrix.is2D || !anchored && (css.transform!=='none' || css.scale!=='none' || css.translate!=='none' || css.rotate!=='none') || css.columnCount!=='auto')return null;
+    if(componentPickerTransformed(css))return anchored ? componentPickerPlane(element,css):null;
     const children=componentChildren(element).filter(child=>child!==element.firstElementChild || !child.matches('button')),before=children.map(child=>child.getBoundingClientRect());
     const anchor=css.anchorName==='none' ? '--collab-picker-measure':css.anchorName.split(',')[0].trim();
     const markers=[anchored ? 'fixed':'sticky','absolute'].map(position=>{const marker=doc.createElement('div');marker.className='collab-text-measure'+(position==='fixed' ? ' collab-picker-measure':'');marker.setAttribute('aria-hidden','true');marker.inert=true;
@@ -1163,6 +1214,8 @@ function componentBox(hit,point) {
     if(hit.matches('mark') && hit.parentElement.matches(COMPONENT_HIGHLIGHT_TEXT))hit=hit.parentElement;
     if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
     if(hit.matches('.b3-list-item__arrow') && componentTreeRegion(hit))hit=hit.closest('.b3-list-item__toggle') || hit;
+    // Overflowing option text still belongs to the native option hit by the browser.
+    if(hit.closest('select:open option'))return hit;
     while(hit.parentElement){
         const rect=hit.getBoundingClientRect();
         if(point.x>=rect.left-.5 && point.x<=rect.right+.5 && point.y>=rect.top-.5 && point.y<=rect.bottom+.5)break;
@@ -1179,21 +1232,24 @@ function componentPaintRect(element) {
 
 function componentGeometry(element,point) {
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
+    const parentPoint=point,parentSelect=!element.matches('select')&&element.closest('select:open'),projected=parentSelect&&componentPickerTransformed(element.ownerDocument.defaultView.getComputedStyle(parentSelect,'::picker(select)')),textPlane=projected&&componentPicker(parentSelect);if(projected&&(!textPlane?.toLocal || element.textContent && typeof Intl.Segmenter!=='function'))return null;
+    if(picker?.toLocal)point=picker.toLocal(point);
     const onPicker=inside(picker?.bounds),select=element.matches('select') && !onPicker;if(select && !componentTextField(element))return null;
+    if(!onPicker)point=parentPoint;
     // Native scrollbar thumbs need their own geometry; a reserved gutter is never ordinary padding.
     if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
     if(slider && !range)return null;
-    const box=range?.box || (element.matches('iframe') ? frameBox(element):null);if(element.matches('iframe') && !box)return null;
-    if(box)point=box.toLocal(point);
+    const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (onPicker&&picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
+    if(box)point=box.toLocal(parentPoint);
     const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
-    let bounds=box ? box.bounds:element.getBoundingClientRect();
+    let bounds=textPlane ? textPlane.rect(element):box ? box.bounds:element.getBoundingClientRect();if(!bounds)return null;
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
     const field=onPicker ? null:componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
-    const children=onPicker ? picker.children:box || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element),frame=range?.content || box?.content,list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
-    let text=onPicker || box || padding && !select ? []:componentNearText(element,point) || [];
+    const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
+    let text=onPicker || box&&!textPlane || padding && !select ? []:componentNearText(element,parentPoint,textPlane) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
     if(glyph){const {rect,offset}=glyph;return {edges:{x:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}],y:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}]},x:(point.x-rect.left)/rect.width,y:(point.y-rect.top)/rect.height,textHash:componentTextHash(element)};}
     if(select && imagePoint)return {edges:{x:[{kind:'image',side:'start'},{kind:'image',side:'end'}],y:[{kind:'image',side:'start'},{kind:'image',side:'end'}]},x:imagePoint.x,y:imagePoint.y,imagePoint};
@@ -1204,7 +1260,7 @@ function componentGeometry(element,point) {
     for(const [axis,start,end,otherStart,otherEnd] of [['x','left','right','top','bottom'],['y','top','bottom','left','right']]) {
         const other=point[axis==='x' ? 'y':'x'];
         const column=axis==='x' && element.matches('.sb[data-sb-layout="col"]');
-        const entries=[{value:bounds[start],edge:{kind:onPicker ? 'picker-box':box ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:onPicker ? 'picker-box':box ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
+        const entries=[{value:bounds[start],edge:{kind:onPicker ? 'picker-box':box&&!textPlane ? 'frame-box':paint ? 'paint':'self',side:'start'}},{value:bounds[end],edge:{kind:onPicker ? 'picker-box':box&&!textPlane ? 'frame-box':paint ? 'paint':'self',side:'end'}}];
         if(onPicker && (other<picker.border[otherStart] || other>=picker.border[otherEnd]) && point[axis]>=picker.border[start] && point[axis]<picker.border[end]){edges[axis]=entries.map(item=>item.edge);relative[axis]=(point[axis]-bounds[start])/(bounds[end]-bounds[start]);continue;}
         if(onPicker)for(const part of point[axis]<picker.border[start] || point[axis]>=picker.border[end] ? ['content','viewport','border']:['border','viewport','content'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:picker[part][key],edge:{kind:'picker-'+part,side}});
         if(image && (!select || !glyph && other>=image[otherStart] && other<=image[otherEnd]))for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
@@ -1225,7 +1281,7 @@ function componentGeometry(element,point) {
             const rect=componentListRect(element,part);
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.unshift({value:rect[key],edge:{kind:'list-'+part,side}});
         }
-        const references=(perimeter || onPicker && (axis==='x' && !picker.twoAxes || !inside(picker.content)) ? []:children).map(child=>({child,rect:child.getBoundingClientRect()})).filter(({rect})=>rect.width && rect.height);
+        const references=(perimeter || onPicker && (axis==='x' && !picker.twoAxes || !inside(picker.content)) ? []:children).map(child=>({child,rect:box?.rect ? box.rect(child):child.getBoundingClientRect()})).filter(({rect})=>rect?.width && rect.height);
         const beside=onPicker && picker.twoAxes && [otherEnd,otherStart].map((key,index)=>references.filter(({rect})=>point[axis]>=rect[start] && point[axis]<=rect[end] && (index ? rect[key]>=other:rect[key]<=other)).sort((a,b)=>index ? a.rect[key]-b.rect[key]:b.rect[key]-a.rect[key])[0]?.child);
         const adjacent=beside && beside.every(Boolean) ? beside:null;
         const distance=rect=>Math.max(rect[otherStart]-other,other-rect[otherEnd],0);
@@ -1233,16 +1289,18 @@ function componentGeometry(element,point) {
         for(const {child,rect} of references){
             for(const [side,key] of [['start',start],['end',end]])if((onPicker || rect[key]>=bounds[start] && rect[key]<=bounds[end]) && (column || (adjacent ? adjacent.includes(child):distance(rect)<=nearest[rect[key]>point[axis] ? 1:0]))){
                 // At grid crossings, keep shared row edges independent of column distance.
-                const entry={value:rect[key],edge:{kind:'child',side,child:onPicker && !adjacent ? references.find(({rect:r})=>r[key]===rect[key]).child:child}};
+                const entry={value:rect[key],edge:{kind:'child',side,child:onPicker && !adjacent ? references.find(({rect:r})=>box?.rect ? Math.abs(r[key]-rect[key])<.001:r[key]===rect[key]).child:child}};
                 if(onPicker || column && child.hasAttribute('data-node-id'))entries.unshift(entry);else entries.push(entry);
             }
         }
         for(const item of text)for(const [side,key] of [['start',start],['end',end]])if(item.rect[key]>=bounds[start] && item.rect[key]<=bounds[end])entries.push({value:item.rect[key],edge:{kind:'text',side,offset:item.offset}});
         // A visible picker gap keeps its neighbors even when their edges scroll out of view.
         const childEntries=onPicker ? entries.filter(item=>item.edge.kind==='child'):[];
-        const pair=[childEntries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0],childEntries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0]];
-        const lower=pair.every(Boolean) ? pair[0]:entries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0];
-        const upper=pair.every(Boolean) ? pair[1]:entries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0];
+        // Inverting transformed boxes introduces tiny errors between otherwise coincident row edges.
+        const compare=(a,b)=>box?.rect&&Math.abs(a.value-b.value)<.001 ? 0:a.value-b.value;
+        const pair=[childEntries.filter(item=>item.value<=point[axis]).sort((a,b)=>compare(b,a))[0],childEntries.filter(item=>item.value>=point[axis]).sort(compare)[0]];
+        const lower=pair.every(Boolean) ? pair[0]:entries.filter(item=>item.value<=point[axis]).sort((a,b)=>compare(b,a))[0];
+        const upper=pair.every(Boolean) ? pair[1]:entries.filter(item=>item.value>=point[axis]).sort(compare)[0];
         if(!lower || !upper)return null;
         // Build sibling identities only for the chosen boundaries, not every candidate in a large list.
         edges[axis]=[lower.edge,upper.edge].map(edge=>edge.kind==='child' ? {kind:edge.kind,side:edge.side,step:componentStep(edge.child)}:edge);relative[axis]=upper.value===lower.value ? 0:(point[axis]-lower.value)/(upper.value-lower.value);
@@ -1298,23 +1356,24 @@ function resolveComponent(cursor,plugin) {
     // A grid crossing can be bounded entirely by option edges.
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
+    const parentSelect=!element.matches('select')&&element.closest('select:open'),projected=parentSelect&&componentPickerTransformed(element.ownerDocument.defaultView.getComputedStyle(parentSelect,'::picker(select)')),textPlane=projected&&componentPicker(parentSelect);if(projected&&(!textPlane?.toLocal || element.textContent && typeof Intl.Segmenter!=='function'))return null;
     const select=element.matches('select') && !picker;
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || select && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
     if(slider && (!range || !Object.values(anchor.edges).flat().some(edge=>['range-thumb','range-track','frame','frame-box'].includes(edge.kind))))return null;
-    const box=range?.box || (element.matches('iframe') ? frameBox(element):null);if(element.matches('iframe') && !box)return null;
+    const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
     const point={};
     for(const [axis,start,end] of [['x','left','right'],['y','top','bottom']]) {
         if(anchor.imagePoint){
-            const rect=componentImageRect(element);if(!rect)return null;
+            const rect=componentImageRect(element,textPlane);if(!rect)return null;
             point[axis]=rect[start]+(rect[end]-rect[start])*anchor.imagePoint[axis];continue;
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -1323,7 +1382,7 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    const precise=picker || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
+    const precise=picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
     if(precise || gaps.length){
         // Padding is visible whitespace; text underneath it is clipped by the native input.
