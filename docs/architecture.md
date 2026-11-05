@@ -169,6 +169,8 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 
 字段非字形留白先寻找最近文字行，再取该行水平方向最近的端点，重合端点按字符位置确定，避免依赖原生 caret 四舍五入顺序。测量副本末尾哨兵只在原文本为空或以换行结尾时参与候选，防止其取整后的零宽边界替代普通末尾字形；真实末尾空行仍可定位。字形内部命中保留原快速路径，候选端点线性扫描，不新增协议或缓存。
 
-公开设置文本通过 COMPONENT_TEXT_SETTINGS 按栏目和具体 ID 注册：editor.plantUMLServePath、file 栏目的 fileTree.docCreateSavePath/docCreateTemplatePath/refCreateSavePath、flashcard.weights，以及上述九项 export 字段，共 14 项。沿用公开字段只读字素测量及本端滚动裁剪，不增加协议字段；原生输入未写 type 时仍按 element.type 判断。条件出现的 shorthandSavePath、字体选择和未知动态字段尚未验收，不由此表自动放行。
+公开设置文本通过 COMPONENT_TEXT_SETTINGS 按栏目和具体 ID 注册：editor.plantUMLServePath、file 栏目的 fileTree.docCreateSavePath/docCreateTemplatePath/refCreateSavePath、flashcard.weights，以及上述九项 export 字段，共 14 项。沿用公开字段只读字素测量及本端滚动裁剪，不增加协议字段；原生输入未写 type 时仍按 element.type 判断。条件出现的 shorthandSavePath 和未知动态字段尚未验收，不由此表自动放行。
 
 三个原生字体只读 input.b3-select 限定 appearance 栏目、具体 ID（appearance.globalFontFamilies、editor.fontFamilies、editor.codeFontFamilies）、readonly 与 data-menu=true；文字复用公开字段测量，背景 SVG 箭头复用收起下拉框几何，输入文字仍按真实内容区裁剪。原生字体菜单仅识别三个 appearanceFontFamily-* 名称及 text 类型 font-search。列表行与原生已选字体芯片使用有界字体族和 1–1000 字重生成身份哈希，配置组保留 data-font-config-key；不使用列表位置或 data-index 区分字体。重复身份和无效元数据的路径拒绝解析，mark 搜索高亮不进入组件身份。协议不增加字段，也不传字体族明文。
+
+字体字重右键菜单没有原生名称，直接读取 window.siyuan.menus.menu.position.target，并核对菜单元素与仍可见、连接且唯一的原生字体标签。菜单身份包含目标配置组与字体族，行身份使用目标字体族及原生 label 的内联字重，并校验字体样式；不新增监听器或包装菜单方法。无效目标拒绝解析，选中字重改变不改变其余菜单行身份。只有已验证原生标签的 b3-chip--dragging 类不参与身份；body 下的拖拽克隆不能充当缺失标签。克隆自身的视觉命中仍未验收。

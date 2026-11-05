@@ -111,9 +111,19 @@ function componentFontField(element) {
 
 function componentFontIdentity(element) {
     const row=element.matches('.b3-list-item') && element.parentElement?.matches('[data-type="available-fonts"]') && element.closest(COMPONENT_FONT_MENU),chip=element.matches('.config-font-family__chip') && element.closest('.config__tab-container')?.dataset.name==='appearance' && ['globalFontFamilies','fontFamilies','codeFontFamilies'].includes(element.closest('[data-font-config-key]')?.dataset.fontConfigKey);
-    if(!row && !chip)return undefined;
-    const label=chip ? element:element.querySelector(':scope > .b3-menu__label'),family=label?.dataset.family,weight=label?.dataset.weight;
+    const menu=!row && !chip && element.matches('.b3-menu__item') && componentFontMenuTarget(element.closest('.b3-menu'));
+    if(!row && !chip && !menu)return menu===null ? null:undefined;
+    const label=chip ? element:element.querySelector(':scope > .b3-menu__label'),family=menu ? menu.family:label?.dataset.family,weight=menu ? label?.style.fontWeight:label?.dataset.weight;
+    if(menu){const style=element.ownerDocument.createElement('span').style;style.fontFamily=family;if(!style.fontFamily || label?.style.fontFamily!==style.fontFamily)return null;}
     return family && family.length<=512 && !/[\x00-\x1f]/.test(family) && /^\d{1,4}$/.test(weight || '') && Number(weight)>0 && Number(weight)<=1000 ? [family,Number(weight)]:null;
+}
+
+function componentFontMenuTarget(element) {
+    const menu=window.siyuan?.menus?.menu,target=menu?.position?.target;
+    if(!element || menu?.element!==element || !target?.matches?.('.config-font-family__chip'))return undefined;
+    const font=componentFontIdentity(target),group=target.closest('[data-font-config-key]');
+    if(!font || !target.isConnected || !visibleElement(target) || target.closest('[data-private]') || [...group.querySelectorAll('.config-font-family__chip')].filter(chip=>chip.dataset.family===font[0]).length!==1)return null;
+    return {group:group.dataset.fontConfigKey,family:font[0]};
 }
 
 function componentTextField(element) {
@@ -272,6 +282,7 @@ function componentKey(element) {
     const attributes=['data-node-id','data-command-id','data-font-config-key','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
     if(font!==undefined)values.push(['font',componentHash(JSON.stringify(font))]);
+    if(element.matches('.b3-menu')){const target=componentFontMenuTarget(element);if(target!==undefined)values.push(['font-target',componentHash(JSON.stringify(target))]);}
     if(element.matches('#configBazaarReadme'))values.push(['bazaar-package',componentHash(JSON.stringify(componentBazaarPackage(element)))]);
     if(element.matches('.config-range__desktop')){const field=element.querySelector(':scope > input.b3-slider[type="range"][id]');if(field)values.push(['range-control',componentHash(field.id)]);}
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
@@ -320,7 +331,7 @@ function componentKey(element) {
     const privateText=element.matches('select') || element.closest('input,textarea,[contenteditable],[data-private]');
     const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') || element.matches(COMPONENT_HIGHLIGHT_TEXT) ? textLabel(element):'')):'';
-    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^protyle-wysiwyg--select$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(pdfNumber && name==='loading' && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage==='none') && !(name==='selected' && element.matches('.thumbnail')) && !(name==='wrapContainers' && element.matches('.pdf__outer #findbar')) && !(element.matches('.pdf__outer') && ['pdf__outer--maximized','sidebarOpen'].includes(name))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
+    const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^protyle-wysiwyg--select$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(font && element.matches('.config-font-family__chip') && name==='b3-chip--dragging') && !(pdfNumber && name==='loading' && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage==='none') && !(name==='selected' && element.matches('.thumbnail')) && !(name==='wrapContainers' && element.matches('.pdf__outer #findbar')) && !(element.matches('.pdf__outer') && ['pdf__outer--maximized','sidebarOpen'].includes(name))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
 }
 
@@ -491,6 +502,7 @@ function componentScope(element,plugin) {
     if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
     const floating=element.closest(COMPONENT_FLOATING);
     if(floating && !floating.closest('.protyle,.dockPanel')){
+        if(componentFontMenuTarget(floating)===null)return null;
         const pdf=floating.closest('.pdf__outer') && pdfModel(floating),context=pdf ? 'pdf:'+pdf.pdfObject.pdfDocument.fingerprints[0]:plugin ? pageKey(plugin.dialogBase || currentPage(plugin,false)):'';
         return make(floating,'floating',componentKey(floating)+'|'+(floating.getAttribute('data-oid') || '')+'|'+context);
     }
