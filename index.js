@@ -1231,7 +1231,7 @@ function componentGeometry(element,point) {
         const distance=rect=>Math.max(rect[otherStart]-other,other-rect[otherEnd],0);
         const nearest=onPicker && picker.twoAxes ? [start,end].map((key,index)=>Math.min(...references.filter(({rect})=>index ? rect[key]>=point[axis]:rect[key]<=point[axis]).map(({rect})=>distance(rect)))):[0,0];
         for(const {child,rect} of references){
-            for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end] && (column || (adjacent ? adjacent.includes(child):distance(rect)<=nearest[rect[key]>point[axis] ? 1:0]))){
+            for(const [side,key] of [['start',start],['end',end]])if((onPicker || rect[key]>=bounds[start] && rect[key]<=bounds[end]) && (column || (adjacent ? adjacent.includes(child):distance(rect)<=nearest[rect[key]>point[axis] ? 1:0]))){
                 // At grid crossings, keep shared row edges independent of column distance.
                 const step=componentStep(onPicker && !adjacent ? references.find(({rect:r})=>r[key]===rect[key]).child:child);
                 const entry={value:rect[key],edge:{kind:'child',side,step}};
@@ -1239,8 +1239,11 @@ function componentGeometry(element,point) {
             }
         }
         for(const item of text)for(const [side,key] of [['start',start],['end',end]])if(item.rect[key]>=bounds[start] && item.rect[key]<=bounds[end])entries.push({value:item.rect[key],edge:{kind:'text',side,offset:item.offset}});
-        const lower=entries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0];
-        const upper=entries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0];
+        // A visible picker gap keeps its neighbors even when their edges scroll out of view.
+        const childEntries=onPicker ? entries.filter(item=>item.edge.kind==='child'):[];
+        const pair=[childEntries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0],childEntries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0]];
+        const lower=pair.every(Boolean) ? pair[0]:entries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0];
+        const upper=pair.every(Boolean) ? pair[1]:entries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0];
         if(!lower || !upper)return null;
         edges[axis]=[lower.edge,upper.edge];relative[axis]=upper.value===lower.value ? 0:(point[axis]-lower.value)/(upper.value-lower.value);
         usedText ||= lower.edge.kind==='text' || upper.edge.kind==='text';
