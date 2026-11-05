@@ -414,7 +414,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!reachedRoot)return;
                 this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
-            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);doc=null;};
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
             const load=()=>{
                 let next;try{next=frame.contentDocument;}catch{}
                 if(next===doc)return;
@@ -859,7 +859,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     async onunload() {
         this.stopped = true;
-        clearRangeStyles();
+        clearComponentStyles();
         this.finishRestore?.();
         clearTimeout(this.restoreTimer);
         clearInterval(this.heartbeatTimer);

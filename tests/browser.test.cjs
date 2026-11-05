@@ -72,6 +72,11 @@ async function test(name, run) {
     document.getElementById('results').textContent = results.join('\\n');
 }
 (async () => {
+    await test('测量样式按文档复用，移除后恢复且清理不影响其他文档',async()=>{
+        const first=document.implementation.createHTMLDocument(),second=document.implementation.createHTMLDocument();
+        try{const a=componentPickerStyle(first),b=componentPickerStyle(second);assert(a===componentPickerStyle(first)&&a.isConnected&&b.isConnected,'picker stylesheet duplicated or missing');a.remove();assert(componentPickerStyle(first)===a&&a.isConnected,'removed picker stylesheet did not recover');clearComponentStyles(first);assert(!a.isConnected&&b.isConnected&&!componentPickerStyles.has(first),'document cleanup leaked or crossed documents');assert(componentPickerStyle({head:null})===null,'headless document accepted stylesheet');}
+        finally{clearComponentStyles(first);clearComponentStyles(second);}
+    });
     await test('文档树人数在 emoji 前，点击查看名单，不触发文档行点击', async () => {
         const row=document.querySelector('.sy__file li');
         const viewer={name:'chord-test',i18n:{viewers:'Viewers: '+String.fromCharCode(36)+'{count}'},
@@ -1293,7 +1298,7 @@ async function test(name, run) {
             input.style.display='none';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden range painted');input.style.display='';
             input.style.appearance='auto';assert(captureCursor(center())===null,'unknown native range guessed');input.style.appearance='none';
             input.setAttribute('data-private','');Object.defineProperty(input,'valueAsNumber',{configurable:true,get(){throw Error('private range read');}});assert(componentRange(input)===null&&captureCursor({x:40,y:40})===null,'private range measured');delete input.valueAsNumber;input.removeAttribute('data-private');
-        }finally{fixture.remove();clearRangeStyles();}
+        }finally{fixture.remove();clearComponentStyles();}
     });
     await test('原生滚动条滑块、前后轨道和交角分别定位，滚动改宽及隐藏不继承整框比例',async()=>{
         const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='scrollbar-identity';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:650px;z-index:100;background:white';fixture.innerHTML='<div id="scrollbar-field"><div style="width:900px;height:1200px">滚动参照</div></div><style>#scrollbar-field{position:fixed;left:60px;top:80px;width:300.5px;height:240.5px;border:2px solid black;overflow:auto}#scrollbar-field::-webkit-scrollbar{width:12px;height:10px}#scrollbar-field::-webkit-scrollbar-thumb{width:28px;height:24px;background:red}#scrollbar-field::-webkit-scrollbar-track{background:#ddd}#scrollbar-field::-webkit-scrollbar-button{display:none}</style>';document.body.append(fixture);
@@ -1516,6 +1521,7 @@ async function test(name, run) {
             });
             ${frontendSource}
             module.exports.testPage=currentPage;
+            module.exports.testPickerStyle=componentPickerStyle;
             return module.exports;
         })();
         const rangeStyle=document.createElement('style');rangeStyle.textContent='input.b3-slider::-webkit-slider-thumb{width:10px;height:10px}';document.head.append(rangeStyle);
@@ -1648,7 +1654,7 @@ async function test(name, run) {
                 plugin.pendingShortcut=null;button.dispatchEvent(new KeyboardEvent('keydown',{key:'c',ctrlKey:true,bubbles:true}));
                 assert(plugin.pendingShortcut==='Ctrl+C','dialog swallowed shortcut observer');plugin.pendingShortcut=null;
                 const embedded=document.createElement('iframe');embedded.style.cssText='position:fixed;left:30px;top:50px;width:300px;height:150px';
-                const loaded=new Promise(resolve=>embedded.addEventListener('load',resolve,{once:true}));embedded.srcdoc='<button>内部按钮</button>';document.body.append(embedded);await loaded;
+                const loaded=new Promise(resolve=>embedded.addEventListener('load',resolve,{once:true}));embedded.srcdoc='<button>内部按钮</button>';document.body.append(embedded);await loaded;const embeddedStyle=NativePlugin.testPickerStyle(embedded.contentDocument);
                 try {
                     plugin.bindFrames();embedded.contentDocument.body.dispatchEvent(new PointerEvent('pointermove',{clientX:20,clientY:30,pointerType:'mouse',bubbles:true}));
                     const rect=embedded.getBoundingClientRect();assert(plugin.pointer&&near(plugin.pointer.x,rect.left+(20+embedded.clientLeft)*rect.width/embedded.offsetWidth)&&near(plugin.pointer.y,rect.top+(30+embedded.clientTop)*rect.height/embedded.offsetHeight),'iframe pointer not translated; bindings='+plugin.frameListeners.size);
@@ -1657,19 +1663,19 @@ async function test(name, run) {
                     const child=embedded.contentDocument.createElement('iframe');child.style.cssText='width:180px;height:80px;border:5px solid black';child.srcdoc='<button>Nested button</button>';
                     const childReady=new Promise(resolve=>child.onload=resolve);embedded.contentDocument.body.append(child);await childReady;await frame();
                     assert(plugin.frameListeners.size===2,'dynamically inserted nested frame was not observed');
-                    const childDoc=child.contentDocument;childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
+                    const childDoc=child.contentDocument,childStyle=NativePlugin.testPickerStyle(childDoc);childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
                     const c=child.getBoundingClientRect(),e=embedded.getBoundingClientRect(),expected={x:e.left+(c.left+(12+child.clientLeft)*c.width/child.offsetWidth+embedded.clientLeft)*e.width/embedded.offsetWidth,y:e.top+(c.top+(16+child.clientTop)*c.height/child.offsetHeight+embedded.clientTop)*e.height/embedded.offsetHeight};
                     assert(near(plugin.pointer.x,expected.x)&&near(plugin.pointer.y,expected.y),'nested frame pointer not translated through parent');
                     embedded.style.cssText='position:fixed;left:180px;top:120px;width:310px;height:180px;box-sizing:border-box;border:7px solid black;transform:rotate(13deg) scale(-.9,.85)';child.style.cssText='position:absolute;left:18px;top:16px;width:180px;height:90px;box-sizing:border-box;border:5px solid black;transform:rotate(-8deg) skewX(6deg)';
                     childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
                     const innerPoint=projectedFramePoint(child,{x:17,y:21}),rotatedExpected=projectedFramePoint(embedded,{x:innerPoint.x+7,y:innerPoint.y+7});assert(plugin.pointer&&Math.hypot(plugin.pointer.x-rotatedExpected.x,plugin.pointer.y-rotatedExpected.y)<.6,'rotated nested pointer event drift');
                     childDoc.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'b',ctrlKey:true,bubbles:true}));assert(plugin.pendingShortcut==='Ctrl+B','nested shortcut missing');plugin.pendingShortcut=null;
-                    const nextDocument=new Promise(resolve=>child.onload=resolve);child.srcdoc='<button>New nested page</button>';await nextDocument;
-                    const before=JSON.stringify(plugin.pointer);childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:60,clientY:50,pointerType:'mouse',bubbles:true}));assert(JSON.stringify(plugin.pointer)===before,'replaced frame document kept its pointer listener');
-                    child.remove();await frame();assert(plugin.frameListeners.size===1,'removed nested iframe leaked binding');
+                    const nextDocument=new Promise(resolve=>child.onload=resolve);child.srcdoc='<button>New nested page</button>';await nextDocument;await frame();
+                    const before=JSON.stringify(plugin.pointer);childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:60,clientY:50,pointerType:'mouse',bubbles:true}));assert(JSON.stringify(plugin.pointer)===before&&!childStyle.isConnected,'replaced frame document kept listener or stylesheet');
+                    const nextStyle=NativePlugin.testPickerStyle(child.contentDocument);child.remove();await frame();assert(plugin.frameListeners.size===1&&!nextStyle.isConnected,'removed nested iframe leaked binding or stylesheet');
                     plugin.openPeople();plugin.peopleDialog.element.querySelector('.b3-dialog__scrim').click();await settleDialog();assert(!plugin.peoplePanel,'native scrim did not dismiss list');
                 } finally {embedded.remove();button.remove();plugin.bindFrames();plugin.pendingShortcut=null;}
-                assert(plugin.frameListeners.size===0,'iframe listeners leaked');
+                assert(plugin.frameListeners.size===0&&!embeddedStyle.isConnected,'iframe listeners or styles leaked');
             });
             await test('编辑框合并同块多人，随滚动裁剪，缺失块不显示且不改正文', async () => {
                 await expose(block,10);select(block,10);
@@ -1794,6 +1800,11 @@ async function test(name, run) {
                 const peer={name:'picker-peer',hue:290};plugin.clients.push(peer);let inputs=0,changes=0;field.addEventListener('input',()=>inputs++);field.addEventListener('change',()=>changes++);
                 try{
                     await click('展开原生下拉框进行层级验证',()=>field.showPicker());await frame();assert(field.matches(':open'),'native picker did not open');
+                    await test('原生弹层重复测量不增删样式表且保留主题锚点',async()=>{
+                        const sheet=componentPickerStyle(document),active=document.activeElement,html=field.outerHTML,observer=new MutationObserver(()=>{}),theme=document.createElement('style');observer.observe(document.head,{childList:true,subtree:true,characterData:true});
+                        try{for(let i=0;i<5;i++)assert(componentPicker(field),'repeated picker geometry unavailable');assert(observer.takeRecords().length===0&&sheet===componentPickerStyle(document),'picker repeatedly changed document styles');theme.textContent='#native-picker::picker(select){anchor-name:--native-picker-theme!important}';fixture.append(theme);assert(componentPicker(field)&&getComputedStyle(field,'::picker(select)').anchorName==='--native-picker-theme','measurement overrode theme anchor');assert(field.outerHTML===html&&document.activeElement===active&&!document.querySelector('.collab-picker-unanchored'),'measurement changed native state or leaked marker');}
+                        finally{observer.disconnect();theme.remove();}
+                    });
                     await test('原生下拉弹层内多光标跨选项平滑移动，重复提升层级不中断过渡',async()=>{
                         const old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,refreshInBackground:plugin.refreshInBackground,tick:plugin.tick},active=document.activeElement,events=[],rows=[];
                         const record=event=>events.push({type:event.type,target:event.target.tagName,open:field.matches(':open')});for(const type of ['beforetoggle','toggle','focusin','focusout'])document.addEventListener(type,record,true);
@@ -2022,7 +2033,7 @@ async function test(name, run) {
             assert(commands.length===1&&commands[0].langKey==='checkOnline','personal history command remains');
             assert(!messages.length,'display failure showed an editing permission notice');
         } finally {await plugin.onunload();rangeStyle.remove();}
-        assert(!document.querySelector('.collab-cursor-layer,.collab-range-measure')&&!subscriptions.size&&!editorEvents.size,'display leaked after unload');
+        clearComponentStyles();assert(!document.querySelector('.collab-cursor-layer,.collab-range-measure,.collab-picker-anchor')&&!subscriptions.size&&!editorEvents.size,'display leaked after unload');
     });
     document.title = results.some(result=>result.startsWith('FAIL')) ? 'FAIL Cursor browser regression' : 'PASS Cursor browser regression';
     document.getElementById('results').dataset.complete = 'true';

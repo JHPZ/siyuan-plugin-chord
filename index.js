@@ -523,11 +523,22 @@ function resolvePDF(element,anchor) {
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
+const componentPickerStyles=new Map();
 let componentMeasurements;
 
-function clearRangeStyles() {
-    for(const style of componentRangeStyles.values())style.remove();
-    componentRangeStyles.clear();
+function clearComponentStyles(doc) {
+    for(const styles of [componentRangeStyles,componentPickerStyles]){
+        if(doc){styles.get(doc)?.remove();styles.delete(doc);}
+        else{for(const style of styles.values())style.remove();styles.clear();}
+    }
+}
+
+function componentPickerStyle(doc) {
+    if(!doc.head)return null;
+    let style=componentPickerStyles.get(doc);
+    if(!style){style=doc.createElement('style');style.className='collab-picker-anchor';style.textContent='select:has(> .collab-picker-unanchored)::picker(select){anchor-name:--collab-picker-measure!important}';componentPickerStyles.set(doc,style);}
+    if(!style.isConnected)doc.head.append(style);
+    return style;
 }
 
 function componentRangeStyle(doc) {
@@ -1129,12 +1140,12 @@ function componentPickerElementPlane(element) {
 }
 
 function componentPickerPlane(element,css) {
-    const doc=element.ownerDocument,view=doc.defaultView,children=componentChildren(element).filter(child=>(child!==element.firstElementChild || !child.matches('button'))&&child.getBoundingClientRect().width&&child.getBoundingClientRect().height),before=children.map(child=>child.getBoundingClientRect()),style=doc.createElement('style'),markers=[];
+    const doc=element.ownerDocument,view=doc.defaultView,children=componentChildren(element).filter(child=>(child!==element.firstElementChild || !child.matches('button'))&&child.getBoundingClientRect().width&&child.getBoundingClientRect().height),before=children.map(child=>child.getBoundingClientRect()),markers=[];
     const marker=(position,rules,parent=element)=>{const m=doc.createElement('div');m.className='collab-text-measure';m.inert=true;m.setAttribute('aria-hidden','true');m.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;inset:auto!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+rules;parent.append(m);return m;};
     const anchor=css.anchorName==='none' ? '--collab-picker-measure':css.anchorName.split(',')[0].trim(),n=name=>parseFloat(css[name]);
-    style.className='collab-text-measure';if(css.anchorName==='none')style.textContent='select:has(> .collab-picker-measure)::picker(select){anchor-name:--collab-picker-measure!important}';doc.head.append(style);
+    if(css.anchorName==='none'&&!componentPickerStyle(doc))return null;
     try{
-        const top=marker('fixed','left:anchor('+anchor+' left)!important;top:anchor('+anchor+' top)!important;width:anchor-size('+anchor+' width,0px)!important;height:anchor-size('+anchor+' height,0px)!important;');top.classList.add('collab-picker-measure');top.setAttribute('popover','manual');markers.push(top);top.showPopover();
+        const top=marker('fixed','left:anchor('+anchor+' left)!important;top:anchor('+anchor+' top)!important;width:anchor-size('+anchor+' width,0px)!important;height:anchor-size('+anchor+' height,0px)!important;');top.classList.add('collab-picker-measure');if(css.anchorName==='none')top.classList.add('collab-picker-unanchored');top.setAttribute('popover','manual');markers.push(top);top.showPopover();
         const port=marker('absolute','inset:0!important;');markers.push(port);
         for(const [x,y]of [[0,0],[100,0],[0,100],[100,100]])markers.push(marker('absolute','left:'+x+'%!important;top:'+y+'%!important;width:0!important;height:0!important;'));
         const points=markers.slice(2).map(m=>m.getBoundingClientRect()),portCSS=view.getComputedStyle(port),pw=parseFloat(portCSS.width),ph=parseFloat(portCSS.height),width=n('width')+(css.boxSizing==='border-box' ? 0:n('borderLeftWidth')+n('borderRightWidth')+n('paddingLeft')+n('paddingRight')),height=n('height')+(css.boxSizing==='border-box' ? 0:n('borderTopWidth')+n('borderBottomWidth')+n('paddingTop')+n('paddingBottom'));
@@ -1146,7 +1157,7 @@ function componentPickerPlane(element,css) {
         const horizontal=css.writingMode==='horizontal-tb',scrollbarX=css.scrollbarWidth==='none' ? 0:Math.max(0,width-n('borderLeftWidth')-n('borderRightWidth')-pw),scrollbarY=css.scrollbarWidth==='none' ? 0:Math.max(0,height-n('borderTopWidth')-n('borderBottomWidth')-ph),both=css.scrollbarGutter.includes('both-edges'),gl=horizontal ? both ? scrollbarX/2:css.direction==='rtl' ? scrollbarX:0:0,gt=!horizontal&&both ? scrollbarY/2:0;
         const bounds={left:0,top:0,right:width,bottom:height},border={left:n('borderLeftWidth'),right:width-n('borderRightWidth'),top:n('borderTopWidth'),bottom:height-n('borderBottomWidth')},viewport={left:border.left+gl,right:border.right-(scrollbarX-gl),top:border.top+gt,bottom:border.bottom-(scrollbarY-gt)},content={left:viewport.left+n('paddingLeft'),right:viewport.right-n('paddingRight'),top:viewport.top+n('paddingTop'),bottom:viewport.bottom-n('paddingBottom')};
         return {bounds,border,viewport,content,children,twoAxes:!horizontal||css.display==='grid'||css.display==='flex',scrollbarX,scrollbarY,a,b,c,d,toLocal,toParent,rect:localRect};
-    }finally{markers.forEach(m=>m.remove());style.remove();}
+    }finally{markers.forEach(m=>m.remove());}
 }
 
 function componentPicker(element) {
@@ -1166,8 +1177,7 @@ function measureComponentPicker(element) {
     const anchor=css.anchorName==='none' ? '--collab-picker-measure':css.anchorName.split(',')[0].trim();
     const markers=[anchored ? 'fixed':'sticky','absolute'].map(position=>{const marker=doc.createElement('div');marker.className='collab-text-measure'+(position==='fixed' ? ' collab-picker-measure':'');marker.setAttribute('aria-hidden','true');marker.inert=true;
         marker.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;box-sizing:content-box!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+(position==='sticky' ? 'top:0!important;left:0!important;width:100%!important;height:1px!important;margin-bottom:-1px!important;':position==='fixed' ? 'inset:auto!important;left:anchor('+anchor+' left)!important;top:anchor('+anchor+' top)!important;width:anchor-size('+anchor+' width,0px)!important;height:anchor-size('+anchor+' height,0px)!important;':'inset:0!important;');return marker;});
-    const style=anchored && css.anchorName==='none' ? doc.createElement('style'):null;
-    if(anchored){markers[0].setAttribute('popover','manual');if(style){style.className='collab-text-measure';style.textContent='select:has(> .collab-picker-measure)::picker(select){anchor-name:--collab-picker-measure!important}';doc.head.append(style);}element.append(markers[0]);}else element.insertBefore(markers[0],children[0] || null);
+    if(anchored){markers[0].setAttribute('popover','manual');if(css.anchorName==='none'){if(!componentPickerStyle(doc))return null;markers[0].classList.add('collab-picker-unanchored');}element.append(markers[0]);}else element.insertBefore(markers[0],children[0] || null);
     element.append(markers[1]);
     try{
         if(anchored)markers[0].showPopover();
@@ -1183,7 +1193,7 @@ function measureComponentPicker(element) {
         const content={left:viewport.left+n('paddingLeft')*sx,right:viewport.right-n('paddingRight')*sx,top:viewport.top+n('paddingTop')*sy,bottom:viewport.bottom-n('paddingBottom')*sy};
         if(![...Object.values(bounds),...Object.values(content)].every(Number.isFinite) || content.bottom<content.top)return null;
         return {bounds,border,viewport,content,children,twoAxes:!horizontal || css.display==='grid' || css.display==='flex',scrollbarX:scrollbarX*sx,scrollbarY:scrollbarY*sy};
-    }finally{markers.forEach(marker=>marker.remove());style?.remove();}
+    }finally{markers.forEach(marker=>marker.remove());}
 }
 
 function componentSelectImage(element) {
@@ -2296,7 +2306,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if(!reachedRoot)return;
                 this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
             };
-            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);doc=null;};
+            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
             const load=()=>{
                 let next;try{next=frame.contentDocument;}catch{}
                 if(next===doc)return;
@@ -2741,7 +2751,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     async onunload() {
         this.stopped = true;
-        clearRangeStyles();
+        clearComponentStyles();
         this.finishRestore?.();
         clearTimeout(this.restoreTimer);
         clearInterval(this.heartbeatTimer);
