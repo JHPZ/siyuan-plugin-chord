@@ -163,3 +163,8 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 编辑器设置中的公开 textarea 仍限定 config__tab-container[data-name="editor"] 内 b3-text-field 且 id 以 editor. 开头；数字输入改用上述逐栏目、逐 ID 注册。两种字段都拒绝私有和文本遮掩，不读取未知字段的值。沿用字素、内容区与 field-viewport 几何、值哈希及原生命中核验，旧设置比例锚点拒绝绘制。
 
 当已准入字段的值与占位文字均为空时，测量副本中的零宽哨兵不参与几何边界，内容留白直接使用真实 field 边界，不携带虚构字形的文本哈希；出现可见文字后重新核对几何。此路径同时适用于公开输入框、多行框和无选项下拉。数字控件必须先排除 validity.badInput，避免浏览器界面仍显示未完成字符、DOM值为空时误入空白路径。
+
+
+导出设置仅准入 config__tab-container[data-name="export"] 内的 b3-text-field，element.type 为 text 或 textarea，且 ID 在 blockRefTextLeft、blockRefTextRight、tagOpenMarker、tagCloseMarker、pdfFooter、pdfWatermarkStr、imageWatermarkStr、pdfWatermarkDesc、imageWatermarkDesc 这九个 export.* 字段中。使用实际 type 属性值兼容 HTML 中省略 type 的原生 input，密码与私有/遮掩检查仍先执行；未知 ID、栏目、class 或类型不读取值。字段内容只生成现有有界哈希，水印描述作为文本测量，不解析 HTML。
+
+字段非字形留白先寻找最近文字行，再取该行水平方向最近的端点，重合端点按字符位置确定，避免依赖原生 caret 四舍五入顺序。测量副本末尾哨兵只在原文本为空或以换行结尾时参与候选，防止其取整后的零宽边界替代普通末尾字形；真实末尾空行仍可定位。字形内部命中保留原快速路径，候选端点线性扫描，不新增协议或缓存。

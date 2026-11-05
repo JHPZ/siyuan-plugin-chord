@@ -108,7 +108,8 @@ function componentTextField(element) {
     }
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     const settingField=element.matches('.config__tab-container[data-name="editor"] textarea.b3-text-field[id^="editor."]') || element.matches('input.b3-text-field[type="number"]') && COMPONENT_NUMBER_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
-    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    const exportField=element.closest('.config__tab-container')?.dataset.name==='export' && element.matches('input.b3-text-field,textarea.b3-text-field') && ['text','textarea'].includes(element.type) && ['export.blockRefTextLeft','export.blockRefTextRight','export.tagOpenMarker','export.tagCloseMarker','export.pdfFooter','export.pdfWatermarkStr','export.imageWatermarkStr','export.pdfWatermarkDesc','export.imageWatermarkDesc'].includes(element.id);
+    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || exportField) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {
@@ -556,12 +557,16 @@ function componentNearText(element,point,plane) {
     if(componentTextField(element))return componentFieldMeasure(element,(mirror,character,position,segments)=>{
         const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y),node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
         if(node!==mirror.firstChild)return null;
-        const candidates=[...new Set([position(offset-1),position(offset)])].map(offset=>({offset,rect:character(offset)})).filter(item=>item.rect);
+        const end=mirror.firstChild.length-1,emptyLine=end===0 || mirror.firstChild.data.charCodeAt(end-1)===10;
+        const candidates=[...new Set([position(offset-1),position(offset)])].map(offset=>({offset,rect:character(offset)})).filter(item=>item.rect && (item.offset<end || emptyLine));
         const inside=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);if(inside)return [inside];
         for(const {index}of segments){const rect=character(index);if(rect)candidates.push({offset:index,rect});}
+        const endRect=emptyLine && character(end);if(endRect)candidates.push({offset:end,rect:endRect});
         const hit=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);if(hit)return [hit];
         const distance=rect=>Math.max(rect.top-point.y,point.y-rect.bottom,0),nearest=Math.min(...candidates.map(item=>distance(item.rect)));
-        return candidates.filter(item=>distance(item.rect)===nearest);
+        // Use the closest line endpoint, independent of native caret rounding and earlier wraps.
+        let endpoint,delta=Infinity;for(const item of candidates){if(distance(item.rect)!==nearest)continue;const dx=Math.max(item.rect.left-point.x,point.x-item.rect.right,0);if(dx<delta || dx===delta && item.offset>(endpoint?.offset ?? -1)){endpoint=item;delta=dx;}}
+        return endpoint ? [endpoint]:[];
     });
     if(element.matches('input,select,textarea,[data-type="NodeSuperBlock"]') || element.closest('[data-private]'))return null;
     if(componentTreeRegion(element)?.root===element || element.matches('.backlinkList__header,.backlinkMList__header') && element.closest('.sy__backlink,.sy__backlink--bottom'))return null;
