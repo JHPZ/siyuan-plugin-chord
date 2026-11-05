@@ -80,6 +80,7 @@ function cleanUIAnchor(value) {
 
 function validComponentStep(step) {
     return step && typeof step.key==='string' && /^[a-f0-9]{16}$/.test(step.key) &&
+        (step.nameKey===undefined || typeof step.nameKey==='string' && /^[a-f0-9]{16}$/.test(step.nameKey)) &&
         Number.isSafeInteger(step.count) && step.count>0 && step.count<=10000 &&
         Number.isSafeInteger(step.index) && step.index>=0 && step.index<step.count;
 }
@@ -120,7 +121,7 @@ function validComponentAnchor(value) {
 }
 
 function cleanComponentAnchor(value) {
-    const step=s=>({key:s.key,count:s.count,index:s.index});
+    const step=s=>({key:s.key,count:s.count,index:s.index,...(s.nameKey ? {nameKey:s.nameKey}:{})});
     const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
     return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{}),...(value.scope.kind==='av' ? {row:value.scope.row,column:value.scope.column,...(value.scope.group ? {group:value.scope.group}:{}),...(value.scope.part ? {part:value.scope.part}:{})}:{})},
         route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),

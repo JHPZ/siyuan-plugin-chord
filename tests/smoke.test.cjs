@@ -482,6 +482,19 @@ test('named control scopes validate hashes and discard raw names at the protocol
     for(const bad of [{key:'raw name'},{key:'a'.repeat(17)},{part:'button'},{group:scope.key},{kind:'unknown-control'}])await assert.rejects(update('control-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
 });
 
+test('hashed name candidates survive every component step boundary and reject malformed hints',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');await kernel.methods.get('presenceHeartbeat')('named-route-test',{generation:1});
+    const step={key:'1234567890abcdef',count:1,index:0,nameKey:'abcdef1234567890',secret:'private'},self={kind:'self',side:'start'},base={version:3,kind:'component',scope:{kind:'global',key:step.key},route:[],edges:{x:[self,self],y:[self,self]}};
+    const placements=[s=>({route:[s]}),s=>({target:[s]}),s=>({frame:[s]}),s=>({frames:[[s],[s]]}),s=>({edges:{x:[{kind:'child',side:'end',step:s},self],y:[self,self]}})];let sequence=0;
+    for(const place of placements){
+        const cursor=ui=>({surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.5,y:.5},x:.3,y:.4,ui:{...base,...ui}});
+        await update('named-route-test',1,++sequence,cursor(place(step)));const cleaned=(await snapshot()).cursors[0].cursor.ui;
+        assert.ok(JSON.stringify(cleaned).includes('"nameKey":"'+step.nameKey+'"'));assert.ok(!JSON.stringify(cleaned).includes('private'));
+        for(const nameKey of ['',null,0,[],{},'raw public name','A'.repeat(16),'a'.repeat(17)])await assert.rejects(update('named-route-test',1,sequence+1,cursor(place({...step,nameKey}))),/Invalid UI cursor/);
+        const {nameKey,...legacy}=step;await update('named-route-test',1,++sequence,cursor(place(legacy)));assert.ok(!JSON.stringify((await snapshot()).cursors[0].cursor.ui).includes('nameKey'));
+    }
+});
+
 test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
     const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
     await heartbeat('component-user-test',{generation:1});

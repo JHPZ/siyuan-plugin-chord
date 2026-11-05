@@ -81,6 +81,7 @@ function cleanUIAnchor(value) {
 
 function validComponentStep(step) {
     return step && typeof step.key==='string' && /^[a-f0-9]{16}$/.test(step.key) &&
+        (step.nameKey===undefined || typeof step.nameKey==='string' && /^[a-f0-9]{16}$/.test(step.nameKey)) &&
         Number.isSafeInteger(step.count) && step.count>0 && step.count<=10000 &&
         Number.isSafeInteger(step.index) && step.index>=0 && step.index<step.count;
 }
@@ -121,7 +122,7 @@ function validComponentAnchor(value) {
 }
 
 function cleanComponentAnchor(value) {
-    const step=s=>({key:s.key,count:s.count,index:s.index});
+    const step=s=>({key:s.key,count:s.count,index:s.index,...(s.nameKey ? {nameKey:s.nameKey}:{})});
     const edge=e=>({kind:e.kind,side:e.side,...(e.kind==='child' ? {step:step(e.step)}:e.kind==='text' ? {offset:e.offset}:{})});
     return {version:3,kind:'component',scope:{kind:value.scope.kind,key:value.scope.key,...(value.scope.pane ? {pane:value.scope.pane}:{}),...(value.scope.kind==='av' ? {row:value.scope.row,column:value.scope.column,...(value.scope.group ? {group:value.scope.group}:{}),...(value.scope.part ? {part:value.scope.part}:{})}:{})},
         route:value.route.map(step),...(value.frame ? {frame:value.frame.map(step)}:{}),...(value.target ? {target:value.target.map(step)}:{}),
@@ -914,28 +915,40 @@ function componentPane(element) {
     return wnd ? [...wnd.querySelectorAll('[data-type="tab-header"]')].map(head=>pageKey(tabPage(head))).sort().join('|'):'';
 }
 
-function componentSiblings(parent,key) {
+function componentSiblings(parent,key,nameKey) {
+    // Name hashes narrow candidates; full identity and duplicate counts still decide the match.
     const cache=componentMeasurements?.siblings;
-    if(!cache)return componentChildren(parent).filter(child=>componentKey(child)===key);
-    if(!cache.has(parent)){
+    if(!cache)return componentChildren(parent).filter(child=>(!nameKey || componentHash(child.getAttribute('data-name') || '')===nameKey) && componentKey(child)===key);
+    if(!cache.has(parent))cache.set(parent,{children:componentChildren(parent),names:null,keys:new Map()});
+    const entry=cache.get(parent);
+    if(nameKey && !entry.names){
+        entry.names=new Map();
+        for(const child of entry.children){
+            const name=componentHash(child.getAttribute('data-name') || '');
+            if(!entry.names.has(name))entry.names.set(name,[]);
+            entry.names.get(name).push(child);
+        }
+    }
+    const bucket=nameKey || '';
+    if(!entry.keys.has(bucket)){
         const groups=new Map();
-        for(const child of componentChildren(parent)){
+        for(const child of nameKey ? entry.names.get(nameKey) || []:entry.children){
             const identity=componentKey(child);
             if(!groups.has(identity))groups.set(identity,[]);
             groups.get(identity).push(child);
         }
-        cache.set(parent,groups);
+        entry.keys.set(bucket,groups);
     }
-    return cache.get(parent).get(key) || [];
+    return entry.keys.get(bucket).get(key) || [];
 }
 
 function componentStep(element) {
-    const key=componentKey(element),siblings=componentSiblings(element.parentElement,key);
-    return {key,count:siblings.length,index:siblings.indexOf(element)};
+    const key=componentKey(element),name=element.getAttribute('data-name'),nameKey=name ? componentHash(name):undefined,siblings=componentSiblings(element.parentElement,key,nameKey);
+    return {key,count:siblings.length,index:siblings.indexOf(element),...(nameKey ? {nameKey}:{})};
 }
 
 function componentChild(parent,step) {
-    const children=componentSiblings(parent,step.key);
+    const children=componentSiblings(parent,step.key,step.nameKey);
     return children.length===step.count && !(children.length>1 && children.some(child=>componentFontIdentity(child)!==undefined)) ? children[step.index]:null;
 }
 
