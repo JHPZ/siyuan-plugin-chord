@@ -545,12 +545,14 @@ module.exports = class CollaborationPlugin extends Plugin {
             }else if(this.cursorLayer.hasAttribute('popover')){
                 this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
             }
-            const visible = new Set();
+            const visible = new Set(),resolved=new Map();
             const positions=[],people=new Set(this.clients.map(client=>client.name));
             if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
                 for (const client of this.remoteCursors) {
                     if (client.name === this.clientName || !people.has(client.name)) continue;
-                    const point = resolveCursor(client.cursor, this);
+                    const key=JSON.stringify(client.cursor);
+                    if(!resolved.has(key))resolved.set(key,resolveCursor(client.cursor,this));
+                    const point=resolved.get(key);
                     if (!point) continue;
                     const marker=this.cursorMarkers.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
                     positions.push({client,point,rect});

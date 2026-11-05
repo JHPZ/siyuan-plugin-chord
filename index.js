@@ -523,6 +523,7 @@ function resolvePDF(element,anchor) {
 // Component identities are bounded hashes; input values and document text never enter the wire format.
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p,.b3-menu[data-name^="appearanceFontFamily-"] [data-type="available-fonts"] .b3-menu__label';
 const COMPONENT_FONT_MENU='.b3-menu:is([data-name="appearanceFontFamily-globalFontFamilies"],[data-name="appearanceFontFamily-fontFamilies"],[data-name="appearanceFontFamily-codeFontFamilies"])';
+const COMPONENT_DATE_FIELD='input[type="date"],input[type="time"],input[type="datetime-local"]';
 const COMPONENT_NUMBER_SETTINGS=new Map([
     ["editor",["editor.cursorSurroundingLines","editor.dynamicLoadBlocks","editor.blockRefDynamicAnchorTextMaxLen","editor.backlinkExpandCount","editor.backmentionExpandCount"]],
     ["file",["fileTree.maxOpenTabCount","editor.generateHistoryInterval","editor.historyRetentionDays","fileTree.maxListCount","fileTree.largeFileWarningSize","fileTree.recentDocsMaxListCount"]],
@@ -547,6 +548,7 @@ const componentRangeStyles=new Map();
 const componentColorStyles=new Map();
 const componentPickerStyles=new Map();
 const componentFieldStyles=new Map();
+const componentDateStyles=new Map();
 const componentCheckboxPaint=new WeakMap();
 let componentColorEditors=new WeakMap();
 let componentMeasurements;
@@ -554,7 +556,7 @@ let componentMeasurements;
 function clearComponentStyles(doc) {
     if(doc)for(const panel of doc.querySelectorAll('[data-panel="customEditor"]'))componentColorEditors.delete(panel);
     else componentColorEditors=new WeakMap();
-    for(const styles of [componentRangeStyles,componentColorStyles,componentPickerStyles,componentFieldStyles]){
+    for(const styles of [componentRangeStyles,componentColorStyles,componentPickerStyles,componentFieldStyles,componentDateStyles]){
         if(doc){styles.get(doc)?.remove();styles.delete(doc);}
         else{for(const style of styles.values())style.remove();styles.clear();}
     }
@@ -568,11 +570,19 @@ function componentPickerStyle(doc) {
     return style;
 }
 
-function componentNativeRules(doc,kind) {
+function componentNativeRules(doc,kind,sources) {
     if(!doc.head || !doc.styleSheets)return null;
+    const pseudo=kind.startsWith('date:')?'::-webkit-'+kind.slice(5):null,match=pseudo&&new RegExp(pseudo+'(?![\\w-])');
     const extract=rule=>{
         if(rule.styleSheet){const rules=[...rule.styleSheet.cssRules].map(extract).filter(Boolean);let text=rules.join('\n');if(!text)return '';if(rule.media.mediaText)text='@media '+rule.media.mediaText+'{'+text+'}';if(rule.supportsText)text='@supports ('+rule.supportsText+'){'+text+'}';if(rule.layerName!==null && rule.layerName!==undefined)text='@layer '+rule.layerName+'{'+text+'}';return text;}
         if(rule.selectorText){
+            if(kind.startsWith('date:')){
+                if(!match.test(rule.selectorText)){if(rule.cssRules?.length&&rule.cssText.includes(pseudo))throw Error('Unsupported nested native date selector');return '';}
+                // shortcut: nested selector lists need a selector parser before their native styles can be mirrored.
+                if(rule.cssRules?.length||rule.selectorText.includes(':is(')||rule.selectorText.includes(':where(')||rule.selectorText.includes(':not(')||rule.selectorText.includes(':has(')||rule.selectorText.includes(pseudo+':'))throw Error('Unsupported native date selector');
+                const selectors=rule.selectorText.split(',').filter(selector=>match.test(selector));
+                return selectors.map(selector=>selector.replaceAll(pseudo,'::before')).join(',')+'{'+rule.style.cssText+'}';
+            }
             if(!rule.selectorText.includes(kind==='color'?'::-webkit-color-swatch':'::-webkit-slider-'))return '';
             let text=rule.cssText.replaceAll('::-webkit-color-swatch-wrapper','::before').replaceAll('::-webkit-color-swatch','::after').replaceAll('::-webkit-slider-thumb',':where(input.b3-slider[type="range"])::before').replaceAll('::-webkit-slider-runnable-track',':where(input.b3-slider[type="range"])::after');
             const width=rule.style.getPropertyValue('width');
@@ -583,7 +593,7 @@ function componentNativeRules(doc,kind) {
         return '';
     };
     let rules;
-    try{rules=[...doc.styleSheets].filter(sheet=>!sheet.disabled && sheet.ownerNode?.className!=='collab-range-measure').flatMap(sheet=>{const rules=[...sheet.cssRules].map(extract).filter(Boolean);return sheet.media.mediaText && rules.length ? ['@media '+sheet.media.mediaText+'{'+rules.join('\n')+'}']:rules;});}catch{return null;}
+    try{rules=(sources||[...doc.styleSheets]).filter(sheet=>!sheet.disabled && !sheet.ownerNode?.matches?.('.collab-range-measure,.collab-date-measure')).flatMap(sheet=>{const rules=[...sheet.cssRules].map(extract).filter(Boolean);return sheet.media.mediaText && rules.length ? ['@media '+sheet.media.mediaText+'{'+rules.join('\n')+'}']:rules;});}catch{return null;}
     return rules;
 }
 
@@ -775,8 +785,81 @@ function componentFontDragTarget(clone) {
     return {source,font,group:group.dataset.fontConfigKey};
 }
 
+function componentDateField(element) {
+    const cache=componentMeasurements && (componentMeasurements.dates ||= new WeakMap());if(cache?.has(element))return cache.get(element);
+    const result=measureComponentDateField(element);cache?.set(element,result);return result;
+}
+
+function componentDateSheets(doc) {
+    const cache=componentMeasurements && (componentMeasurements.dateSheets ||= new WeakMap());if(cache?.has(doc))return cache.get(doc);
+    let sources=null;
+    try{sources=[...doc.styleSheets].filter(sheet=>!sheet.disabled&&!sheet.ownerNode?.matches?.('.collab-range-measure,.collab-date-measure')).map(sheet=>({media:sheet.media,cssRules:[...sheet.cssRules].filter(rule=>rule.styleSheet||/::-webkit-(?:datetime-edit|calendar-picker-indicator)/.test(rule.selectorText||rule.cssText)||rule.cssRules?.length&&/::-webkit-(?:datetime-edit|calendar-picker-indicator)/.test(rule.cssText))}));}catch{}
+    cache?.set(doc,sources);return sources;
+}
+
+function measureComponentDateField(element) {
+    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),before=element.getBoundingClientRect();
+    // shortcut: partial native values, twelve-hour fields and transformed native text need independent state/plane calibration.
+    if(!element.value||element.validity.badInput||!doc.head||!view.CSS.supports('anchor-name','--collab-date')||css.writingMode!=='horizontal-tb')return null;
+    for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),m=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(!m.is2D||m.a!==1||m.b!==0||m.c!==0||m.d!==1||s.scale!=='none'||s.rotate!=='none'||s.zoom!=='1')return null;}
+    const ownBefore=view.getComputedStyle(element,'::before');if(!['none','normal'].includes(ownBefore.content))return null;
+    const sources=componentDateSheets(doc);if(!sources)return null;
+    const path=[];for(let node=element;node&&node!==doc.documentElement;node=node.parentElement)path.unshift(node.localName+':nth-child('+([...node.parentElement.children].indexOf(node)+1)+')');
+    const selector=':root > '+path.join(' > '),fields=['year','month','day','hour','minute','second','millisecond','ampm'],parts=['datetime-edit','datetime-edit-fields-wrapper',...fields.map(key=>'datetime-edit-'+key+'-field'),'datetime-edit-text','calendar-picker-indicator'];
+    const inherited=['font-family','font-size','font-style','font-weight','font-stretch','font-variant','font-feature-settings','font-variation-settings','font-kerning','line-height','letter-spacing','word-spacing','text-transform','direction','color','visibility'];
+    const properties=[...inherited,'display','opacity','anchor-name','padding-left','padding-right','padding-top','padding-bottom','border-left-width','border-right-width','border-top-width','border-bottom-width','filter','clip-path','transform','rotate','scale','translate','background-origin','background-size','background-position','background-repeat'];
+    let style=componentDateStyles.get(doc);if(!style){style=doc.createElement('style');style.className='collab-text-measure collab-date-measure';componentDateStyles.set(doc,style);}if(!style.isConnected)doc.head.append(style);
+    const host=doc.createElement('div');host.className='collab-text-measure';host.setAttribute('aria-hidden','true');host.style.cssText='all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;visibility:hidden!important;pointer-events:none!important';
+    const styles=[],rects=[],glyphs=[];let result;
+    try{
+        for(let i=0;i<parts.length;i++){
+            const rules=componentNativeRules(doc,'date:'+parts[i],sources);if(!rules)return null;
+            const parent=i===0?css:i===1?styles[0]:styles[1],inherit=inherited.map(name=>name+':'+parent.getPropertyValue(name)).join(';'),numeric=i>=2&&i<10,indicator=i===parts.length-1;
+            const defaults=numeric?'display:inline;padding:1px;border:0;font:inherit!important':indicator?'display:inline-block;padding:'+(element.type==='time'?'3px':'2px')+';background-origin:content-box;background-size:contain;background-position:0% 0%;background-repeat:no-repeat':'display:inline-block;padding:'+(i===1?'1px 0':'0')+';border:0';
+            if(!rules.length){
+                const values=new Map(inherited.map(name=>[name,parent.getPropertyValue(name)]));
+                for(const name of ['filter','clip-path','transform','rotate','scale','translate','anchor-name'])values.set(name,'none');
+                values.set('display',numeric?'inline':'inline-block');values.set('opacity','1');
+                for(const side of ['left','right','top','bottom']){values.set('border-'+side+'-width','0px');values.set('padding-'+side,(numeric?1:indicator?element.type==='time'?3:2:i===1&&['top','bottom'].includes(side)?1:0)+'px');}
+                values.getPropertyValue=name=>values.get(name)||'';styles.push(values);continue;
+            }
+            style.textContent=':where('+selector+')::before{'+inherit+';'+defaults+'}\n'+rules.join('\n').replaceAll('::before',':where('+selector+')::before')+'\n:where('+selector+')::before{content:none!important}';
+            const current=view.getComputedStyle(element,'::before'),values=new Map(properties.map(name=>[name,current.getPropertyValue(name)]));values.getPropertyValue=name=>values.get(name)||'';styles.push(values);
+        }
+        style.textContent=parts.map((part,i)=>selector+'::-webkit-'+part+'{anchor-name:'+(styles[i].get('anchor-name')==='none'?'':styles[i].get('anchor-name')+',')+'--collab-date-'+i+'!important}').join('\n');
+        const probes=parts.map((_,i)=>{const probe=doc.createElement('i');probe.style.cssText='all:initial;position:fixed;position-anchor:--collab-date-'+i+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(probe);return probe;});element.parentElement.append(host);
+        probes.forEach(probe=>rects.push(probe.getBoundingClientRect()));
+        const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[0].width||!rects[1].width)return null;
+        const visible=i=>{for(const index of [0,1,i]){const s=styles[index];if(s.get('display')==='none'||s.get('visibility')!=='visible'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
+        const paint=i=>{const color=styles[i].get('color');return visible(i)&&!(color.startsWith('rgba(')&&/,\s*0\)$/.test(color)||/\/\s*0%?\)$/.test(color));};
+        const tokens=[...element.value.matchAll(/\d+/g)],values=element.type==='time'?[null,null,null,...tokens.map(token=>token[0])]:tokens.map(token=>token[0]);
+        if(element.type==='date')values.length=3;
+        if(values[6])values[6]=values[6].padEnd(3,'0');
+        const number=new Intl.NumberFormat(view.navigator.language,{useGrouping:false}),numericRects=[],numerics=[];
+        for(let index=0;index<7;index++){
+            const r=rects[index+2],s=styles[index+2];if(!r.width||!r.height)continue;
+            const value=values[index]??(index>=5?'0'.repeat(index===6?3:2):null);if(value===null)return null;
+            const text=number.format(Number(value)).padStart(value.length,'0');if(!/^\d+$/.test(text)||text.length!==value.length||s.get('display')!=='inline')return null;
+            const span=doc.createElement('span');span.style.cssText='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none';for(const name of inherited)span.style.setProperty(name,s.get(name));span.textContent=text;host.append(span);numerics.push({index,r,s,text,span});
+        }
+        for(const {index,r,s,text,span}of numerics){
+            const range=doc.createRange();range.selectNodeContents(span);const total=range.getBoundingClientRect(),inset=side=>parseFloat(s.get('padding-'+side))+parseFloat(s.get('border-'+side+'-width')),left=inset('left'),right=inset('right'),top=inset('top'),bottom=inset('bottom');
+            if(![left,right,top,bottom].every(Number.isFinite)||Math.abs(total.width+left+right-r.width)>.1||Math.abs(total.height+top+bottom-r.height)>.1)return null;
+            numericRects.push({index,rect:r});if(!paint(index+2))continue;
+            for(let offset=0;offset<text.length;offset++){range.setStart(span.firstChild,offset);range.setEnd(span.firstChild,offset+1);const g=range.getBoundingClientRect();glyphs.push({offset:index*16+offset,rect:{left:r.left+left+g.left-total.left,right:r.left+left+g.right-total.left,top:r.top+top,bottom:r.top+top+g.height,width:g.width,height:g.height}});}
+        }
+        const literal=rects[10];numericRects.sort((a,b)=>a.rect.left-b.rect.left);
+        if(paint(10)&&literal.width&&literal.height)for(let i=1;i<numericRects.length;i++){const a=numericRects[i-1],b=numericRects[i];if(b.rect.left>a.rect.right)glyphs.push({offset:1024+a.index*16+b.index,rect:{left:a.rect.right,right:b.rect.left,top:literal.top,bottom:literal.bottom,width:b.rect.left-a.rect.right,height:literal.height}});}
+        const button=rects[11],buttonStyle=styles[11],image=button.width&&button.height&&visible(11)&&!element.disabled&&!element.readOnly?{left:button.left+parseFloat(buttonStyle.get('padding-left')),right:button.right-parseFloat(buttonStyle.get('padding-right')),top:button.top+parseFloat(buttonStyle.get('padding-top')),bottom:button.bottom-parseFloat(buttonStyle.get('padding-bottom'))}:null;
+        if(image){image.width=image.right-image.left;image.height=image.bottom-image.top;}
+        result={content:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.left>=rects[0].left-.001&&r.right<=rects[0].right+.001&&r.top>=rects[0].top-.001&&r.bottom<=rects[0].bottom+.001),image};
+    }finally{host.remove();style.textContent='';}
+    return result;
+}
+
 function componentTextField(element) {
     if(element.closest('[data-private]') || element.matches('input[type="password"]'))return false;
+    if(element.matches(COMPONENT_DATE_FIELD))return true;
     if(componentSourceField(element))return true;
     if(element.matches('select')){
         const css=element.ownerDocument.defaultView.getComputedStyle(element);
@@ -805,6 +888,7 @@ function componentFieldStyle(doc) {
 
 function componentFieldContent(field) {
     if(!field.matches('input,select,textarea') || !componentTextField(field))return null;
+    if(field.matches(COMPONENT_DATE_FIELD))return componentDateField(field)?.content || null;
     const cache=componentMeasurements?.fields;if(cache?.has(field))return cache.get(field);
     const css=field.ownerDocument.defaultView.getComputedStyle(field),rect=field.getBoundingClientRect(),inset=side=>parseFloat(css['border'+side+'Width'])+parseFloat(css['padding'+side]);
     if(field.type==='number' && (field.validity.badInput || css.appearance!=='none'))return null;
@@ -819,6 +903,7 @@ function componentFieldContent(field) {
 }
 
 function componentFieldMeasure(field,run) {
+    if(field.matches(COMPONENT_DATE_FIELD)){const date=componentDateField(field);return date?run(null,offset=>date.glyphs.find(g=>g.offset===offset)?.rect):null;}
     if(typeof Intl.Segmenter!=='function')return null;
     const doc=field.ownerDocument,css=doc.defaultView.getComputedStyle(field);
     if(field.type==='number' && (field.validity.badInput || css.appearance!=='none'))return null;
@@ -1097,6 +1182,7 @@ function componentBacklinkContext(element) {
 }
 
 function componentTextHash(element) {
+    if(element.matches(COMPONENT_DATE_FIELD))return componentHash(JSON.stringify([element.type,element.value,element.ownerDocument.defaultView.navigator.language,element.lang]));
     if(componentTextField(element))return componentHash(componentFieldText(element));
     if(element.matches('select'))return '';
     if(element.matches('#searchAssetPreview,#searchAssetPreview > p'))return componentHash(element.innerText);
@@ -1321,6 +1407,7 @@ function componentCharacter(element,offset,plane) {
 }
 
 function componentNearText(element,point,plane) {
+    if(element.matches(COMPONENT_DATE_FIELD))return componentDateField(element)?.glyphs || [];
     if(componentTextField(element))return componentFieldMeasure(element,(mirror,character,position,segments)=>{
         const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y),node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
         if(node!==mirror.firstChild)return null;
@@ -1375,6 +1462,7 @@ function componentNearText(element,point,plane) {
 }
 
 function componentImageRect(image,plane) {
+    if(image.matches(COMPONENT_DATE_FIELD))return componentDateField(image)?.image || null;
     if(image.matches('select') || componentSelectField(image))return componentSelectImage(image);
     if(image.matches('.av__gallery-cover'))image=image.querySelector(':scope > img.av__gallery-img');
     if(!image || !visibleElement(image))return null;
@@ -1636,6 +1724,15 @@ function measureComponentScrollbar(element,point,parts) {
 }
 
 function componentGeometry(element,point,scrollbar=componentScrollbar(element,point),fieldText) {
+    if(element.matches(COMPONENT_DATE_FIELD)){
+        const date=componentDateField(element);if(!date)return null;
+        const viewport=date.content.viewport,bounds=element.getBoundingClientRect(),image=date.image;
+        if(!(image&&point.x>=image.left&&point.x<image.right&&point.y>=image.top&&point.y<image.bottom)&&(point.y<viewport.top||point.y>=viewport.bottom)){
+            const above=point.y<viewport.top,start=above?bounds.top:viewport.bottom,end=above?viewport.top:bounds.bottom;
+            if(point.x<bounds.left||point.x>=bounds.right||point.y<start||point.y>=end)return null;
+            return {edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:above?[{kind:'self',side:'start'},{kind:'field-viewport',side:'start'}]:[{kind:'field-viewport',side:'end'},{kind:'self',side:'end'}]},x:(point.x-bounds.left)/bounds.width,y:(point.y-start)/(end-start)};
+        }
+    }
     if(element.matches('input,textarea') && ['text','search','number','email','url','tel','password','textarea'].includes(element.type) && !componentTextField(element))return null;
     const contains=rect=>point.x>=rect.left&&point.x<rect.right&&point.y>=rect.top&&point.y<rect.bottom;
     if(scrollbar?.areas.some(contains)){
@@ -1688,7 +1785,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
         if(checkbox)for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:checkbox.face[key],edge:{kind:'checkbox-face',side}});
         if(onPicker && (other<picker.border[otherStart] || other>=picker.border[otherEnd]) && point[axis]>=picker.border[start] && point[axis]<picker.border[end]){edges[axis]=entries.map(item=>item.edge);relative[axis]=(point[axis]-bounds[start])/(bounds[end]-bounds[start]);continue;}
         if(onPicker)for(const part of point[axis]<picker.border[start] || point[axis]>=picker.border[end] ? ['content','viewport','border']:['border','viewport','content'])for(const [side,key]of [['start',start],['end',end]])entries.unshift({value:picker[part][key],edge:{kind:'picker-'+part,side}});
-        if(image && (!select || !glyph && other>=image[otherStart] && other<=image[otherEnd]))for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
+        if(image && (!(select || element.matches(COMPONENT_DATE_FIELD)) || !glyph && other>=image[otherStart] && other<=image[otherEnd]))for(const [side,key] of [['start',start],['end',end]])if(image[key]>=bounds[start] && image[key]<=bounds[end])entries.push({value:image[key],edge:{kind:'image',side}});
         if(frame && !onThumb && !(range && axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right))for(const [side,key] of [['start',start],['end',end]])entries.push({value:frame[key],edge:{kind:toggle?'switch-track':'frame',side}});
         if(range)for(const part of onThumb || axis==='x' && point.x>=range.thumb.left && point.x<=range.thumb.right ? ['thumb']:['thumb','track']){
             const rect=range[part];if(axis==='y' && (point.x<rect.left || point.x>rect.right))continue;
@@ -1736,6 +1833,11 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
 }
 
 function captureComponent(hit,plugin,point) {
+    const previous=componentMeasurements;componentMeasurements ||= {};
+    try{return captureMeasuredComponent(hit,plugin,point);}finally{componentMeasurements=previous;}
+}
+
+function captureMeasuredComponent(hit,plugin,point) {
     if(hit.closest('[data-private]') || componentSearchField(hit)===null || componentAssetPath(hit)===null || componentSuperblockDivider(hit)===null || componentBazaarPackage(hit)===null)return null;
     const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
     if(hit.matches('canvas') && !graph)return null;
@@ -1765,6 +1867,11 @@ function captureComponent(hit,plugin,point) {
 }
 
 function resolveComponent(cursor,plugin) {
+    const previous=componentMeasurements;componentMeasurements ||= {};
+    try{return resolveMeasuredComponent(cursor,plugin);}finally{componentMeasurements=previous;}
+}
+
+function resolveMeasuredComponent(cursor,plugin) {
     const anchor=cursor.ui;
     if(!validUIAnchor(anchor))return null;
     const root=componentRoots(anchor.scope,plugin);if(!root)return null;
@@ -1787,7 +1894,7 @@ function resolveComponent(cursor,plugin) {
     const textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     const select=(element.matches('select') || componentSelectField(element)) && !picker;
     if(select && !componentTextField(element))return null;
-    if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || select && edge.kind==='image'))return null;
+    if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || (select || element.matches(COMPONENT_DATE_FIELD)) && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
     if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track',...(toggle?['switch-halo']:[]),'frame','frame-box'].includes(edge.kind))))return null;
     const haloAnchor=toggle && Object.values(anchor.edges).flat().every(edge=>edge.kind==='switch-halo');
@@ -2598,12 +2705,14 @@ module.exports = class CollaborationPlugin extends Plugin {
             }else if(this.cursorLayer.hasAttribute('popover')){
                 this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
             }
-            const visible = new Set();
+            const visible = new Set(),resolved=new Map();
             const positions=[],people=new Set(this.clients.map(client=>client.name));
             if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
                 for (const client of this.remoteCursors) {
                     if (client.name === this.clientName || !people.has(client.name)) continue;
-                    const point = resolveCursor(client.cursor, this);
+                    const key=JSON.stringify(client.cursor);
+                    if(!resolved.has(key))resolved.set(key,resolveCursor(client.cursor,this));
+                    const point=resolved.get(key);
                     if (!point) continue;
                     const marker=this.cursorMarkers.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
                     positions.push({client,point,rect});
