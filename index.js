@@ -549,6 +549,7 @@ const componentColorStyles=new Map();
 const componentPickerStyles=new Map();
 const componentFieldStyles=new Map();
 const componentDateStyles=new Map();
+const componentDateValues=new WeakMap();
 const componentCheckboxPaint=new WeakMap();
 let componentColorEditors=new WeakMap();
 let componentMeasurements;
@@ -797,10 +798,59 @@ function componentDateSheets(doc) {
     cache?.set(doc,sources);return sources;
 }
 
+function componentPartialDate(element,selector,style,host,styles,rects,probes,inherited) {
+    const doc=element.ownerDocument,view=doc.defaultView,base=style.textContent,values=[],states=[],rules=[],bits=[19,4,5,5,6,6,10],labels=[[' 年 ','yyyy','----'],['月','mm'],['日','dd'],['--','hh'],['--','mm'],['--','ss'],['---','fff']];
+    const probe=name=>{const node=doc.createElement('i');node.style.cssText='all:initial;position:fixed;position-anchor:'+name+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(node);return node;};
+    const resolved=node=>{const r=node.getBoundingClientRect();return r.left>-99999&&r.width>0&&r.height>0;};
+    const previous=componentDateValues.get(element),indices=Array.from({length:7},(_,index)=>index).filter(index=>rects[index+2].width&&rects[index+2].height);
+    try{
+    // Verify the last decoded state against native attributes each time; unchanged fields need no bit probes.
+    if(previous&&previous.length===indices.length&&previous.every((state,i)=>state.index===indices[i])){
+        const checks=previous.map(state=>{const name='--collab-date-state-'+state.index+'-same',condition=state.missing?'style(--collab-date-value < 0) and style(--collab-date-placeholder:'+JSON.stringify(state.value)+')':'style(--collab-date-value >= '+Number(state.value)+') and style(--collab-date-value <= '+Number(state.value)+')',anchors=[styles[state.index+2].get('anchor-name'),'--collab-date-'+(state.index+2),'if('+condition+':'+name+';else:'+name+'-changed)'].filter(value=>value!=='none');return {state,node:probe(name),rule:selector+'::-webkit-datetime-edit-'+['year','month','day','hour','minute','second','millisecond'][state.index]+'-field{--collab-date-value:attr(aria-valuenow type(<number>),-1);--collab-date-placeholder:attr(aria-placeholder,"__missing__");anchor-name:'+anchors.join(',')+'!important}'};});
+        style.textContent=base+'\n'+checks.map(check=>check.rule).join('\n');
+        if(checks.every(check=>resolved(check.node)))for(const {state}of checks){values[state.index]=state.value;states.push({...state});}
+    }
+    if(!states.length){
+    for(let index=0;index<7;index++){
+        if(!rects[index+2].width||!rects[index+2].height)continue;
+        const prefix='--collab-date-state-'+index,has=probe(prefix+'-has'),empty=probe(prefix+'-empty'),digits=[],placeholders=[],anchors=[styles[index+2].get('anchor-name'),'--collab-date-'+(index+2),'if(style(--collab-date-value >= 0):'+prefix+'-has;else:'+prefix+'-empty)'].filter(name=>name!=='none'),declarations=['--collab-date-value:attr(aria-valuenow type(<number>),-1)','--collab-date-placeholder:attr(aria-placeholder,"__missing__")'];
+        for(let bit=0;bit<bits[index];bit++){const name=prefix+'-bit-'+bit;declarations.push('--collab-date-bit-'+bit+':mod(round(down,calc(var(--collab-date-value) / '+2**bit+'),1),2)');anchors.push('if(style(--collab-date-bit-'+bit+' > .5):'+name+';else:'+name+'-zero)');digits.push(probe(name));}
+        anchors.push('if('+labels[index].map((text,i)=>{const name=prefix+'-placeholder-'+i;placeholders.push({text,node:probe(name)});return 'style(--collab-date-placeholder:'+JSON.stringify(text)+'):'+name;}).join(';')+';else:'+prefix+'-unknown)');
+        rules.push(selector+'::-webkit-datetime-edit-'+['year','month','day','hour','minute','second','millisecond'][index]+'-field{'+declarations.join(';')+';anchor-name:'+anchors.join(',')+'!important}');states.push({index,has,empty,digits,placeholders});
+    }
+        style.textContent=base+'\n'+rules.join('\n');
+        for(const state of states){
+            const present=resolved(state.has);if(present===resolved(state.empty))return null;
+            if(present){const value=state.digits.reduce((sum,node,bit)=>sum+(resolved(node)?2**bit:0),0);values[state.index]=String(value).padStart(state.index===0?4:state.index===6?3:2,'0');}
+            else{
+                // shortcut: unrecognized native placeholder labels need locale calibration before drawing.
+                const matches=state.placeholders.filter(p=>resolved(p.node));if(matches.length!==1)return null;values[state.index]=matches[0].text;state.missing=true;
+            }
+        }
+        componentDateValues.set(element,states.map(state=>({index:state.index,missing:!!state.missing,value:values[state.index]})));
+    }
+        const missing=states.filter(state=>state.missing);
+        if(missing.length&&doc.activeElement===element){
+            const value=element.value,active=doc.activeElement,scroll=[];for(let node=element;node;node=node.parentElement)scroll.push({node,x:node.scrollLeft,y:node.scrollTop});
+            // A native zero buffer has no ARIA value; only equal-width candidates need temporary typography.
+            const candidates=missing.map(state=>({...state,options:[values[state.index],'0'.repeat(state.index===0?4:state.index===6?3:2)].map(text=>{const span=doc.createElement('span');span.style.cssText='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none';for(const name of inherited)span.style.setProperty(name,styles[state.index+2].get(name));span.textContent=text;host.append(span);return {text,span};})}));
+            const match=state=>{const width=probes[state.index+2].getBoundingClientRect().width,s=styles[state.index+2],inset=['padding-left','padding-right','border-left-width','border-right-width'].reduce((sum,key)=>sum+parseFloat(s.get(key)),0),matches=state.options.filter(option=>{const range=doc.createRange();range.selectNodeContents(option.span);return Math.abs(range.getBoundingClientRect().width+inset-width)<.1;});if(matches.length!==1)return false;values[state.index]=matches[0].text;return true;},ambiguous=candidates.filter(state=>!match(state));
+            if(ambiguous.length){
+                style.textContent+='\n'+selector+'{font-family:serif!important;letter-spacing:1px!important}';
+                const family=view.getComputedStyle(element).fontFamily;for(const state of ambiguous)for(const {span}of state.options){span.style.fontFamily=family;span.style.letterSpacing='1px';}
+                if(!ambiguous.every(match))return null;
+                style.textContent=base;
+                if(element.value!==value||doc.activeElement!==active||scroll.some(p=>p.node.scrollLeft!==p.x||p.node.scrollTop!==p.y)||probes.some((probe,i)=>{const r=probe.getBoundingClientRect();return ['left','top','width','height'].some(key=>Math.abs(r[key]-rects[i][key])>.001);}))return null;
+            }
+        }
+        return values;
+    }finally{style.textContent=base;}
+}
+
 function measureComponentDateField(element) {
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),before=element.getBoundingClientRect();
-    // shortcut: partial native values, twelve-hour fields and transformed native text need independent state/plane calibration.
-    if(!element.value||element.validity.badInput||!doc.head||!view.CSS.supports('anchor-name','--collab-date')||css.writingMode!=='horizontal-tb')return null;
+    // shortcut: twelve-hour fields and transformed native text need independent state/plane calibration.
+    if(!doc.head||!view.CSS.supports('anchor-name','--collab-date')||css.writingMode!=='horizontal-tb')return null;
     for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),m=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(!m.is2D||m.a!==1||m.b!==0||m.c!==0||m.d!==1||s.scale!=='none'||s.rotate!=='none'||s.zoom!=='1')return null;}
     const ownBefore=view.getComputedStyle(element,'::before');if(!['none','normal'].includes(ownBefore.content))return null;
     const sources=componentDateSheets(doc);if(!sources)return null;
@@ -832,14 +882,17 @@ function measureComponentDateField(element) {
         const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[0].width||!rects[1].width)return null;
         const visible=i=>{for(const index of [0,1,i]){const s=styles[index];if(s.get('display')==='none'||s.get('visibility')!=='visible'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
         const paint=i=>{const color=styles[i].get('color');return visible(i)&&!(color.startsWith('rgba(')&&/,\s*0\)$/.test(color)||/\/\s*0%?\)$/.test(color));};
-        const tokens=[...element.value.matchAll(/\d+/g)],values=element.type==='time'?[null,null,null,...tokens.map(token=>token[0])]:tokens.map(token=>token[0]);
+        const tokens=[...element.value.matchAll(/\d+/g)],raw=element.type==='time'?[null,null,null,...tokens.map(token=>token[0])]:tokens.map(token=>token[0]);
+        // Optional empty seconds/milliseconds can serialize as valid zero values while still displaying placeholders.
+        const partial=!element.value||element.validity.badInput||rects[7].width&&Number(raw[5]||0)===0||rects[8].width&&Number(raw[6]||0)===0,values=partial?componentPartialDate(element,selector,style,host,styles,rects,probes,inherited):raw;
+        if(!values)return null;
         if(element.type==='date')values.length=3;
-        if(values[6])values[6]=values[6].padEnd(3,'0');
+        if(values[6]&&/^\d+$/.test(values[6]))values[6]=values[6].padEnd(3,'0');
         const number=new Intl.NumberFormat(view.navigator.language,{useGrouping:false}),numericRects=[],numerics=[];
         for(let index=0;index<7;index++){
             const r=rects[index+2],s=styles[index+2];if(!r.width||!r.height)continue;
             const value=values[index]??(index>=5?'0'.repeat(index===6?3:2):null);if(value===null)return null;
-            const text=number.format(Number(value)).padStart(value.length,'0');if(!/^\d+$/.test(text)||text.length!==value.length||s.get('display')!=='inline')return null;
+            const text=partial&&!/^\d+$/.test(value)?value:number.format(Number(value)).padStart(value.length,'0');if((!partial&&!/^\d+$/.test(text))||text.length!==value.length||s.get('display')!=='inline')return null;
             const span=doc.createElement('span');span.style.cssText='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none';for(const name of inherited)span.style.setProperty(name,s.get(name));span.textContent=text;host.append(span);numerics.push({index,r,s,text,span});
         }
         for(const {index,r,s,text,span}of numerics){
@@ -852,7 +905,7 @@ function measureComponentDateField(element) {
         if(paint(10)&&literal.width&&literal.height)for(let i=1;i<numericRects.length;i++){const a=numericRects[i-1],b=numericRects[i];if(b.rect.left>a.rect.right)glyphs.push({offset:1024+a.index*16+b.index,rect:{left:a.rect.right,right:b.rect.left,top:literal.top,bottom:literal.bottom,width:b.rect.left-a.rect.right,height:literal.height}});}
         const button=rects[11],buttonStyle=styles[11],image=button.width&&button.height&&visible(11)&&!element.disabled&&!element.readOnly?{left:button.left+parseFloat(buttonStyle.get('padding-left')),right:button.right-parseFloat(buttonStyle.get('padding-right')),top:button.top+parseFloat(buttonStyle.get('padding-top')),bottom:button.bottom-parseFloat(buttonStyle.get('padding-bottom'))}:null;
         if(image){image.width=image.right-image.left;image.height=image.bottom-image.top;}
-        result={content:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.left>=rects[0].left-.001&&r.right<=rects[0].right+.001&&r.top>=rects[0].top-.001&&r.bottom<=rects[0].bottom+.001),image};
+        result={content:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.left>=rects[0].left-.001&&r.right<=rects[0].right+.001&&r.top>=rects[0].top-.001&&r.bottom<=rects[0].bottom+.001),image,text:partial?values:null};
     }finally{host.remove();style.textContent='';}
     return result;
 }
@@ -1182,7 +1235,10 @@ function componentBacklinkContext(element) {
 }
 
 function componentTextHash(element) {
-    if(element.matches(COMPONENT_DATE_FIELD))return componentHash(JSON.stringify([element.type,element.value,element.ownerDocument.defaultView.navigator.language,element.lang]));
+    if(element.matches(COMPONENT_DATE_FIELD)){
+        const date=componentDateField(element);
+        return date?componentHash(JSON.stringify([element.type,date.text||element.value,element.ownerDocument.defaultView.navigator.language,element.lang])):'';
+    }
     if(componentTextField(element))return componentHash(componentFieldText(element));
     if(element.matches('select'))return '';
     if(element.matches('#searchAssetPreview,#searchAssetPreview > p'))return componentHash(element.innerText);
@@ -1766,7 +1822,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
-    const field=onPicker ? null:componentFieldContent(element),empty=field && !componentFieldText(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
+    const field=onPicker ? null:componentFieldContent(element),empty=field && !element.matches(COMPONENT_DATE_FIELD) && !componentFieldText(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
     const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!checkbox&&!color&&!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     // Person-local badges must not change shared row gaps or their text offsets.
     let text=empty || onPicker || box&&!textPlane || padding && !element.matches('select,textarea') || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:fieldText || componentNearText(element,parentPoint,textPlane) || [];
