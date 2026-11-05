@@ -520,7 +520,8 @@ function resolvePDF(element,anchor) {
 }
 
 // Component identities are bounded hashes; input values and document text never enter the wire format.
-const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
+const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p,.b3-menu[data-name^="appearanceFontFamily-"] [data-type="available-fonts"] .b3-menu__label';
+const COMPONENT_FONT_MENU='.b3-menu:is([data-name="appearanceFontFamily-globalFontFamilies"],[data-name="appearanceFontFamily-fontFamilies"],[data-name="appearanceFontFamily-codeFontFamilies"])';
 const COMPONENT_NUMBER_SETTINGS=new Map([
     ["editor",["editor.cursorSurroundingLines","editor.dynamicLoadBlocks","editor.blockRefDynamicAnchorTextMaxLen","editor.backlinkExpandCount","editor.backmentionExpandCount"]],
     ["file",["fileTree.maxOpenTabCount","editor.generateHistoryInterval","editor.historyRetentionDays","fileTree.maxListCount","fileTree.largeFileWarningSize","fileTree.recentDocsMaxListCount"]],
@@ -625,6 +626,17 @@ function componentSourceField(element) {
     return element.matches('textarea') && popup && componentRenderTargets.get(popup)?.field===element && !!componentRenderTarget(popup);
 }
 
+function componentFontField(element) {
+    return element.matches('input.b3-select[readonly][data-menu="true"]') && element.type==='text' && element.closest('.config__tab-container')?.dataset.name==='appearance' && ['appearance.globalFontFamilies','editor.fontFamilies','editor.codeFontFamilies'].includes(element.id);
+}
+
+function componentFontIdentity(element) {
+    const row=element.matches('.b3-list-item') && element.parentElement?.matches('[data-type="available-fonts"]') && element.closest(COMPONENT_FONT_MENU),chip=element.matches('.config-font-family__chip') && element.closest('.config__tab-container')?.dataset.name==='appearance' && ['globalFontFamilies','fontFamilies','codeFontFamilies'].includes(element.closest('[data-font-config-key]')?.dataset.fontConfigKey);
+    if(!row && !chip)return undefined;
+    const label=chip ? element:element.querySelector(':scope > .b3-menu__label'),family=label?.dataset.family,weight=label?.dataset.weight;
+    return family && family.length<=512 && !/[\x00-\x1f]/.test(family) && /^\d{1,4}$/.test(weight || '') && Number(weight)>0 && Number(weight)<=1000 ? [family,Number(weight)]:null;
+}
+
 function componentTextField(element) {
     if(element.closest('[data-private]') || element.matches('input[type="password"]'))return false;
     if(componentSourceField(element))return true;
@@ -636,7 +648,7 @@ function componentTextField(element) {
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     const settingField=element.matches('.config__tab-container[data-name="editor"] textarea.b3-text-field[id^="editor."]') || element.matches('input.b3-text-field[type="number"]') && COMPONENT_NUMBER_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
     const textSetting=element.matches('input.b3-text-field,textarea.b3-text-field') && ['text','textarea'].includes(element.type) && COMPONENT_TEXT_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
-    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting || componentFontField(element) || element.matches('input.b3-text-field[data-type="font-search"]') && element.type==='text' && !!element.closest(COMPONENT_FONT_MENU)) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {
@@ -776,9 +788,11 @@ function componentBazaarPackage(element) {
 }
 
 function componentKey(element) {
+    const font=componentFontIdentity(element);
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
-    const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
+    const attributes=['data-node-id','data-command-id','data-font-config-key','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(font!==undefined)values.push(['font',componentHash(JSON.stringify(font))]);
     if(element.matches('#configBazaarReadme'))values.push(['bazaar-package',componentHash(JSON.stringify(componentBazaarPackage(element)))]);
     if(element.matches('.config-range__desktop')){const field=element.querySelector(':scope > input.b3-slider[type="range"][id]');if(field)values.push(['range-control',componentHash(field.id)]);}
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
@@ -843,14 +857,15 @@ function componentStep(element) {
 
 function componentChild(parent,step) {
     const children=componentChildren(parent).filter(child=>componentKey(child)===step.key);
-    return children.length===step.count ? children[step.index]:null;
+    return children.length===step.count && !(children.length>1 && children.some(child=>componentFontIdentity(child)!==undefined)) ? children[step.index]:null;
 }
 
 function componentRoute(root,element) {
     const route=[];
     for(let node=element;node!==root;node=node.parentElement){
         if(!node?.parentElement || route.length>=32)return null;
-        route.unshift(componentStep(node));
+        const step=componentStep(node),font=componentFontIdentity(node);if(font!==undefined && (!font || step.count!==1))return null;
+        route.unshift(step);
     }
     return route;
 }
@@ -1135,7 +1150,7 @@ function componentNearText(element,point,plane) {
 }
 
 function componentImageRect(image,plane) {
-    if(image.matches('select'))return componentSelectImage(image);
+    if(image.matches('select') || componentFontField(image))return componentSelectImage(image);
     if(image.matches('.av__gallery-cover'))image=image.querySelector(':scope > img.av__gallery-img');
     if(!image || !visibleElement(image))return null;
     if(!image.matches('img') || !image.naturalWidth || !image.naturalHeight)return null;
@@ -1403,7 +1418,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
     const parentPoint=point,textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     if(picker?.toLocal)point=picker.toLocal(point);
-    const onPicker=inside(picker?.bounds),select=element.matches('select') && !onPicker;if(select && !componentTextField(element))return null;
+    const onPicker=inside(picker?.bounds),select=(element.matches('select') || componentFontField(element)) && !onPicker;if(select && !componentTextField(element))return null;
     if(!onPicker)point=parentPoint;
     // Native scrollbar thumbs need their own geometry; a reserved gutter is never ordinary padding.
     if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
@@ -1530,7 +1545,7 @@ function resolveComponent(cursor,plugin) {
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
     const textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
-    const select=element.matches('select') && !picker;
+    const select=(element.matches('select') || componentFontField(element)) && !picker;
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || select && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
@@ -1561,7 +1576,7 @@ function resolveComponent(cursor,plugin) {
     if(precise || gaps.length){
         // Textarea text can scroll into padding, but remains clipped at the native viewport.
         const clip=element.matches('textarea') ? field?.viewport:field;
-        if(fieldRects && clip && !select && (point.x<clip.left || point.x>=clip.right || point.y<clip.top || point.y>=clip.bottom))return null;
+        if(fieldRects && clip && !element.matches('select') && (point.x<clip.left || point.x>=clip.right || point.y<clip.top || point.y>=clip.bottom))return null;
         const glyph=fieldRects && Object.values(anchor.edges).flat().every(edge=>edge.kind==='text' && edge.offset===offsets[0]) && {offset:offsets[0],rect:fieldRects.get(offsets[0])};
         const local=componentGeometry(element,point,scrollbarAnchor?scrollbar:undefined,glyph?.rect ? [glyph]:undefined);
         if(!local)return null;
