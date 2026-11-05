@@ -51,6 +51,8 @@ function componentRoundTrip(point,plugin) {
 }
 function projectedFramePoint(element,point) {
     const probe=element.ownerDocument.createElement('i');probe.style.cssText=element.style.cssText;
+    const css=element.ownerDocument.defaultView.getComputedStyle(element),size=axis=>parseFloat(css[axis])+(css.boxSizing==='border-box' ? 0:(axis==='width' ? ['Left','Right']:['Top','Bottom']).reduce((sum,side)=>sum+parseFloat(css['border'+side+'Width'])+parseFloat(css['padding'+side]),0));
+    probe.style.width=size('width')+'px';probe.style.height=size('height')+'px';probe.style.boxSizing='border-box';
     probe.style.border='none';probe.style.padding='0';probe.style.pointerEvents='none';probe.style.opacity='0';
     const markers=[[0,0],[100,0],[0,100]].map(([x,y])=>{const marker=element.ownerDocument.createElement('i');marker.style.cssText='position:absolute;width:0;height:0;left:'+x+'px;top:'+y+'px';probe.append(marker);return marker;});
     element.parentElement.append(probe);
@@ -1156,23 +1158,60 @@ async function test(name, run) {
         inner.srcdoc='<style>body{margin:12px;height:800px}button{width:160px;height:36px}#blank{height:65px}</style><button data-name="affine-target">旋转按钮</button><div id="blank"></div>';
         const innerLoaded=new Promise(resolve=>inner.onload=resolve);outer.contentDocument.body.append(inner);await innerLoaded;
         const contentPoint=(element,p)=>{const style=element.ownerDocument.defaultView.getComputedStyle(element);return projectedFramePoint(element,{x:p.x+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft),y:p.y+parseFloat(style.borderTopWidth)+parseFloat(style.paddingTop)});};
-        const pointAt=element=>{const r=element.getBoundingClientRect();return contentPoint(outer,contentPoint(inner,{x:r.left+20,y:r.top+15}));};
+        const pointAt=element=>{const range=element.ownerDocument.createRange();let r=element.getBoundingClientRect();if(element.matches('button')){range.setStart(element.firstChild,0);range.setEnd(element.firstChild,1);r=range.getBoundingClientRect();}return contentPoint(outer,contentPoint(inner,{x:r.left+r.width*.35,y:r.top+r.height*.65}));};
         try{
             const button=inner.contentDocument.querySelector('button'),anchor=componentRoundTrip(pointAt(button));assert(anchor.ui.frames?.length===2,'transformed nested route missing');
             componentRoundTrip(pointAt(inner.contentDocument.querySelector('#blank')));
             const borderPoint=projectedFramePoint(outer,{x:3,y:105}),border=componentRoundTrip(borderPoint);
             assert(border.ui.edges.x.some(edge=>edge.kind==='frame-box'),'local frame border indistinguishable from legacy viewport edges');
             holder.style.rotate='-5deg';holder.style.scale='1.05 .95';outer.style.transform='rotate(-17deg) scale(-.82,.9)';inner.style.transform='rotate(18deg) skewX(-11deg)';outer.style.transformOrigin='82% 24%';
-            let expected=pointAt(button),actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'receiver transform drift: '+JSON.stringify({actual,expected}));
-            const borderExpected=projectedFramePoint(outer,{x:3,y:105}),borderActual=resolveCursor(border);assert(borderActual&&Math.hypot(borderActual.x-borderExpected.x,borderActual.y-borderExpected.y)<.6,'transformed frame border drift');
-            outer.contentWindow.scrollTo(0,6);inner.contentWindow.scrollTo(0,4);await frame();expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'rotated nested scroll drift: '+JSON.stringify({actual,expected}));
+            let expected=pointAt(button),actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.1,'receiver transform drift: '+JSON.stringify({actual,expected}));
+            const borderExpected=projectedFramePoint(outer,{x:3,y:105}),borderActual=resolveCursor(border);assert(borderActual&&Math.hypot(borderActual.x-borderExpected.x,borderActual.y-borderExpected.y)<.1,'transformed frame border drift');
+            outer.contentWindow.scrollTo(0,6);inner.contentWindow.scrollTo(0,4);await frame();expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.1,'rotated nested scroll drift: '+JSON.stringify({actual,expected}));
             outer.contentWindow.scrollTo(0,150);await frame();assert(resolveCursor(anchor)===null,'rotated frame ignored viewport clipping');outer.contentWindow.scrollTo(0,0);await frame();assert(resolveCursor(anchor),'visible rotated target did not recover');
             for(const transform of ['rotate(90deg)','rotate(180deg)','scale(-.9,-.8) skewX(6deg)']){
-                outer.style.transform=transform;outer.style.transformOrigin='50% 50%';expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'quarter turn or inversion drift: '+transform);
+                outer.style.transform=transform;outer.style.transformOrigin='50% 50%';expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.1,'quarter turn or inversion drift: '+transform);
             }
-            outer.style.transform='rotate(8deg)';outer.style.rotate='0 0 -1 .1rad';outer.style.scale='95% 90%';outer.style.zoom='1.1';expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'individual rotation, percentage scale or CSS zoom drift');
+            outer.style.transform='rotate(8deg)';outer.style.rotate='0 0 -1 .1rad';outer.style.scale='95% 90%';outer.style.zoom='1.1';expected=pointAt(button);actual=resolveCursor(anchor);assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.1,'individual rotation, percentage scale or CSS zoom drift');
             holder.style.perspective='600px';assert(resolveCursor(anchor)===null,'unsupported perspective guessed');holder.style.perspective='';
             inner.style.transform='scale(0)';assert(resolveCursor(anchor)===null,'singular frame painted');
+        }finally{holder.remove();}
+    });
+    await test('嵌套嵌入的分数尺寸、缩放与仿射变换误差小于0.1px，字形和留白按本端边界定位',async()=>{
+        const holder=document.createElement('div');holder.style.cssText='position:fixed;left:130px;top:80px;width:480px;height:360px;z-index:100;transform:rotate(3deg) skewX(4deg);transform-origin:31% 62%';
+        const outer=document.createElement('iframe');outer.id='precision-frame';outer.style.cssText='position:absolute;left:30.25px;top:35.125px;width:280.375px;height:220.625px;border:3.5px solid;padding:2.375px 3.125px;transform-origin:43% 57%';
+        outer.srcdoc='<style>body{margin:0;height:600px}</style>';const ready=new Promise(resolve=>outer.onload=resolve);holder.append(outer);document.body.append(holder);await ready;
+        const inner=outer.contentDocument.createElement('iframe');inner.id='precision-child';inner.style.cssText='position:absolute;left:21.375px;top:28.625px;width:185.375px;height:130.625px;box-sizing:border-box;border:2.5px solid;padding:1.375px;transform-origin:37% 61%';
+        inner.srcdoc='<style>body{margin:8.375px}button{display:block;width:135.375px;height:38.625px;margin:0;border:1.5px solid;padding:3.25px 5.375px;font:15.5px/23.25px sans-serif}#blank{width:120.375px;height:45.625px;margin-top:12.375px}</style><button data-name="precision-label">中文 Ab😀</button><div id="blank" data-name="precision-blank"></div>';
+        const childReady=new Promise(resolve=>inner.onload=resolve);outer.contentDocument.body.append(inner);await childReady;
+        const content=(element,p)=>{const c=element.ownerDocument.defaultView.getComputedStyle(element);return projectedFramePoint(element,{x:p.x+parseFloat(c.borderLeftWidth)+parseFloat(c.paddingLeft),y:p.y+parseFloat(c.borderTopWidth)+parseFloat(c.paddingTop)});};
+        const text=inner.contentDocument.querySelector('button'),blank=inner.contentDocument.querySelector('#blank'),range=inner.contentDocument.createRange();
+        const samples=[...[[0,1],[1,2],[3,4],[5,7]].map(([start,end])=>({target:text,point:()=>{range.setStart(text.firstChild,start);range.setEnd(text.firstChild,end);const r=range.getBoundingClientRect();return {x:r.left+r.width*.35,y:r.top+r.height*.65};}})),{target:blank,point:()=>{const r=blank.getBoundingClientRect();return {x:r.left+r.width*.37,y:r.top+r.height*.61};}}];
+        for(const axis of ['x','y'])samples.push({target:text,point:()=>{range.setStart(text.firstChild,0);range.setEnd(text.firstChild,1);const r=range.getBoundingClientRect(),b=text.getBoundingClientRect();return axis==='x' ? {x:b.left+(r.left-b.left)*.4,y:r.top+r.height*.65}:{x:r.left+r.width*.35,y:b.top+(r.top-b.top)*.4};}});
+        let cases=0,points=0,shown=0,hidden=0,maxDrift=0;
+        const check=(actual,expected,kind)=>{assert(actual,kind+' missing');const error=Math.hypot(actual.x-expected.x,actual.y-expected.y);maxDrift=Math.max(maxDrift,error);assert(error<.1,kind+' drift '+JSON.stringify({actual,expected,error,cases}));points++;};
+        try{
+            for(const sample of samples){const local=sample.point(),point=content(outer,content(inner,local));sample.anchor=captureCursor(point);assert(sample.anchor?.ui.frames?.length===2,'initial nested sample missing');}
+            const transforms=['none','rotate(17deg)','skewX(-13deg)','rotate(90deg)','rotate(180deg)','scale(-.85,.92)','scale(.85,-.92)','rotate(-11deg) skewY(7deg)'];
+            for(const boxSizing of ['border-box','content-box'])for(const width of [280.375,301.8125])for(const zoom of [.8,1,1.1,1.25])for(const [index,transform] of transforms.entries()){
+                outer.style.boxSizing=boxSizing;outer.style.width=width+'px';outer.style.zoom=String(zoom);outer.style.transform=transform;outer.style.rotate=index%2 ? '0 0 -1 .07rad':'none';outer.style.scale=index%3 ? '95% 103%':'none';
+                holder.style.transform=index%2 ? 'rotate(-5deg) skewY(6deg)':'rotate(3deg) skewX(4deg)';holder.style.zoom=index%3 ? '1.05':'1';
+                inner.style.transform=transforms[(index+2)%transforms.length];inner.style.zoom=index%2 ? '1.17':'1';
+                for(const element of [outer,inner]){
+                    const c=element.ownerDocument.defaultView.getComputedStyle(element),left=parseFloat(c.borderLeftWidth)+parseFloat(c.paddingLeft),top=parseFloat(c.borderTopWidth)+parseFloat(c.paddingTop),w=parseFloat(c.width)+(c.boxSizing==='border-box' ? -left-parseFloat(c.borderRightWidth)-parseFloat(c.paddingRight):0),h=parseFloat(c.height)+(c.boxSizing==='border-box' ? -top-parseFloat(c.borderBottomWidth)-parseFloat(c.paddingBottom):0);
+                    for(const x of [.01,.37,.99])for(const y of [.01,.61,.99]){const local={x:w*x,y:h*y},expected=content(element,local);check(frameToParent(element,local),expected,'forward');check(frameToContent(element,expected),local,'inverse');}
+                    assert(frameToContent(element,projectedFramePoint(element,{x:left*.3,y:top+h*.4}))===null,'frame border treated as child content');
+                }
+                for(const sample of samples){const local=sample.point(),parent=content(inner,local),expected=content(outer,parent),visible=inner.contentDocument.elementFromPoint(local.x,local.y)===sample.target&&outer.contentDocument.elementFromPoint(parent.x,parent.y)===inner&&document.elementFromPoint(expected.x,expected.y)===outer,actual=resolveCursor(sample.anchor);
+                    if(visible){check(actual,expected,'semantic receiver');shown++;const reverse=captureCursor(expected);assert(reverse?.ui.frames?.length===2,'reverse nested capture missing');check(resolveCursor(reverse),expected,'reverse capture');}else{assert(actual===null,'clipped nested sample painted');hidden++;}
+                }
+                outer.contentWindow.scrollTo(0,400);for(const sample of samples){assert(resolveCursor(sample.anchor)===null,'scrolled-out embedded target painted');hidden++;}outer.contentWindow.scrollTo(0,0);
+                cases++;
+            }
+            Object.assign(document.getElementById('results').dataset,{framePrecisionCases:String(cases),framePrecisionPoints:String(points),framePrecisionShown:String(shown),framePrecisionHidden:String(hidden),framePrecisionMaxDrift:String(maxDrift)});
+            assert(cases===128&&shown>0&&hidden>0,'incomplete affine coverage');
+            for(const sample of samples){sample.target.style.visibility='hidden';assert(resolveCursor(sample.anchor)===null,'hidden embedded target painted');sample.target.style.visibility='';}
+            assert(!document.querySelector('.collab-text-measure'),'frame probes leaked');
         }finally{holder.remove();}
     });
     await test('原生 PDF 页面按文件和页码定位，缩放旋转、页间空白与遮挡不会串页',async()=>{
@@ -1685,7 +1724,7 @@ async function test(name, run) {
                     assert(near(plugin.pointer.x,expected.x)&&near(plugin.pointer.y,expected.y),'nested frame pointer not translated through parent');
                     embedded.style.cssText='position:fixed;left:180px;top:120px;width:310px;height:180px;box-sizing:border-box;border:7px solid black;transform:rotate(13deg) scale(-.9,.85)';child.style.cssText='position:absolute;left:18px;top:16px;width:180px;height:90px;box-sizing:border-box;border:5px solid black;transform:rotate(-8deg) skewX(6deg)';
                     childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:12,clientY:16,pointerType:'mouse',bubbles:true}));
-                    const innerPoint=projectedFramePoint(child,{x:17,y:21}),rotatedExpected=projectedFramePoint(embedded,{x:innerPoint.x+7,y:innerPoint.y+7});assert(plugin.pointer&&Math.hypot(plugin.pointer.x-rotatedExpected.x,plugin.pointer.y-rotatedExpected.y)<.6,'rotated nested pointer event drift');
+                    const innerPoint=projectedFramePoint(child,{x:17,y:21}),rotatedExpected=projectedFramePoint(embedded,{x:innerPoint.x+7,y:innerPoint.y+7});assert(plugin.pointer&&Math.hypot(plugin.pointer.x-rotatedExpected.x,plugin.pointer.y-rotatedExpected.y)<.1,'rotated nested pointer event drift');
                     childDoc.querySelector('button').dispatchEvent(new KeyboardEvent('keydown',{key:'b',ctrlKey:true,bubbles:true}));assert(plugin.pendingShortcut==='Ctrl+B','nested shortcut missing');plugin.pendingShortcut=null;
                     const nextDocument=new Promise(resolve=>child.onload=resolve);child.srcdoc='<button>New nested page</button>';await nextDocument;await frame();
                     const before=JSON.stringify(plugin.pointer);childDoc.body.dispatchEvent(new PointerEvent('pointermove',{clientX:60,clientY:50,pointerType:'mouse',bubbles:true}));assert(JSON.stringify(plugin.pointer)===before&&!childStyle.isConnected,'replaced frame document kept listener or stylesheet');
