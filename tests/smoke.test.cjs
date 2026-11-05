@@ -1031,7 +1031,10 @@ test("document events update prefix viewer counts, safe menus and halos, then cl
     count.listeners.get("click")({ stopPropagation() { stopped = true; }, preventDefault() { prevented = true; } });
     assert.ok(stopped && prevented);
     assert.equal(first.plugin.peopleRows.size,2);
-    assert.equal([...first.plugin.peopleRows.values()][0].querySelector('strong').textContent,'<img src=x> · '+first.plugin.i18n.self);
+    const ownRow=[...first.plugin.peopleRows.values()][0];
+    assert.equal(ownRow.querySelector('.collab-person-name').textContent,'<img src=x>');
+    assert.equal(ownRow.querySelector('.collab-person-self').textContent,' · '+first.plugin.i18n.self);
+    assert.equal(ownRow.getAttribute('data-name'),'<img src=x>');
     first.plugin.openMenu();
     assert.ok(first.menus.at(-1).items[1].label.includes("&lt;img src=x&gt;"));
     assert.ok(!first.menus.at(-1).items[1].label.includes("<img"));

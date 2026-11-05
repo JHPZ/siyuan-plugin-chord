@@ -1275,7 +1275,8 @@ function componentGeometry(element,point) {
     if(onPicker)bounds=picker.bounds;
     const field=onPicker ? null:componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
     const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
-    let text=onPicker || box&&!textPlane || padding && !select ? []:componentNearText(element,parentPoint,textPlane) || [];
+    // Person-local badges must not change shared row gaps or their text offsets.
+    let text=onPicker || box&&!textPlane || padding && !select || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:componentNearText(element,parentPoint,textPlane) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
     if(glyph){const {rect,offset}=glyph;return {edges:{x:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}],y:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}]},x:(point.x-rect.left)/rect.width,y:(point.y-rect.top)/rect.height,textHash:componentTextHash(element)};}
     if(select && imagePoint)return {edges:{x:[{kind:'image',side:'start'},{kind:'image',side:'end'}],y:[{kind:'image',side:'start'},{kind:'image',side:'end'}]},x:imagePoint.x,y:imagePoint.y,imagePoint};
@@ -1754,7 +1755,7 @@ function captureCursor(point, plugin) {
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
     };
-    if(hit.closest('#configBazaarReadme') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
+    if(hit.closest('#configBazaarReadme,.collab-person') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
     const target=uiAnchor(hit,plugin,point);
     if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
@@ -1772,7 +1773,7 @@ function resolveCursor(cursor, plugin) {
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
     const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
     if(!element || element.closest(CURSOR_EXCLUDED))return null;
-    if(element.closest('#configBazaarReadme') || element.matches('input[type="range"],select') || componentTextField(element) || element.closest('.protyle-util')?.querySelector('textarea'))return null;
+    if(element.closest('#configBazaarReadme,.collab-person') || element.matches('input[type="range"],select') || componentTextField(element) || element.closest('.protyle-util')?.querySelector('textarea'))return null;
     if(element.closest('.sy__file') && cursor.ui.kind!=='file')return null;
     if(cursor.region && !matchesRegion(element,cursor.region))return null;
     if(!['file','dock','tab','tab-control','settings-nav'].includes(cursor.ui.kind) && !element.matches(CURSOR_CONTROL) && !element.matches('.protyle-title__input'))return null;
@@ -2599,7 +2600,8 @@ module.exports = class CollaborationPlugin extends Plugin {
             if(!row) {
                 row=document.createElement('div');row.className='collab-person';
                 const details=document.createElement('div');details.className='collab-person__details';
-                details.append(document.createElement('strong'),document.createElement('span'));
+                const name=document.createElement('strong'),page=document.createElement('span');page.className='collab-person__page';details.append(name,page);
+                for(const type of ['person-name','person-self']){const part=document.createElement('span');part.className='collab-'+type;part.setAttribute('data-type',type);name.append(part);}
                 const follow=document.createElement('button');follow.type='button';follow.className='b3-button b3-button--outline';follow.textContent=this.i18n.follow;
                 follow.addEventListener('click',async()=>{
                     const target=this.clients.find((person)=>(person.peerId || person.name)===key);
@@ -2613,9 +2615,11 @@ module.exports = class CollaborationPlugin extends Plugin {
                 row.append(details,follow);list.append(row);this.peopleRows.set(key,row);
             }
             row.style.setProperty('--collab-person-hue',String(client.hue));
+            row.setAttribute('data-name',client.name);
             const own=client.name===this.clientName;
-            row.querySelector('strong').textContent=client.name+(own ? ' · '+this.i18n.self : '');
-            const page=row.querySelector('span');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
+            row.querySelector('.collab-person-name').textContent=client.name;
+            const self=row.querySelector('.collab-person-self');self.textContent=own ? ' · '+this.i18n.self:'';self.hidden=!own;
+            const page=row.querySelector('.collab-person__page');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
             row.querySelector('button').disabled=own || (!client.page && !client.documentId);
         }
         for(const [key,row] of this.peopleRows)if(!visible.has(key)){row.remove();this.peopleRows.delete(key);}

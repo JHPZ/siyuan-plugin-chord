@@ -809,7 +809,8 @@ module.exports = class CollaborationPlugin extends Plugin {
             if(!row) {
                 row=document.createElement('div');row.className='collab-person';
                 const details=document.createElement('div');details.className='collab-person__details';
-                details.append(document.createElement('strong'),document.createElement('span'));
+                const name=document.createElement('strong'),page=document.createElement('span');page.className='collab-person__page';details.append(name,page);
+                for(const type of ['person-name','person-self']){const part=document.createElement('span');part.className='collab-'+type;part.setAttribute('data-type',type);name.append(part);}
                 const follow=document.createElement('button');follow.type='button';follow.className='b3-button b3-button--outline';follow.textContent=this.i18n.follow;
                 follow.addEventListener('click',async()=>{
                     const target=this.clients.find((person)=>(person.peerId || person.name)===key);
@@ -823,9 +824,11 @@ module.exports = class CollaborationPlugin extends Plugin {
                 row.append(details,follow);list.append(row);this.peopleRows.set(key,row);
             }
             row.style.setProperty('--collab-person-hue',String(client.hue));
+            row.setAttribute('data-name',client.name);
             const own=client.name===this.clientName;
-            row.querySelector('strong').textContent=client.name+(own ? ' · '+this.i18n.self : '');
-            const page=row.querySelector('span');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
+            row.querySelector('.collab-person-name').textContent=client.name;
+            const self=row.querySelector('.collab-person-self');self.textContent=own ? ' · '+this.i18n.self:'';self.hidden=!own;
+            const page=row.querySelector('.collab-person__page');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
             row.querySelector('button').disabled=own || (!client.page && !client.documentId);
         }
         for(const [key,row] of this.peopleRows)if(!visible.has(key)){row.remove();this.peopleRows.delete(key);}
