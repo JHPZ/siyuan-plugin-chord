@@ -1476,10 +1476,10 @@ function componentPaintRect(element) {
 }
 
 function componentScrollbar(element,point,parts=true) {
-    const cache=componentMeasurements?.scrollbars;
+    const cache=parts ? componentMeasurements?.scrollbars:componentMeasurements?.scrollbarAreas;
     if(cache?.has(element))return cache.get(element);
     const result=measureComponentScrollbar(element,point,parts);
-    if(!result || parts&&(!point||result.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom)))cache?.set(element,result);
+    if(!parts || !result || !point || result.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))cache?.set(element,result);
     return result;
 }
 
@@ -2464,7 +2464,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderCursors(animate) {
         const previousMeasurements=componentMeasurements;
-        componentMeasurements={fields:new WeakMap(),scrollbars:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap(),siblings:new WeakMap(),visualHits:new Map()};
+        componentMeasurements={fields:new WeakMap(),scrollbars:new WeakMap(),scrollbarAreas:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap(),siblings:new WeakMap(),visualHits:new Map()};
         try {
             const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
             if(picker && this.cursorLayer.showPopover){

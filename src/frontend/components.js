@@ -954,10 +954,10 @@ function componentPaintRect(element) {
 }
 
 function componentScrollbar(element,point,parts=true) {
-    const cache=componentMeasurements?.scrollbars;
+    const cache=parts ? componentMeasurements?.scrollbars:componentMeasurements?.scrollbarAreas;
     if(cache?.has(element))return cache.get(element);
     const result=measureComponentScrollbar(element,point,parts);
-    if(!result || parts&&(!point||result.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom)))cache?.set(element,result);
+    if(!parts || !result || !point || result.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))cache?.set(element,result);
     return result;
 }
 

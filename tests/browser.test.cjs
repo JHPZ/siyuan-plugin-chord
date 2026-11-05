@@ -1821,6 +1821,8 @@ function switchFixture() {
             module.exports.testPickerStyle=componentPickerStyle;
             module.exports.testSiblingWork=run=>{const original=componentKey;let calls=0;componentKey=(...args)=>{calls++;return original(...args);};try{run();return calls;}finally{componentKey=original;}};
             module.exports.testMeasurements=()=>componentMeasurements;
+            module.exports.testScrollbar=componentScrollbar;
+            module.exports.testScrollbarWork=(element,run)=>{const original=measureComponentScrollbar,calls={areas:0,parts:0};measureComponentScrollbar=(...args)=>{if(args[0]===element)calls[args[2]?'parts':'areas']++;return original(...args);};try{run();return calls;}finally{measureComponentScrollbar=original;}};
             return module.exports;
         })();
         const rangeStyle=document.createElement('style');rangeStyle.textContent='input.b3-slider::-webkit-slider-thumb{width:10px;height:10px}';document.head.append(rangeStyle);
@@ -1847,6 +1849,26 @@ function switchFixture() {
                 plugin.peopleDialog.destroy();await settleDialog();assert(!plugin.peoplePanel&&plugin.topBar.getAttribute('aria-expanded')==='false','native close leaked panel');
                 plugin.openPeople();plugin.peoplePanel.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
                 assert(!plugin.peoplePanel,'Escape did not close dialog');await settleDialog();
+            });
+            await test('同帧多光标复用滚动区域，几何缓存不替代滑块校准，下一帧重新测量',async()=>{
+                const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='shared-scrollbar-frame';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:500px;z-index:100;background:white';
+                fixture.innerHTML='<div id="shared-scrollbar" style="position:absolute;left:30px;top:30px;width:400px;height:260px;overflow:auto"><div style="position:relative;width:900px;height:1200px">'+Array.from({length:32},(_,i)=>'<button id="scroll-peer-'+i+'" style="position:absolute;left:'+(10+i%8*44)+'px;top:'+(30+Math.floor(i/8)*40)+'px;width:42px;height:24px">'+i+'</button>').join('')+'</div></div><style>#shared-scrollbar::-webkit-scrollbar{width:12px;height:10px}#shared-scrollbar::-webkit-scrollbar-thumb{width:28px;height:24px;background:red}#shared-scrollbar::-webkit-scrollbar-track{background:#ddd}#shared-scrollbar::-webkit-scrollbar-button{display:none}</style>';document.body.append(fixture);
+                const field=fixture.firstElementChild,targets=[...field.querySelectorAll('button')],old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,renderSelections:plugin.renderSelections},rows=[];let inspect=true;
+                try{
+                    const anchors=targets.map(e=>{const r=e.getBoundingClientRect();return componentRoundTrip({x:r.left+3,y:r.top+3},plugin);});
+                    plugin.remoteSelections=[];plugin.remoteEditing=[];
+                    plugin.renderSelections=function(){
+                        if(inspect){const r=field.getBoundingClientRect(),inside={x:r.left+5,y:r.top+5},bar={x:r.right-6,y:r.top+40},areas=NativePlugin.testScrollbar(field,inside,false);assert(areas?.areas.length===3&&!Object.keys(areas.parts).length,'area-only cache calibrated parts');
+                            for(let i=0;i<32;i++)assert(NativePlugin.testScrollbar(field,bar,false)===areas,'same-frame scrollbar area remeasured');
+                            const skipped=NativePlugin.testScrollbar(field,inside);assert(!Object.keys(skipped.parts).length,'off-bar point calibrated parts');const full=NativePlugin.testScrollbar(field,bar);assert(full.parts['scrollbar-y-thumb']&&full!==areas,'area cache poisoned complete scrollbar calibration');assert(NativePlugin.testScrollbar(field,bar)===full,'complete scrollbar measurement not reused');
+                            const length=Math.round(r.height)-10,thumbLength=Math.max(24,Math.round(length*field.clientHeight/field.scrollHeight)),top=Math.round(r.top)+Math.trunc(field.scrollTop*(length-thumbLength)/(field.scrollHeight-field.clientHeight));assert(Math.abs(full.parts['scrollbar-y-thumb'].top-top)<.1&&areas.areas[0].right===Math.round(r.right),'new frame kept stale scrollbar geometry');
+                        }old.renderSelections.call(this);
+                    };
+                    const check=(label,count,hidden=[])=>{plugin.clients=targets.slice(0,count).map((_,i)=>({name:'scroll-frame-'+i,hue:120}));plugin.remoteCursors=plugin.clients.map((peer,i)=>({...peer,cursor:anchors[i]}));plugin.presenceReceivedAt=Date.now();const calls=NativePlugin.testScrollbarWork(field,()=>plugin.renderCursors(false));assert(calls.areas===(inspect?1:0)&&calls.parts===(inspect?2:0),'scrollbar frame repeated measurements '+JSON.stringify({label,calls}));assert(!NativePlugin.testMeasurements(),'scrollbar cache escaped frame');for(let i=0;i<count;i++){const marker=plugin.cursorMarkers.get(plugin.clients[i].name);if(hidden.includes(i)){assert(!marker,'hidden/private scrollbar child painted '+label);continue;}const r=targets[i].getBoundingClientRect(),m=marker?.getBoundingClientRect();assert(m&&Math.hypot(m.left-r.left-3,m.top-r.top-3)<.1,'scrollbar child drift '+label);}rows.push({label,count,...calls});};
+                    check('16 peers',16);check('32 peers',32);field.scrollTop=20;field.scrollLeft=5;check('scroll',32);field.style.width='450px';field.style.height='280px';check('resize',32);field.firstElementChild.style.height='1600px';check('overflow change',32);
+                    inspect=false;field.hidden=true;check('hidden',32,targets.map((_,i)=>i));field.hidden=false;field.dataset.private='';check('private',32,targets.map((_,i)=>i));delete field.dataset.private;inspect=true;check('recovery',32);
+                    document.getElementById('results').dataset.scrollbarFrames=JSON.stringify(rows);
+                }finally{fixture.remove();Object.assign(plugin,old);plugin.renderCursors(false);}
             });
             await test('同帧不同卡片共享兄弟身份，下一帧重新检查重排、替换、隐藏和歧义',async()=>{
                 const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='shared-card-frame';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:500px;z-index:100;background:white;display:flex;flex-wrap:wrap;align-content:start';
