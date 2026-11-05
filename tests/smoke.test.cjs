@@ -503,7 +503,7 @@ test('component cursor routes and gap edges are bounded, validated and copied wi
     await update('component-user-test',1,6,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'start',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
     assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind:'paint',side:'start'});
     await assert.rejects(update('component-user-test',1,7,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind:'paint',side:'middle'},{kind:'self',side:'end'}]}}}),/Invalid UI cursor/);
-    for(const [index,kind] of ['list-first','list-last','field','range-thumb','range-track','picker-box','picker-border','picker-viewport','picker-content'].entries()){
+    for(const [index,kind] of ['list-first','list-last','field','range-thumb','range-track','scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].entries()){
         await update('component-user-test',1,7+index,{...cursor,ui:{...ui,edges:{...ui.edges,y:[{kind,side:'end',secret:'private',offset:20,step},{kind:'self',side:'end'}]}}});
         assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.edges.y[0])),{kind,side:'end'});
     }
@@ -880,7 +880,7 @@ test("remote glowing pointers follow local scrolling, stay text-only and exclude
     first.listeners.get("scroll")();
     await first.renderFrames();
     assert.equal(marker.style.transform, "translate3d(110px, 40px, 0)");
-    assert.equal(marker.style.transitionDuration, "0ms");
+    assert.equal(marker.style.transitionDuration, "100ms", "layout changes also ease toward the new local position");
     const renamed = await kernel.methods.get("presenceRename")(second.plugin.sessionId, "<b>Alice</b>", second.plugin.generation);
     second.plugin.updatePresence(renamed);
     await flushCursors();

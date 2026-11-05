@@ -2,6 +2,7 @@
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
+let componentMeasurements;
 
 function clearRangeStyles() {
     for(const style of componentRangeStyles.values())style.remove();
@@ -133,6 +134,11 @@ function componentFieldMeasure(field,run) {
 }
 function componentHit(doc,point) {
     const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
+    if(!hit?.closest('[data-private]'))for(let element=hit;element;element=element.parentElement){
+        const scrollbar=componentScrollbar(element,point,false);
+        // Chromium can hit the clipped content beneath a native scrollbar corner.
+        if(scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return element;
+    }
     if(!item || hit.closest('[data-private]') || Number(doc.defaultView.getComputedStyle(hit).opacity)>.01)return hit;
     return doc.elementsFromPoint(point.x,point.y).find(element=>element!==hit && item.contains(element) && visibleElement(element)) || null;
 }
@@ -275,7 +281,10 @@ function componentRoute(root,element) {
 }
 
 function componentFollow(root,route) {
+    const cache=componentMeasurements?.routes,key=cache&&JSON.stringify(route),origin=root;
+    if(cache?.get(root)?.has(key))return cache.get(root).get(key);
     for(const step of route){root=componentChild(root,step);if(!root)return null;}
+    if(cache){if(!cache.has(origin))cache.set(origin,new Map());cache.get(origin).set(key,root);}
     return root;
 }
 
@@ -439,6 +448,12 @@ function componentScope(element,plugin) {
 }
 
 function componentRoots(scope,plugin) {
+    const cache=componentMeasurements?.roots,key=cache&&JSON.stringify(scope);
+    if(cache?.has(key))return cache.get(key);
+    const root=findComponentRoots(scope,plugin);cache?.set(key,root);return root;
+}
+
+function findComponentRoots(scope,plugin) {
     if(scope.kind==='tree'){
         const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1,.backlinkList,.backlinkMList,.backlinkList__item,.backlinkList__item > li,.backlinkList__header .counter,.backlinkMList__header .counter')].filter(root=>{
             const region=componentTreeRegion(root);return region?.root===root && componentTreeScope(region,plugin)?.key===scope.key && visibleElement(root);
@@ -735,7 +750,71 @@ function componentPaintRect(element) {
     return {left:rect.left-.5,right:rect.right+.5,top:rect.top-.5,bottom:rect.bottom+.5};
 }
 
-function componentGeometry(element,point) {
+function componentScrollbar(element,point,parts=true) {
+    const cache=componentMeasurements?.scrollbars;
+    if(cache?.has(element))return cache.get(element);
+    const result=measureComponentScrollbar(element,point,parts);
+    if(!result || parts&&(!point||result.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom)))cache?.set(element,result);
+    return result;
+}
+
+function measureComponentScrollbar(element,point,parts) {
+    if(!(element.offsetWidth>element.clientWidth || element.offsetHeight>element.clientHeight))return;
+    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),n=side=>parseFloat(css['border'+side+'Width']);
+    const vertical=['auto','scroll'].includes(css.overflowY) && element.scrollHeight>element.clientHeight && element.offsetWidth-element.clientWidth-n('Left')-n('Right')>.5,horizontal=['auto','scroll'].includes(css.overflowX) && element.scrollWidth>element.clientWidth && element.offsetHeight-element.clientHeight-n('Top')-n('Bottom')>.5;
+    if(!vertical&&!horizontal)return;
+    const r=element.getBoundingClientRect(),bar=view.getComputedStyle(element,'::-webkit-scrollbar'),width=parseFloat(bar.width)||element.offsetWidth-element.clientWidth-n('Left')-n('Right'),height=parseFloat(bar.height)||element.offsetHeight-element.clientHeight-n('Top')-n('Bottom'),left=Math.round(r.left+n('Left')),right=Math.round(r.right-n('Right')),top=Math.round(r.top+n('Top')),bottom=Math.round(r.bottom-n('Bottom'));
+    const vx=css.direction==='rtl' ? left:right-width,hy=bottom-height,areas=[];
+    if(vertical)areas.push({left:vx,right:vx+width,top,bottom:horizontal?hy:bottom});
+    if(horizontal)areas.push({left:vertical&&css.direction==='rtl'?left+width:left,right:vertical&&css.direction!=='rtl'?vx:right,top:hy,bottom});
+    if(vertical&&horizontal)areas.push({left:vx,right:vx+width,top:hy,bottom});
+    const result={areas,parts:{}};
+    if(!parts || point&&!areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return result;
+    // shortcut: native minimums, buttons, picker scroll state and transformed bars need separate calibration.
+    for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),matrix=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(!matrix.is2D||matrix.a!==1||matrix.b!==0||matrix.c!==0||matrix.d!==1||s.scale!=='none'||s.rotate!=='none'||s.perspective!=='none'||s.zoom!=='1')return result;}
+    if(css.writingMode!=='horizontal-tb' || css.scrollbarWidth!=='auto' || css.scrollbarColor!=='auto' || ![bar.width,bar.height].every(v=>/^\d+(?:\.\d+)?px$/.test(v)) || bar.display==='none' || element.matches('select:open'))return result;
+    const safe=rule=>{
+        if(rule.media?.mediaText&&!view.matchMedia(rule.media.mediaText).matches)return true;
+        if(rule.conditionText&&rule.constructor.name==='CSSSupportsRule'&&!view.CSS.supports(rule.conditionText))return true;
+        if(rule.styleSheet)return [...rule.styleSheet.cssRules].every(safe);
+        if(rule.selectorText){if(!rule.selectorText.includes('::-webkit-scrollbar'))return true;for(const selector of rule.selectorText.split(',')){
+            const match=selector.match(/^(.*?)::(-webkit-scrollbar(?:-thumb|-track-piece|-track|-button|-corner)?)(.*)$/);if(!match || !element.matches(match[1].trim()||'*'))continue;
+            if(match[2]==='-webkit-scrollbar-button'&&rule.style.display!=='none' || match[2]==='-webkit-scrollbar-track-piece')return false;
+            if(/:(horizontal|vertical|start|end|decrement|increment|single-button|double-button|no-button)\b/.test(match[3])&&[...rule.style].some(name=>/width|height|margin|display/.test(name)))return false;
+        }return true;}
+        return !rule.cssRules || [...rule.cssRules].every(safe);
+    };
+    try{if(![...doc.styleSheets].filter(s=>!s.disabled).every(s=>(!s.media.mediaText||view.matchMedia(s.media.mediaText).matches)&&[...s.cssRules].every(safe) || s.media.mediaText&&!view.matchMedia(s.media.mediaText).matches))return result;}catch{return result;}
+    const thumb=view.getComputedStyle(element,'::-webkit-scrollbar-thumb'),track=view.getComputedStyle(element,'::-webkit-scrollbar-track');
+    if([thumb,track].some(s=>s.display==='none'||s.visibility!=='visible'||Number(s.opacity)<=.01||s.transform!=='none'||['Top','Right','Bottom','Left'].some(side=>parseFloat(s['margin'+side])!==0)))return result;
+    let nativeLimit;
+    if(['width','height'].some(axis=>thumb[axis]==='auto')){
+        if(!/Windows/.test(view.navigator.userAgent))return result;
+        const host=doc.createElement('div'),marker=doc.createElement('div');host.className='collab-text-measure';host.style.cssText='all:initial!important;position:fixed!important;visibility:hidden!important;pointer-events:none!important';marker.style.cssText='all:initial;display:block;width:100px;height:100px;border:0;padding:0;overflow:scroll;scrollbar-width:auto;scrollbar-color:auto';
+        // A shadow root isolates native metrics without invalidating the document's stylesheets.
+        try{host.attachShadow({mode:'closed'}).append(marker);doc.body.append(host);nativeLimit=2*Math.max(marker.offsetWidth-marker.clientWidth,marker.offsetHeight-marker.clientHeight);}finally{host.remove();}
+        if(!(nativeLimit>0))return result;
+    }
+    for(const [axis,area]of [...(vertical?[['y',areas[0]]]:[]),...(horizontal?[['x',areas[vertical?1:0]]]:[])]){
+        const start=axis==='x'?'left':'top',end=axis==='x'?'right':'bottom',size=axis==='x'?'width':'height',length=area[end]-area[start],visible=axis==='x'?element.clientWidth:element.clientHeight,total=axis==='x'?element.scrollWidth:element.scrollHeight,offset=axis==='x'?(css.direction==='rtl'?total-visible+element.scrollLeft:element.scrollLeft):element.scrollTop;
+        const value=text=>/^(?:\d+(?:\.\d+)?)px$/.test(text)?Math.trunc(parseFloat(text)):NaN,min=value(thumb[size==='width'?'minWidth':'minHeight']),max=thumb[size==='width'?'maxWidth':'maxHeight']==='none'?Infinity:value(thumb[size==='width'?'maxWidth':'maxHeight']),explicit=value(thumb[size]),proportional=Math.round(length*visible/total);
+        if(!Number.isFinite(min)||Number.isNaN(max)||thumb[size]==='auto'&&proportional<Math.min(max,Math.max(min,nativeLimit)))continue;
+        const minimum=thumb[size]==='auto'?min:Math.max(min,Math.min(max,explicit)),thumbLength=Math.min(length,Math.max(proportional,minimum));if(!Number.isFinite(thumbLength)||thumbLength<=0)continue;
+        const raw=Math.max(0,Math.min(total-visible,offset))*(length-thumbLength)/(total-visible),position=raw>0&&raw<1?1:Math.trunc(raw),rect={...area,[start]:area[start]+position,[end]:area[start]+position+thumbLength};
+        result.parts['scrollbar-'+axis+'-thumb']=rect;
+        if(rect[start]>area[start])result.parts['scrollbar-'+axis+'-before']={...area,[end]:rect[start]};
+        if(rect[end]<area[end])result.parts['scrollbar-'+axis+'-after']={...area,[start]:rect[end]};
+    }
+    if(vertical&&horizontal)result.parts['scrollbar-corner']=areas[2];
+    return result;
+}
+
+function componentGeometry(element,point,scrollbar=componentScrollbar(element,point)) {
+    const contains=rect=>point.x>=rect.left&&point.x<rect.right&&point.y>=rect.top&&point.y<rect.bottom;
+    if(scrollbar?.areas.some(contains)){
+        const part=Object.entries(scrollbar.parts).find(([,rect])=>contains(rect));if(!part)return null;
+        const [kind,rect]=part;return {edges:{x:[{kind,side:'start'},{kind,side:'end'}],y:[{kind,side:'start'},{kind,side:'end'}]},x:(point.x-rect.left)/(rect.right-rect.left),y:(point.y-rect.top)/(rect.bottom-rect.top)};
+    }
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
     const parentPoint=point,textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     if(picker?.toLocal)point=picker.toLocal(point);
@@ -859,6 +938,8 @@ function resolveComponent(cursor,plugin) {
     }
     if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') || componentBazaarPackage(element)===null ||
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
+    const scrollbarAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('scrollbar-')),scrollbar=scrollbarAnchor&&componentScrollbar(element);
+    if(scrollbarAnchor&&!scrollbar)return null;
     // A grid crossing can be bounded entirely by option edges.
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
@@ -879,7 +960,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -888,12 +969,13 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    const precise=picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
+    if(!scrollbarAnchor&&componentScrollbar(element,point,false)?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
+    const precise=scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
     if(precise || gaps.length){
         // Padding is visible whitespace; text underneath it is clipped by the native input.
         if(fieldRects && field && !select && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
-        const local=componentGeometry(element,point);
+        const local=componentGeometry(element,point,scrollbarAnchor?scrollbar:undefined);
         if(!local)return null;
         const same=['x','y'].every(axis=>!precise && !gaps.includes(axis) || anchor.edges[axis].every((edge,index)=>{
             const match=local.edges[axis][index],collapsed=field && (axis==='x' ? field.left===field.right:field.top===field.bottom);

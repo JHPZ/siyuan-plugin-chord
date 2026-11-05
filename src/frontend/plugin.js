@@ -149,7 +149,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.renderOnlineCount();
         this.scheduleTreeRender();
         this.renderPeople();
-        this.scheduleCursorRender(false);
+        this.scheduleCursorRender();
     }
 
     currentDocument() {
@@ -185,14 +185,14 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.remoteSelections = [];
                 this.remoteEditing = [];
                 this.renderPeople();
-                this.scheduleCursorRender(false);
+                this.scheduleCursorRender();
             }
         });
     }
 
     scheduleDocumentReport() {
         this.finishRestore?.();
-        this.scheduleCursorRender(false);
+        this.scheduleCursorRender();
         if (this.stopped || !this.layoutReady || this.documentFrame) return;
         this.documentFrame = requestAnimationFrame(() => {
             this.documentFrame = 0;
@@ -217,12 +217,12 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.domObserver = new MutationObserver((records) => {
             for (const record of records) {
                 if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-editing-layer, .collab-people, .collab-text-measure")) continue;
-                if (record.type === "characterData") { this.scheduleCursorRender(false); this.queueActivity(); continue; }
+                if (record.type === "characterData") { this.scheduleCursorRender(); this.queueActivity(); continue; }
                 if (record.type === "attributes") {
                     this.scheduleDocumentReport();
                     if (record.target.matches(".protyle") || record.target.classList.contains("layout__wnd--active") ||
                         (record.oldValue || "").includes("layout__wnd--active")) this.scheduleDocumentReport();
-                    this.scheduleCursorRender(false);
+                    this.scheduleCursorRender();
                     this.queueActivity();
                     continue;
                 }
@@ -233,7 +233,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (record.target.closest(".sy__file") || elements.some((node) => node.matches(".sy__file") || node.querySelector(".sy__file"))) this.scheduleTreeRender();
                 if ((record.target.closest(".layout-tab-container") && !record.target.closest(".protyle")) ||
                     elements.some((node) => node.matches(".protyle") || node.querySelector(".protyle"))) this.scheduleDocumentReport();
-                this.scheduleCursorRender(false);
+                this.scheduleCursorRender();
                 this.queueActivity();
             }
         });
@@ -314,7 +314,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.remoteCursors = state.cursors;
         this.remoteSelections = selections;
         this.remoteEditing = editing;
-        this.scheduleCursorRender(true);
+        this.scheduleCursorRender();
         this.watchGraphs();
     }
 
@@ -331,7 +331,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.pointer = { x: event.clientX, y: event.clientY };
                 if(event.target)this.surfaceTarget=event.target;
                 this.scheduleDocumentReport();
-                this.scheduleCursorRender(true);
+                this.scheduleCursorRender();
                 this.queueActivity();
                 this.watchGraphs();
             }
@@ -339,14 +339,14 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handlePointerLeave = () => {
             this.pointer = null;
             this.queueActivity();
-            this.scheduleCursorRender(true);
+            this.scheduleCursorRender();
         };
         this.handlePointerOut = (event) => { if (!event.relatedTarget) this.handlePointerLeave(); };
-        this.handleCursorLayout = () => { this.scheduleCursorRender(false); this.queueActivity(); };
+        this.handleCursorLayout = () => { this.scheduleCursorRender(); this.queueActivity(); };
         this.handleVisibility = () => {
             if (document.hidden) this.handlePointerLeave();
             else { this.refreshInBackground(); this.loadCursors(); }
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         };
         document.addEventListener("pointermove", this.handlePointer, { passive: true });
         document.addEventListener("pointerout", this.handlePointerOut, { passive: true });
@@ -363,10 +363,10 @@ module.exports = class CollaborationPlugin extends Plugin {
             else if(event?.type==='pointerdown' && !event.target.closest('.b3-dialog, .b3-menu'))this.pageControl=null;
             if(event?.type==='pointerdown' && !this.topBar?.contains?.(event.target))this.closePeople();
             this.dialogBase = currentPage(this, false);
-            this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender(false);
+            this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender();
         };
         this.handleKey = (event) => {
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
             const keys=captureShortcut(event);
             if (keys) {
                 this.pendingShortcut=keys;
@@ -452,7 +452,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     startCursorTimer() {
         clearInterval(this.cursorTimer);
-        this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender(false);},1000);
+        this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender();},1000);
     }
 
     watchGraphs() {
@@ -461,7 +461,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if(!local && !this.remoteCursors.some(client=>client.cursor.ui?.graph))return;
         const models=graphModels();if(!models.length)return;
         const revision=JSON.stringify(models.map(({graphEngine:engine})=>[engine.positionVersion,engine.geometryVersion,engine.camera.x,engine.camera.y,engine.camera.scale]));
-        if(revision!==this.graphRevision){this.graphRevision=revision;this.scheduleCursorRender(false);this.queueActivity();}
+        if(revision!==this.graphRevision){this.graphRevision=revision;this.scheduleCursorRender();this.queueActivity();}
         this.graphTimer=setTimeout(()=>{this.graphTimer=null;this.watchGraphs();},1000/this.tick);
     }
 
@@ -478,7 +478,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.lastCursorTypingAt=typingAt;
         } catch {
             this.remoteCursors = [];
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         } finally {
             this.cursorSending = false;
         }
@@ -495,7 +495,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.editingSentAt = Date.now();
         } catch {
             this.remoteEditing = [];
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         } finally { this.editingSending = false; }
     }
 
@@ -509,72 +509,84 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.lastSelectionSignature = signature;
         } catch {
             this.remoteSelections = [];
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         } finally { this.selectionSending = false; }
     }
 
-    scheduleCursorRender(animate) {
+    scheduleCursorRender() {
         if (this.stopped || !this.cursorLayer) return;
-        this.animateCursorFrame = this.cursorFrame ? this.animateCursorFrame && animate : animate;
         if (this.cursorFrame) return;
         this.cursorFrame = requestAnimationFrame(() => {
             this.cursorFrame = 0;
-            this.renderCursors(this.animateCursorFrame);
+            this.renderCursors(true);
         });
     }
 
     renderCursors(animate) {
-        const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
-        if(picker && this.cursorLayer.showPopover){
-            if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
-            // A picker reopened between frames must not cover the read-only cursor layer.
-            if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
-            this.cursorLayer.showPopover();
-        }else if(this.cursorLayer.hasAttribute('popover')){
-            this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
-        }
-        const visible = new Set();
-        if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
-            for (const client of this.remoteCursors) {
-                if (client.name === this.clientName || !this.clients.some((person) => person.name === client.name)) continue;
-                const point = resolveCursor(client.cursor, this);
-                if (!point) continue;
-                visible.add(client.name);
-                let marker = this.cursorMarkers.get(client.name);
-                if (!marker) {
-                    marker = document.createElement("div");
-                    marker.className = "collab-cursor";
-                    const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                    arrow.setAttribute("viewBox", "0 0 22 22");
-                    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                    path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
-                    arrow.append(path);
-                    const label = document.createElement("span");
-                    marker.append(arrow, label);
-                    this.cursorLayer.append(marker);
-                    this.cursorMarkers.set(client.name, marker);
+        const previousMeasurements=componentMeasurements;
+        componentMeasurements={scrollbars:new WeakMap(),roots:new Map(),routes:new WeakMap()};
+        try {
+            const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
+            if(picker && this.cursorLayer.showPopover){
+                if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
+                // A picker reopened between frames must not cover the read-only cursor layer.
+                if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
+                this.cursorLayer.showPopover();
+            }else if(this.cursorLayer.hasAttribute('popover')){
+                this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
+            }
+            const visible = new Set();
+            const positions=[],people=new Set(this.clients.map(client=>client.name));
+            if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
+                for (const client of this.remoteCursors) {
+                    if (client.name === this.clientName || !people.has(client.name)) continue;
+                    const point = resolveCursor(client.cursor, this);
+                    if (!point) continue;
+                    const marker=this.cursorMarkers.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
+                    positions.push({client,point,rect});
                 }
-                const label=marker.querySelector('span');
-                label.textContent=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
-                marker.style.setProperty("--collab-cursor-hue", String(client.hue));
-                const target=JSON.stringify([client.cursor.surface,client.cursor.documentId,client.cursor.blockId,client.cursor.region,client.cursor.ui]);
-                marker.style.transitionDuration = animate && marker.cursorTarget===target ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
-                marker.cursorTarget=target;
-                marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
-                const rect = marker.getBoundingClientRect();
-                const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
-                    this.pointer.y >= rect.top - 32 && this.pointer.y <= rect.bottom + 32;
-                marker.style.opacity = nearby ? "0.3" : "1";
+                // Resolve every anchor before writing markers so peers share one layout measurement.
+                for(const {client,point,rect:measured}of positions){
+                    visible.add(client.name);
+                    let marker = this.cursorMarkers.get(client.name);
+                    if (!marker) {
+                        marker = document.createElement("div");
+                        marker.className = "collab-cursor";
+                        const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                        arrow.setAttribute("viewBox", "0 0 22 22");
+                        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                        path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
+                        arrow.append(path);
+                        const label = document.createElement("span");
+                        marker.append(arrow, label);
+                        this.cursorLayer.append(marker);
+                        this.cursorMarkers.set(client.name, marker);
+                    }
+                    const label=marker.querySelector('span');
+                    const text=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
+                    if(label.textContent!==text)label.textContent=text;
+                    marker.style.setProperty("--collab-cursor-hue", String(client.hue));
+                    const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
+                    if(marker.cursorTransform!==transform){
+                        marker.style.transitionDuration = animate && marker.cursorTransform ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                        marker.style.transform=transform;
+                        marker.cursorTransform=transform;
+                    }
+                    const rect = measured || {left:point.x,right:point.x+22,top:point.y,bottom:point.y+22};
+                    const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
+                        this.pointer.y >= rect.top - 32 && this.pointer.y <= rect.bottom + 32;
+                    marker.style.opacity = nearby ? "0.3" : "1";
+                }
             }
-        }
-        for (const [name, marker] of this.cursorMarkers) {
-            if (!visible.has(name)) {
-                marker.remove();
-                this.cursorMarkers.delete(name);
+            for (const [name, marker] of this.cursorMarkers) {
+                if (!visible.has(name)) {
+                    marker.remove();
+                    this.cursorMarkers.delete(name);
+                }
             }
-        }
-        this.renderSelections();
-        this.renderEditing();
+            this.renderSelections();
+            this.renderEditing();
+        }finally{componentMeasurements=previousMeasurements;}
     }
 
     renderEditing() {

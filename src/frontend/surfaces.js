@@ -296,7 +296,6 @@ async function openPage(plugin, page) {
 }
 
 function captureCursor(point, plugin) {
-    const anchored=captureDocumentCursor(point);
     if (!point || document.hidden) return null;
     const hit=componentHit(document,point);
     if (!visibleElement(hit) || hit.closest('[data-private]')) return null;
@@ -306,14 +305,16 @@ function captureCursor(point, plugin) {
     const activity=state ? {state}:{};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
-    if (anchored) return {...anchored,screen,page,...activity};
+    const scrollbar=componentScrollbar(hit,point,false),onScrollbar=scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom);
+    const anchored=!onScrollbar && captureDocumentCursor(point);
+    if (anchored&&!onScrollbar) return {...anchored,screen,page,...activity};
     const pdf=capturePDF(hit,plugin,point);
     if(pdf!==undefined)return pdf ? {surface:'ui',documentId:null,blockId:null,page,screen,...pdf,...activity}:null;
     const fallback=()=>{
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
     };
-    if(hit.closest('#configBazaarReadme,.collab-person') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
+    if(onScrollbar || hit.closest('#configBazaarReadme,.collab-person') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
     const target=uiAnchor(hit,plugin,point);
     if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
@@ -343,6 +344,7 @@ function resolveCursor(cursor, plugin) {
     } else if(element.matches('.protyle-title__input'))return null;
     if(!rect?.width || !rect.height)return null;
     const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
+    const scrollbar=componentScrollbar(element,point,false);if(scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
     const hit=componentHit(document,point);
     return hit && visibleElement(hit) && element.contains(hit) ? point:null;
 }

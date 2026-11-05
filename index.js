@@ -90,7 +90,7 @@ function validComponentRoute(route) {
 }
 
 function validComponentEdge(edge) {
-    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='range-thumb' || edge.kind==='range-track' || ['picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
+    return edge && ['start','end'].includes(edge.side) && (edge.kind==='self' || edge.kind==='paint' || edge.kind==='image' || edge.kind==='list' || edge.kind==='list-first' || edge.kind==='list-last' || edge.kind==='frame' || edge.kind==='frame-box' || edge.kind==='field' || edge.kind==='range-thumb' || edge.kind==='range-track' || ['scrollbar-x-thumb','scrollbar-y-thumb','scrollbar-x-before','scrollbar-y-before','scrollbar-x-after','scrollbar-y-after','scrollbar-corner','picker-box','picker-border','picker-viewport','picker-content'].includes(edge.kind) ||
         edge.kind==='child' && validComponentStep(edge.step) ||
         edge.kind==='text' && Number.isSafeInteger(edge.offset) && edge.offset>=0 && edge.offset<=10000000);
 }
@@ -523,6 +523,7 @@ function resolvePDF(element,anchor) {
 const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list .b3-list-item__text,.search__list .b3-list-item__meta,.search__list [data-av-search-match],.search__list .search__av-content > .fn__code,#searchAssetPreview > p';
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
+let componentMeasurements;
 
 function clearRangeStyles() {
     for(const style of componentRangeStyles.values())style.remove();
@@ -654,6 +655,11 @@ function componentFieldMeasure(field,run) {
 }
 function componentHit(doc,point) {
     const hit=doc.elementFromPoint(point.x,point.y),item=hit?.matches('input.b3-form__upload[type="file"]') && hit.closest('.b3-menu__item');
+    if(!hit?.closest('[data-private]'))for(let element=hit;element;element=element.parentElement){
+        const scrollbar=componentScrollbar(element,point,false);
+        // Chromium can hit the clipped content beneath a native scrollbar corner.
+        if(scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return element;
+    }
     if(!item || hit.closest('[data-private]') || Number(doc.defaultView.getComputedStyle(hit).opacity)>.01)return hit;
     return doc.elementsFromPoint(point.x,point.y).find(element=>element!==hit && item.contains(element) && visibleElement(element)) || null;
 }
@@ -796,7 +802,10 @@ function componentRoute(root,element) {
 }
 
 function componentFollow(root,route) {
+    const cache=componentMeasurements?.routes,key=cache&&JSON.stringify(route),origin=root;
+    if(cache?.get(root)?.has(key))return cache.get(root).get(key);
     for(const step of route){root=componentChild(root,step);if(!root)return null;}
+    if(cache){if(!cache.has(origin))cache.set(origin,new Map());cache.get(origin).set(key,root);}
     return root;
 }
 
@@ -960,6 +969,12 @@ function componentScope(element,plugin) {
 }
 
 function componentRoots(scope,plugin) {
+    const cache=componentMeasurements?.roots,key=cache&&JSON.stringify(scope);
+    if(cache?.has(key))return cache.get(key);
+    const root=findComponentRoots(scope,plugin);cache?.set(key,root);return root;
+}
+
+function findComponentRoots(scope,plugin) {
     if(scope.kind==='tree'){
         const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1,.backlinkList,.backlinkMList,.backlinkList__item,.backlinkList__item > li,.backlinkList__header .counter,.backlinkMList__header .counter')].filter(root=>{
             const region=componentTreeRegion(root);return region?.root===root && componentTreeScope(region,plugin)?.key===scope.key && visibleElement(root);
@@ -1256,7 +1271,71 @@ function componentPaintRect(element) {
     return {left:rect.left-.5,right:rect.right+.5,top:rect.top-.5,bottom:rect.bottom+.5};
 }
 
-function componentGeometry(element,point) {
+function componentScrollbar(element,point,parts=true) {
+    const cache=componentMeasurements?.scrollbars;
+    if(cache?.has(element))return cache.get(element);
+    const result=measureComponentScrollbar(element,point,parts);
+    if(!result || parts&&(!point||result.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom)))cache?.set(element,result);
+    return result;
+}
+
+function measureComponentScrollbar(element,point,parts) {
+    if(!(element.offsetWidth>element.clientWidth || element.offsetHeight>element.clientHeight))return;
+    const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),n=side=>parseFloat(css['border'+side+'Width']);
+    const vertical=['auto','scroll'].includes(css.overflowY) && element.scrollHeight>element.clientHeight && element.offsetWidth-element.clientWidth-n('Left')-n('Right')>.5,horizontal=['auto','scroll'].includes(css.overflowX) && element.scrollWidth>element.clientWidth && element.offsetHeight-element.clientHeight-n('Top')-n('Bottom')>.5;
+    if(!vertical&&!horizontal)return;
+    const r=element.getBoundingClientRect(),bar=view.getComputedStyle(element,'::-webkit-scrollbar'),width=parseFloat(bar.width)||element.offsetWidth-element.clientWidth-n('Left')-n('Right'),height=parseFloat(bar.height)||element.offsetHeight-element.clientHeight-n('Top')-n('Bottom'),left=Math.round(r.left+n('Left')),right=Math.round(r.right-n('Right')),top=Math.round(r.top+n('Top')),bottom=Math.round(r.bottom-n('Bottom'));
+    const vx=css.direction==='rtl' ? left:right-width,hy=bottom-height,areas=[];
+    if(vertical)areas.push({left:vx,right:vx+width,top,bottom:horizontal?hy:bottom});
+    if(horizontal)areas.push({left:vertical&&css.direction==='rtl'?left+width:left,right:vertical&&css.direction!=='rtl'?vx:right,top:hy,bottom});
+    if(vertical&&horizontal)areas.push({left:vx,right:vx+width,top:hy,bottom});
+    const result={areas,parts:{}};
+    if(!parts || point&&!areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return result;
+    // shortcut: native minimums, buttons, picker scroll state and transformed bars need separate calibration.
+    for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),matrix=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(!matrix.is2D||matrix.a!==1||matrix.b!==0||matrix.c!==0||matrix.d!==1||s.scale!=='none'||s.rotate!=='none'||s.perspective!=='none'||s.zoom!=='1')return result;}
+    if(css.writingMode!=='horizontal-tb' || css.scrollbarWidth!=='auto' || css.scrollbarColor!=='auto' || ![bar.width,bar.height].every(v=>/^\d+(?:\.\d+)?px$/.test(v)) || bar.display==='none' || element.matches('select:open'))return result;
+    const safe=rule=>{
+        if(rule.media?.mediaText&&!view.matchMedia(rule.media.mediaText).matches)return true;
+        if(rule.conditionText&&rule.constructor.name==='CSSSupportsRule'&&!view.CSS.supports(rule.conditionText))return true;
+        if(rule.styleSheet)return [...rule.styleSheet.cssRules].every(safe);
+        if(rule.selectorText){if(!rule.selectorText.includes('::-webkit-scrollbar'))return true;for(const selector of rule.selectorText.split(',')){
+            const match=selector.match(/^(.*?)::(-webkit-scrollbar(?:-thumb|-track-piece|-track|-button|-corner)?)(.*)$/);if(!match || !element.matches(match[1].trim()||'*'))continue;
+            if(match[2]==='-webkit-scrollbar-button'&&rule.style.display!=='none' || match[2]==='-webkit-scrollbar-track-piece')return false;
+            if(/:(horizontal|vertical|start|end|decrement|increment|single-button|double-button|no-button)\b/.test(match[3])&&[...rule.style].some(name=>/width|height|margin|display/.test(name)))return false;
+        }return true;}
+        return !rule.cssRules || [...rule.cssRules].every(safe);
+    };
+    try{if(![...doc.styleSheets].filter(s=>!s.disabled).every(s=>(!s.media.mediaText||view.matchMedia(s.media.mediaText).matches)&&[...s.cssRules].every(safe) || s.media.mediaText&&!view.matchMedia(s.media.mediaText).matches))return result;}catch{return result;}
+    const thumb=view.getComputedStyle(element,'::-webkit-scrollbar-thumb'),track=view.getComputedStyle(element,'::-webkit-scrollbar-track');
+    if([thumb,track].some(s=>s.display==='none'||s.visibility!=='visible'||Number(s.opacity)<=.01||s.transform!=='none'||['Top','Right','Bottom','Left'].some(side=>parseFloat(s['margin'+side])!==0)))return result;
+    let nativeLimit;
+    if(['width','height'].some(axis=>thumb[axis]==='auto')){
+        if(!/Windows/.test(view.navigator.userAgent))return result;
+        const host=doc.createElement('div'),marker=doc.createElement('div');host.className='collab-text-measure';host.style.cssText='all:initial!important;position:fixed!important;visibility:hidden!important;pointer-events:none!important';marker.style.cssText='all:initial;display:block;width:100px;height:100px;border:0;padding:0;overflow:scroll;scrollbar-width:auto;scrollbar-color:auto';
+        // A shadow root isolates native metrics without invalidating the document's stylesheets.
+        try{host.attachShadow({mode:'closed'}).append(marker);doc.body.append(host);nativeLimit=2*Math.max(marker.offsetWidth-marker.clientWidth,marker.offsetHeight-marker.clientHeight);}finally{host.remove();}
+        if(!(nativeLimit>0))return result;
+    }
+    for(const [axis,area]of [...(vertical?[['y',areas[0]]]:[]),...(horizontal?[['x',areas[vertical?1:0]]]:[])]){
+        const start=axis==='x'?'left':'top',end=axis==='x'?'right':'bottom',size=axis==='x'?'width':'height',length=area[end]-area[start],visible=axis==='x'?element.clientWidth:element.clientHeight,total=axis==='x'?element.scrollWidth:element.scrollHeight,offset=axis==='x'?(css.direction==='rtl'?total-visible+element.scrollLeft:element.scrollLeft):element.scrollTop;
+        const value=text=>/^(?:\d+(?:\.\d+)?)px$/.test(text)?Math.trunc(parseFloat(text)):NaN,min=value(thumb[size==='width'?'minWidth':'minHeight']),max=thumb[size==='width'?'maxWidth':'maxHeight']==='none'?Infinity:value(thumb[size==='width'?'maxWidth':'maxHeight']),explicit=value(thumb[size]),proportional=Math.round(length*visible/total);
+        if(!Number.isFinite(min)||Number.isNaN(max)||thumb[size]==='auto'&&proportional<Math.min(max,Math.max(min,nativeLimit)))continue;
+        const minimum=thumb[size]==='auto'?min:Math.max(min,Math.min(max,explicit)),thumbLength=Math.min(length,Math.max(proportional,minimum));if(!Number.isFinite(thumbLength)||thumbLength<=0)continue;
+        const raw=Math.max(0,Math.min(total-visible,offset))*(length-thumbLength)/(total-visible),position=raw>0&&raw<1?1:Math.trunc(raw),rect={...area,[start]:area[start]+position,[end]:area[start]+position+thumbLength};
+        result.parts['scrollbar-'+axis+'-thumb']=rect;
+        if(rect[start]>area[start])result.parts['scrollbar-'+axis+'-before']={...area,[end]:rect[start]};
+        if(rect[end]<area[end])result.parts['scrollbar-'+axis+'-after']={...area,[start]:rect[end]};
+    }
+    if(vertical&&horizontal)result.parts['scrollbar-corner']=areas[2];
+    return result;
+}
+
+function componentGeometry(element,point,scrollbar=componentScrollbar(element,point)) {
+    const contains=rect=>point.x>=rect.left&&point.x<rect.right&&point.y>=rect.top&&point.y<rect.bottom;
+    if(scrollbar?.areas.some(contains)){
+        const part=Object.entries(scrollbar.parts).find(([,rect])=>contains(rect));if(!part)return null;
+        const [kind,rect]=part;return {edges:{x:[{kind,side:'start'},{kind,side:'end'}],y:[{kind,side:'start'},{kind,side:'end'}]},x:(point.x-rect.left)/(rect.right-rect.left),y:(point.y-rect.top)/(rect.bottom-rect.top)};
+    }
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
     const parentPoint=point,textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     if(picker?.toLocal)point=picker.toLocal(point);
@@ -1380,6 +1459,8 @@ function resolveComponent(cursor,plugin) {
     }
     if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') || componentBazaarPackage(element)===null ||
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
+    const scrollbarAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('scrollbar-')),scrollbar=scrollbarAnchor&&componentScrollbar(element);
+    if(scrollbarAnchor&&!scrollbar)return null;
     // A grid crossing can be bounded entirely by option edges.
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
@@ -1400,7 +1481,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -1409,12 +1490,13 @@ function resolveComponent(cursor,plugin) {
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
     if(box)Object.assign(point,box.toParent(point));
-    const precise=picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
+    if(!scrollbarAnchor&&componentScrollbar(element,point,false)?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
+    const precise=scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
     if(precise || gaps.length){
         // Padding is visible whitespace; text underneath it is clipped by the native input.
         if(fieldRects && field && !select && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
-        const local=componentGeometry(element,point);
+        const local=componentGeometry(element,point,scrollbarAnchor?scrollbar:undefined);
         if(!local)return null;
         const same=['x','y'].every(axis=>!precise && !gaps.includes(axis) || anchor.edges[axis].every((edge,index)=>{
             const match=local.edges[axis][index],collapsed=field && (axis==='x' ? field.left===field.right:field.top===field.bottom);
@@ -1738,7 +1820,6 @@ async function openPage(plugin, page) {
 }
 
 function captureCursor(point, plugin) {
-    const anchored=captureDocumentCursor(point);
     if (!point || document.hidden) return null;
     const hit=componentHit(document,point);
     if (!visibleElement(hit) || hit.closest('[data-private]')) return null;
@@ -1748,14 +1829,16 @@ function captureCursor(point, plugin) {
     const activity=state ? {state}:{};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
-    if (anchored) return {...anchored,screen,page,...activity};
+    const scrollbar=componentScrollbar(hit,point,false),onScrollbar=scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom);
+    const anchored=!onScrollbar && captureDocumentCursor(point);
+    if (anchored&&!onScrollbar) return {...anchored,screen,page,...activity};
     const pdf=capturePDF(hit,plugin,point);
     if(pdf!==undefined)return pdf ? {surface:'ui',documentId:null,blockId:null,page,screen,...pdf,...activity}:null;
     const fallback=()=>{
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
     };
-    if(hit.closest('#configBazaarReadme,.collab-person') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
+    if(onScrollbar || hit.closest('#configBazaarReadme,.collab-person') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
     const target=uiAnchor(hit,plugin,point);
     if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
@@ -1785,6 +1868,7 @@ function resolveCursor(cursor, plugin) {
     } else if(element.matches('.protyle-title__input'))return null;
     if(!rect?.width || !rect.height)return null;
     const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
+    const scrollbar=componentScrollbar(element,point,false);if(scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
     const hit=componentHit(document,point);
     return hit && visibleElement(hit) && element.contains(hit) ? point:null;
 }
@@ -1940,7 +2024,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.renderOnlineCount();
         this.scheduleTreeRender();
         this.renderPeople();
-        this.scheduleCursorRender(false);
+        this.scheduleCursorRender();
     }
 
     currentDocument() {
@@ -1976,14 +2060,14 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.remoteSelections = [];
                 this.remoteEditing = [];
                 this.renderPeople();
-                this.scheduleCursorRender(false);
+                this.scheduleCursorRender();
             }
         });
     }
 
     scheduleDocumentReport() {
         this.finishRestore?.();
-        this.scheduleCursorRender(false);
+        this.scheduleCursorRender();
         if (this.stopped || !this.layoutReady || this.documentFrame) return;
         this.documentFrame = requestAnimationFrame(() => {
             this.documentFrame = 0;
@@ -2008,12 +2092,12 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.domObserver = new MutationObserver((records) => {
             for (const record of records) {
                 if ((record.target.nodeType === 3 ? record.target.parentElement : record.target).closest?.(".collab-cursor-layer, .collab-editing-layer, .collab-people, .collab-text-measure")) continue;
-                if (record.type === "characterData") { this.scheduleCursorRender(false); this.queueActivity(); continue; }
+                if (record.type === "characterData") { this.scheduleCursorRender(); this.queueActivity(); continue; }
                 if (record.type === "attributes") {
                     this.scheduleDocumentReport();
                     if (record.target.matches(".protyle") || record.target.classList.contains("layout__wnd--active") ||
                         (record.oldValue || "").includes("layout__wnd--active")) this.scheduleDocumentReport();
-                    this.scheduleCursorRender(false);
+                    this.scheduleCursorRender();
                     this.queueActivity();
                     continue;
                 }
@@ -2024,7 +2108,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (record.target.closest(".sy__file") || elements.some((node) => node.matches(".sy__file") || node.querySelector(".sy__file"))) this.scheduleTreeRender();
                 if ((record.target.closest(".layout-tab-container") && !record.target.closest(".protyle")) ||
                     elements.some((node) => node.matches(".protyle") || node.querySelector(".protyle"))) this.scheduleDocumentReport();
-                this.scheduleCursorRender(false);
+                this.scheduleCursorRender();
                 this.queueActivity();
             }
         });
@@ -2105,7 +2189,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.remoteCursors = state.cursors;
         this.remoteSelections = selections;
         this.remoteEditing = editing;
-        this.scheduleCursorRender(true);
+        this.scheduleCursorRender();
         this.watchGraphs();
     }
 
@@ -2122,7 +2206,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.pointer = { x: event.clientX, y: event.clientY };
                 if(event.target)this.surfaceTarget=event.target;
                 this.scheduleDocumentReport();
-                this.scheduleCursorRender(true);
+                this.scheduleCursorRender();
                 this.queueActivity();
                 this.watchGraphs();
             }
@@ -2130,14 +2214,14 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handlePointerLeave = () => {
             this.pointer = null;
             this.queueActivity();
-            this.scheduleCursorRender(true);
+            this.scheduleCursorRender();
         };
         this.handlePointerOut = (event) => { if (!event.relatedTarget) this.handlePointerLeave(); };
-        this.handleCursorLayout = () => { this.scheduleCursorRender(false); this.queueActivity(); };
+        this.handleCursorLayout = () => { this.scheduleCursorRender(); this.queueActivity(); };
         this.handleVisibility = () => {
             if (document.hidden) this.handlePointerLeave();
             else { this.refreshInBackground(); this.loadCursors(); }
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         };
         document.addEventListener("pointermove", this.handlePointer, { passive: true });
         document.addEventListener("pointerout", this.handlePointerOut, { passive: true });
@@ -2154,10 +2238,10 @@ module.exports = class CollaborationPlugin extends Plugin {
             else if(event?.type==='pointerdown' && !event.target.closest('.b3-dialog, .b3-menu'))this.pageControl=null;
             if(event?.type==='pointerdown' && !this.topBar?.contains?.(event.target))this.closePeople();
             this.dialogBase = currentPage(this, false);
-            this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender(false);
+            this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender();
         };
         this.handleKey = (event) => {
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
             const keys=captureShortcut(event);
             if (keys) {
                 this.pendingShortcut=keys;
@@ -2243,7 +2327,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     startCursorTimer() {
         clearInterval(this.cursorTimer);
-        this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender(false);},1000);
+        this.cursorTimer=setInterval(()=>{if(Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT)this.scheduleCursorRender();},1000);
     }
 
     watchGraphs() {
@@ -2252,7 +2336,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if(!local && !this.remoteCursors.some(client=>client.cursor.ui?.graph))return;
         const models=graphModels();if(!models.length)return;
         const revision=JSON.stringify(models.map(({graphEngine:engine})=>[engine.positionVersion,engine.geometryVersion,engine.camera.x,engine.camera.y,engine.camera.scale]));
-        if(revision!==this.graphRevision){this.graphRevision=revision;this.scheduleCursorRender(false);this.queueActivity();}
+        if(revision!==this.graphRevision){this.graphRevision=revision;this.scheduleCursorRender();this.queueActivity();}
         this.graphTimer=setTimeout(()=>{this.graphTimer=null;this.watchGraphs();},1000/this.tick);
     }
 
@@ -2269,7 +2353,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.lastCursorTypingAt=typingAt;
         } catch {
             this.remoteCursors = [];
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         } finally {
             this.cursorSending = false;
         }
@@ -2286,7 +2370,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.editingSentAt = Date.now();
         } catch {
             this.remoteEditing = [];
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         } finally { this.editingSending = false; }
     }
 
@@ -2300,72 +2384,84 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.lastSelectionSignature = signature;
         } catch {
             this.remoteSelections = [];
-            this.scheduleCursorRender(false);
+            this.scheduleCursorRender();
         } finally { this.selectionSending = false; }
     }
 
-    scheduleCursorRender(animate) {
+    scheduleCursorRender() {
         if (this.stopped || !this.cursorLayer) return;
-        this.animateCursorFrame = this.cursorFrame ? this.animateCursorFrame && animate : animate;
         if (this.cursorFrame) return;
         this.cursorFrame = requestAnimationFrame(() => {
             this.cursorFrame = 0;
-            this.renderCursors(this.animateCursorFrame);
+            this.renderCursors(true);
         });
     }
 
     renderCursors(animate) {
-        const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
-        if(picker && this.cursorLayer.showPopover){
-            if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
-            // A picker reopened between frames must not cover the read-only cursor layer.
-            if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
-            this.cursorLayer.showPopover();
-        }else if(this.cursorLayer.hasAttribute('popover')){
-            this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
-        }
-        const visible = new Set();
-        if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
-            for (const client of this.remoteCursors) {
-                if (client.name === this.clientName || !this.clients.some((person) => person.name === client.name)) continue;
-                const point = resolveCursor(client.cursor, this);
-                if (!point) continue;
-                visible.add(client.name);
-                let marker = this.cursorMarkers.get(client.name);
-                if (!marker) {
-                    marker = document.createElement("div");
-                    marker.className = "collab-cursor";
-                    const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-                    arrow.setAttribute("viewBox", "0 0 22 22");
-                    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                    path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
-                    arrow.append(path);
-                    const label = document.createElement("span");
-                    marker.append(arrow, label);
-                    this.cursorLayer.append(marker);
-                    this.cursorMarkers.set(client.name, marker);
+        const previousMeasurements=componentMeasurements;
+        componentMeasurements={scrollbars:new WeakMap(),roots:new Map(),routes:new WeakMap()};
+        try {
+            const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
+            if(picker && this.cursorLayer.showPopover){
+                if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
+                // A picker reopened between frames must not cover the read-only cursor layer.
+                if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
+                this.cursorLayer.showPopover();
+            }else if(this.cursorLayer.hasAttribute('popover')){
+                this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
+            }
+            const visible = new Set();
+            const positions=[],people=new Set(this.clients.map(client=>client.name));
+            if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
+                for (const client of this.remoteCursors) {
+                    if (client.name === this.clientName || !people.has(client.name)) continue;
+                    const point = resolveCursor(client.cursor, this);
+                    if (!point) continue;
+                    const marker=this.cursorMarkers.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
+                    positions.push({client,point,rect});
                 }
-                const label=marker.querySelector('span');
-                label.textContent=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
-                marker.style.setProperty("--collab-cursor-hue", String(client.hue));
-                const target=JSON.stringify([client.cursor.surface,client.cursor.documentId,client.cursor.blockId,client.cursor.region,client.cursor.ui]);
-                marker.style.transitionDuration = animate && marker.cursorTarget===target ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
-                marker.cursorTarget=target;
-                marker.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
-                const rect = marker.getBoundingClientRect();
-                const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
-                    this.pointer.y >= rect.top - 32 && this.pointer.y <= rect.bottom + 32;
-                marker.style.opacity = nearby ? "0.3" : "1";
+                // Resolve every anchor before writing markers so peers share one layout measurement.
+                for(const {client,point,rect:measured}of positions){
+                    visible.add(client.name);
+                    let marker = this.cursorMarkers.get(client.name);
+                    if (!marker) {
+                        marker = document.createElement("div");
+                        marker.className = "collab-cursor";
+                        const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+                        arrow.setAttribute("viewBox", "0 0 22 22");
+                        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                        path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
+                        arrow.append(path);
+                        const label = document.createElement("span");
+                        marker.append(arrow, label);
+                        this.cursorLayer.append(marker);
+                        this.cursorMarkers.set(client.name, marker);
+                    }
+                    const label=marker.querySelector('span');
+                    const text=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
+                    if(label.textContent!==text)label.textContent=text;
+                    marker.style.setProperty("--collab-cursor-hue", String(client.hue));
+                    const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
+                    if(marker.cursorTransform!==transform){
+                        marker.style.transitionDuration = animate && marker.cursorTransform ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                        marker.style.transform=transform;
+                        marker.cursorTransform=transform;
+                    }
+                    const rect = measured || {left:point.x,right:point.x+22,top:point.y,bottom:point.y+22};
+                    const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
+                        this.pointer.y >= rect.top - 32 && this.pointer.y <= rect.bottom + 32;
+                    marker.style.opacity = nearby ? "0.3" : "1";
+                }
             }
-        }
-        for (const [name, marker] of this.cursorMarkers) {
-            if (!visible.has(name)) {
-                marker.remove();
-                this.cursorMarkers.delete(name);
+            for (const [name, marker] of this.cursorMarkers) {
+                if (!visible.has(name)) {
+                    marker.remove();
+                    this.cursorMarkers.delete(name);
+                }
             }
-        }
-        this.renderSelections();
-        this.renderEditing();
+            this.renderSelections();
+            this.renderEditing();
+        }finally{componentMeasurements=previousMeasurements;}
     }
 
     renderEditing() {
