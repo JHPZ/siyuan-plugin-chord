@@ -187,10 +187,18 @@ function componentSuperblockDivider(element) {
     return ids.every(id=>DOCUMENT_ID.test(id || '')) ? ids.sort():null;
 }
 
+function componentBazaarPackage(element) {
+    const root=element.closest('#configBazaarReadme');if(!root)return undefined;
+    const sides=root.querySelectorAll(':scope > .item__body > .item__side');if(sides.length!==1)return null;
+    const {name,packageType}=sides[0].dataset;
+    return name && name.length<=512 && !/[\x00-\x1f]/.test(name) && ['plugins','themes','icons','templates','widgets'].includes(packageType) ? [packageType,name]:null;
+}
+
 function componentKey(element) {
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
     const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    if(element.matches('#configBazaarReadme'))values.push(['bazaar-package',componentHash(JSON.stringify(componentBazaarPackage(element)))]);
     if(element.matches('.config-range__desktop')){const field=element.querySelector(':scope > input.b3-slider[type="range"][id]');if(field)values.push(['range-control',componentHash(field.id)]);}
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     if(pdfNumber)values.push(['pdf-file',componentHash(pdfNumber.pdfObject.pdfDocument.fingerprints[0])]);
@@ -807,7 +815,7 @@ function componentGeometry(element,point) {
 }
 
 function captureComponent(hit,plugin,point) {
-    if(hit.closest('[data-private]') || componentSearchField(hit)===null || componentAssetPath(hit)===null || componentSuperblockDivider(hit)===null)return null;
+    if(hit.closest('[data-private]') || componentSearchField(hit)===null || componentAssetPath(hit)===null || componentSuperblockDivider(hit)===null || componentBazaarPackage(hit)===null)return null;
     const graph=hit.matches('canvas') ? captureGraph(hit,point):undefined;
     if(hit.matches('canvas') && !graph)return null;
     let original=hit;hit=componentBox(hit,point);
@@ -822,7 +830,7 @@ function captureComponent(hit,plugin,point) {
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
         point=inside;const inner=componentHit(doc,point);
-        if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || componentSuperblockDivider(inner)===null || inner.matches('canvas'))return null;
+        if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || componentSuperblockDivider(inner)===null || componentBazaarPackage(inner)===null || inner.matches('canvas'))return null;
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
@@ -848,7 +856,7 @@ function resolveComponent(cursor,plugin) {
         frames.push(element);let doc;try{doc=element.contentDocument;}catch{}
         element=doc?.body && componentFollow(doc.body,route);if(!element)return null;
     }
-    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') ||
+    if(!visibleElement(element) || element.closest('[data-private]') || element.matches('canvas') || componentBazaarPackage(element)===null ||
         anchor.textHash && componentTextHash(element)!==anchor.textHash)return null;
     // A grid crossing can be bounded entirely by option edges.
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
@@ -901,7 +909,7 @@ function resolveComponent(cursor,plugin) {
     const highlight=target===element && element.matches(COMPONENT_HIGHLIGHT_TEXT) && hit?.matches('mark') && hit.parentElement===element;
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || componentBazaarPackage(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);

@@ -1055,6 +1055,28 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'covered blank painted');overlay.remove();
         }finally{fixture.remove();}
     });
+    await test('集市详情正文、控件和留白绑定包类型与包名，相同正文不跨包绘制',async()=>{
+        const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='market-package-test';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:300px;z-index:100;background:white';fixture.innerHTML='<div class="b3-dialog__header">设置</div><div id="configBazaarReadme"><div class="item__body" style="display:flex"><div class="item__side" data-name="market-private-one" data-package-type="plugins" data-from="downloaded" style="width:140px;flex:none"><button data-type="uninstall" style="width:130px;height:40px">同名操作</button></div><div class="item__main" style="flex:1;padding:16px;height:180px"><div class="item__readme"><h2 style="font:20px/30px sans-serif;margin:0 0 14px">共同标题</h2><p>相同正文</p></div></div></div></div>';document.body.append(fixture);
+        const root=fixture.querySelector('#configBazaarReadme'),body=root.firstElementChild,side=root.querySelector('.item__side'),heading=root.querySelector('h2'),button=side.querySelector('button'),types=['plugins','themes','icons','templates','widgets'];
+        const point=(e,blank)=>{const range=document.createRange();range.selectNodeContents(e);let r=range.getBoundingClientRect();if(blank){const box=e.getBoundingClientRect();return {x:r.right+(box.right-r.right)*.7,y:(r.top+r.bottom)/2};}range.setStart(e.firstChild,0);range.setEnd(e.firstChild,1);r=range.getBoundingClientRect();return {x:r.left+r.width*.2,y:r.top+r.height*.7};};
+        let cases=0;
+        try{for(const type of types){side.dataset.packageType=type;side.dataset.name='market-private-one';const samples=[heading,button].flatMap(e=>[false,true].map(blank=>({e,blank,anchor:componentRoundTrip(point(e,blank))}))),main=root.querySelector('.item__main'),box=main.getBoundingClientRect();samples.push({e:main,anchor:componentRoundTrip({x:box.right-2,y:box.bottom-2})});
+            const check=()=>{for(const s of samples){const p=resolveCursor(s.anchor),r=s.e.getBoundingClientRect(),q=s.e===main?{x:r.right-2,y:r.bottom-2}:point(s.e,s.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.02,'same package lost target '+type);}};
+            assert(samples.every(s=>s.anchor.ui.version===3),'package control used legacy ratio');const legacy=uiAnchor(button,undefined,point(button,false));assert(legacy&&resolveCursor({surface:'ui',ui:legacy.ui,x:.5,y:.5})===null,'legacy package control was accepted');
+            const html=root.outerHTML,active=document.activeElement;check();assert(root.outerHTML===html&&document.activeElement===active,'package measurement changed native state');assert(!JSON.stringify(samples.map(s=>s.anchor)).includes('market-private-one'),'raw package name leaked');
+            side.dataset.name='market-private-two';assert(samples.every(s=>resolveCursor(s.anchor)===null),'identical text inherited another package');side.dataset.name='market-private-one';check();
+            side.dataset.packageType=types[(types.indexOf(type)+1)%types.length];assert(samples.every(s=>resolveCursor(s.anchor)===null),'same package name inherited another type');side.dataset.packageType=type;check();
+            side.dataset.from='bazaar';check();side.dataset.from='downloaded';body.append(side);check();body.prepend(side);check();
+            for(const invalid of ['', 'x'.repeat(513)]){side.dataset.name=invalid;assert(samples.every(s=>resolveCursor(s.anchor)===null),'invalid package identity resolved');assert(captureCursor(point(heading,false))===null,'invalid package acquired generic anchor');}side.dataset.name='market-private-one';check();
+            side.dataset.packageType='unknown';assert(samples.every(s=>resolveCursor(s.anchor)===null)&&captureCursor(point(heading,false))===null,'unknown package type guessed');side.dataset.packageType=type;
+            const clone=side.cloneNode(true);body.append(clone);assert(samples.every(s=>resolveCursor(s.anchor)===null)&&captureCursor(point(heading,false))===null,'ambiguous package metadata guessed');clone.remove();
+            side.remove();assert(samples.every(s=>resolveCursor(s.anchor)===null)&&captureCursor(point(heading,false))===null,'missing package metadata guessed');body.prepend(side);check();
+            root.style.visibility='hidden';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden detail retained pointer');root.style.visibility='';check();cases++;
+        }
+        const anchor=componentRoundTrip(point(heading,true));fixture.style.width='840px';const q=point(heading,true),p=resolveCursor(anchor);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.02,'same package resized blank drifted');document.getElementById('results').dataset.bazaarPackageCases=String(cases);
+        }finally{fixture.remove();}
+    });
+
     await test('大型卡片列表留白只为选中的边界计算兄弟身份，工作量随列表线性增长',async()=>{
         const fixture=document.createElement('div');fixture.id='large-marketplace-cards';fixture.style.cssText='position:fixed;left:30px;top:30px;width:500px;height:300px;overflow:auto;background:white;z-index:100;padding:12px';document.body.append(fixture);
         const originalKey=componentKey,measurements=[];let calls=0;componentKey=element=>{calls++;return originalKey(element);};

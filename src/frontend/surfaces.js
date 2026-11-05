@@ -313,7 +313,7 @@ function captureCursor(point, plugin) {
         const component=captureComponent(hit,plugin,point);
         return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
     };
-    if(hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
+    if(hit.closest('#configBazaarReadme') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
     const target=uiAnchor(hit,plugin,point);
     if(!target)return fallback();
     const rect=target.element.getBoundingClientRect();
@@ -331,7 +331,7 @@ function resolveCursor(cursor, plugin) {
     if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
     const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
     if(!element || element.closest(CURSOR_EXCLUDED))return null;
-    if(element.matches('input[type="range"],select') || componentTextField(element) || element.closest('.protyle-util')?.querySelector('textarea'))return null;
+    if(element.closest('#configBazaarReadme') || element.matches('input[type="range"],select') || componentTextField(element) || element.closest('.protyle-util')?.querySelector('textarea'))return null;
     if(element.closest('.sy__file') && cursor.ui.kind!=='file')return null;
     if(cursor.region && !matchesRegion(element,cursor.region))return null;
     if(!['file','dock','tab','tab-control','settings-nav'].includes(cursor.ui.kind) && !element.matches(CURSOR_CONTROL) && !element.matches('.protyle-title__input'))return null;
