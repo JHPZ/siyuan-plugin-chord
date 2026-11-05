@@ -85,6 +85,30 @@ function fontDragFixture() {
     return {fixture,chip,clone,samples,remove:()=>{clone.remove();fixture.remove();}};
 }
 (async () => {
+    await test('普通控件的字形与图标间留白跟随接收端字号和宽度',async()=>{
+        const fixture=document.createElement('div');fixture.dataset.name='control-precision';fixture.style.cssText='position:fixed;left:40px;top:40px;width:650px;height:230px;z-index:100;background:white';
+        fixture.innerHTML='<button data-name="precision-action" style="display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;width:300px;height:90px;padding:18px 26px;font:18px/1.5 sans-serif"><span>精确定位按钮</span><span aria-label="action-icon">↗</span></button>';document.body.append(fixture);
+        const button=fixture.firstElementChild,label=button.firstElementChild,icon=button.lastElementChild;
+        const samples=()=>{const glyph=rectAt(label,2),a=label.getBoundingClientRect(),b=icon.getBoundingClientRect();return [{kind:'glyph',point:{x:glyph.left+glyph.width*.3,y:glyph.top+glyph.height*.6}},{kind:'gap',point:{x:a.right+(b.left-a.right)*.4,y:glyph.top+glyph.height*.6}}];};
+        try{const anchors=samples().map(s=>({...s,anchor:componentRoundTrip(s.point)}));button.style.width='520px';button.style.height='120px';button.style.fontSize='28px';
+            const expected=samples();for(let i=0;i<anchors.length;i++){const p=resolveCursor(anchors[i].anchor),q=expected[i].point;assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,'receiver control drift '+JSON.stringify({kind:anchors[i].kind,p,q}));assert(anchors[i].anchor.ui.version===3,'control still uses legacy ratio');}
+        }finally{fixture.remove();}
+    });
+    await test('命名控件跨面板布局匹配字形并拒绝重复、缺失及私有目标',async()=>{
+        const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:40px;top:40px;width:650px;height:320px;z-index:100;background:white';fixture.innerHTML='<div class="source-layout"></div><div class="receiver-layout" style="padding:20px"></div>';document.body.append(fixture);
+        const source=fixture.firstElementChild,receiver=fixture.lastElementChild;
+        const cases=[['toolbar','id','precision-toolbar'],['dock','data-type','precision-dock'],['status','data-statusbar-entry','precision-status'],['topbar','data-topbar-entry','precision-topbar'],['nav','data-name','precision-section'],['tab-control','data-type','precision-tab-action']];
+        const point=element=>{const r=rectAt(element,1);return {x:r.left+r.width*.3,y:r.top+r.height*.6};};
+        try{for(const [kind,attribute,value]of cases){const wrapper=document.createElement('div');wrapper.className=kind==='toolbar'?'toolbar':kind==='nav'?'config__side':kind==='tab-control'?'layout__wnd--active':'control-host';if(kind==='tab-control')wrapper.innerHTML='<div class="item--readonly"></div>';const host=wrapper.firstElementChild||wrapper,button=document.createElement('button');button.textContent='命名控件';button.setAttribute(attribute,value);if(kind==='dock')button.className='dock__item';button.style.cssText='font:18px/32px sans-serif;width:220px;height:70px';host.append(button);source.append(wrapper);
+            const anchor=componentRoundTrip(point(button));assert(anchor.ui.scope.kind==='control','named control borrowed layout '+kind);receiver.append(wrapper);button.style.fontSize='26px';button.style.width='380px';const expected=point(button),resolved=resolveCursor(anchor);assert(resolved&&Math.hypot(resolved.x-expected.x,resolved.y-expected.y)<.1,'named receiver drift '+kind);
+            const copy=button.cloneNode(true);host.append(copy);assert(resolveCursor(anchor)===null,'duplicate named target painted '+kind);copy.remove();button.dataset.private='';assert(resolveCursor(anchor)===null,'private named target painted '+kind);delete button.dataset.private;button.setAttribute(attribute,value+'-other');assert(resolveCursor(anchor)===null,'missing identity borrowed target '+kind);button.setAttribute(attribute,value);assert(resolveCursor(anchor),'restored named target missing '+kind);wrapper.remove();
+        }}finally{fixture.remove();}
+    });
+    await test('普通控件接收端新增隐私、隐藏、移除和覆盖后不再绘制',async()=>{
+        const fixture=document.createElement('div');fixture.dataset.name='control-visibility';fixture.style.cssText='position:fixed;left:40px;top:40px;z-index:100;background:white';fixture.innerHTML='<button data-name="private-action" style="width:200px;height:70px">测试按钮</button>';document.body.append(fixture);
+        try{const button=fixture.firstElementChild,r=button.getBoundingClientRect(),anchor=componentRoundTrip({x:r.left+8,y:r.top+8});button.dataset.private='';assert(resolveCursor(anchor)===null,'receiver private control painted');delete button.dataset.private;assert(resolveCursor(anchor),'public control did not recover');button.style.display='none';assert(resolveCursor(anchor)===null,'hidden control painted');button.style.display='';button.remove();assert(resolveCursor(anchor)===null,'removed control painted');fixture.append(button);const cover=document.createElement('div');cover.style.cssText='position:fixed;inset:0;background:white;z-index:101';fixture.append(cover);assert(resolveCursor(anchor)===null,'covered control painted');
+        }finally{fixture.remove();}
+    });
     await test('字体拖拽克隆的文字、四边留白和图标跟随对应克隆',async()=>{
         const f=fontDragFixture();try{
             const anchors=f.samples().map(s=>{assert(f.clone.contains(componentHit(document,s.point)),'visual hit passed through font drag clone');const anchor=componentRoundTrip(s.point);assert(anchor.ui?.scope.kind==='floating','clone borrowed background scope');return {...s,anchor};});
@@ -180,7 +204,7 @@ function fontDragFixture() {
     await test('文档树按文档与字符定位，宽度和滚动变化不漂移', async () => {
         const tree=document.querySelector('.sy__file'),row=tree.querySelectorAll('li')[4],label=row.querySelector('.b3-list-item__text');
         const r=rectAt(label,1),point={x:r.left+r.width/2,y:r.top+r.height/2},anchor=captureCursor(point);
-        assert(anchor?.ui.kind==='file' && anchor.ui.key===row.dataset.nodeId && anchor.ui.offset===1,JSON.stringify(anchor));
+        assert(anchor?.ui.version===3 && anchor.ui.scope.kind==='tree' && componentRoots(anchor.ui.scope)===row && anchor.ui.edges.x.every(edge=>edge.kind==='text'&&edge.offset===1),JSON.stringify(anchor));
         tree.scrollTop+=36;tree.style.width='320px';row.style.paddingLeft='45px';await frame();
         const expected=rectAt(label,1),resolved=resolveCursor(anchor);
         assert(resolved && near(resolved.x,expected.left+expected.width/2) && near(resolved.y,expected.top+expected.height/2),'file label drift');
@@ -196,7 +220,7 @@ function fontDragFixture() {
             for(const selector of ['[data-type="navigation-root"] .b3-list-item__text','[data-type="navigation-root"] .b3-list-item__icon','.b3-list-item__arrow','button','[data-type="navigation-file"] .b3-list-item__text']) {
                 const element=fixture.querySelector(selector),r=selector.endsWith('__text') ? rectAt(element,1):element.getBoundingClientRect();
                 const anchor=captureCursor({x:r.left+r.width/2,y:r.top+r.height/2});
-                assert(anchor?.ui.kind==='file' && anchor.ui.id==='20261030165150-book003','wrong notebook identity: '+selector);
+                assert(anchor?.ui.version===3 && anchor.ui.scope.kind==='tree' && componentRoots(anchor.ui.scope)===element.closest('li') && element.closest('ul').dataset.url==='20261030165150-book003','wrong notebook identity: '+selector);
                 fixture.append(fixture.firstElementChild);fixture.style.width='350px';await frame();
                 assert(resolveCursor(anchor),'reorder lost target: '+selector);
                 const row=element.closest('li'),copy=row.cloneNode(true);row.after(copy);
@@ -467,7 +491,7 @@ function fontDragFixture() {
             for(const selector of ['.protyle-breadcrumb button','[data-topbar-entry]']) {
                 const element=editor.querySelector(selector),r=element.getBoundingClientRect();
                 const anchor=captureCursor({x:r.left+3,y:r.top+3},plugin);
-                assert(anchor?.ui.kind==='document'&&anchor.ui.page.id===ids[0]&&validCursor(anchor),'control lost its owning document: '+selector);
+                assert(anchor?.ui.version===3&&anchor.ui.scope.kind==='document'&&componentRoots(anchor.ui.scope,plugin)===editor&&validCursor(anchor),'control lost its owning document: '+selector);
                 assert(resolveCursor(anchor,plugin),'same document control missing: '+selector);
                 root.dataset.nodeId=ids[1];
                 assert(resolveCursor(anchor,plugin)===null,'control appeared in another document: '+selector);
@@ -486,12 +510,12 @@ function fontDragFixture() {
             }
             const title=editor.querySelector('.protyle-title__input'),character=rectAt(title,2);
             const titleAnchor=captureCursor({x:character.left+character.width/2,y:character.top+character.height/2},plugin);
-            assert(titleAnchor?.ui.offset===2 && resolveCursor(titleAnchor,plugin),'title character missing');
+            assert(titleAnchor?.ui.version===3 && titleAnchor.ui.edges.x.every(edge=>edge.kind==='text'&&edge.offset===2) && resolveCursor(titleAnchor,plugin),'title character missing');
             root.dataset.nodeId=ids[1];assert(resolveCursor(titleAnchor,plugin)===null,'title appeared in other document');root.dataset.nodeId=ids[0];
             const button=editor.querySelector('.protyle-breadcrumb button'),r=button.getBoundingClientRect();
             const anchor=captureCursor({x:r.left+3,y:r.top+3},plugin);
             editor.querySelector('.protyle-toolbar').classList.add('fn__none');
-            assert(resolveCursor({...anchor,ui:{...anchor.ui,attribute:'data-type',value:'b'}},plugin)===null,'legacy floating toolbar cursor appeared');
+            assert(resolveCursor({...anchor,ui:{version:2,kind:'document',path:[],tag:'button',classes:'',page:{kind:'document',id:ids[0],title:''},attribute:'data-type',value:'b'}},plugin)===null,'legacy floating toolbar cursor appeared');
             editor.querySelector('.protyle-toolbar').classList.remove('fn__none');
             const cover=document.createElement('div');cover.className='occluder';cover.style.zIndex='101';document.body.append(cover);
             assert(resolveCursor(anchor,plugin)===null,'document control cursor leaked through modal');cover.remove();
@@ -628,7 +652,7 @@ function fontDragFixture() {
                 if(target.matches('.dock__item')){target.parentElement.append(target);target.dataset.id='different-local-uuid';}
                 else {target.style.width='220px';target.textContent+=' 999';}
                 const expected=target.getBoundingClientRect(),resolved=resolveCursor(anchor);
-                assert(resolved&&near(resolved.x,expected.left+expected.width*anchor.x)&&near(resolved.y,expected.top+expected.height*anchor.y),'semantic control drift: '+selector);
+                assert(anchor.ui.textHash ? resolved===null : resolved&&near(resolved.x,expected.left+8)&&near(resolved.y,expected.top+8),'semantic control drift or changed label painted: '+selector);
                 target.remove();assert(resolveCursor(anchor)===null,'missing shared control displayed cursor');spacer.remove();
             }
         } finally {fixture.remove();}
@@ -641,10 +665,10 @@ function fontDragFixture() {
         try {
             for(const selector of ['.item__text','.item__icon','.item__close']) {
                 const element=heads[0].querySelector(selector),r=element.getBoundingClientRect(),anchor=captureCursor({x:r.left+3,y:r.top+3});
-                assert(anchor?.ui.kind==='tab'&&anchor.ui.page.id==='20261030165150-doc0001','tab identity missing');
+                assert(anchor?.ui.version===3&&anchor.ui.scope.kind==='control'&&componentRoots(anchor.ui.scope)===heads[0],'tab identity missing');
                 fixture.prepend(heads[1]);heads[0].dataset.id='receiver-different-uuid';heads[0].style.width='310px';
                 const expected=element.getBoundingClientRect(),resolved=resolveCursor(anchor);
-                assert(resolved&&near(resolved.x,expected.left+expected.width*anchor.x)&&near(resolved.y,expected.top+expected.height*anchor.y),'wrong tab after reorder');
+                assert(resolved&&near(resolved.x,expected.left+3)&&near(resolved.y,expected.top+3),'wrong tab after reorder '+JSON.stringify({selector,expected:expected.toJSON(),resolved,anchor,current:captureCursor({x:expected.left+3,y:expected.top+3})}));
                 heads[0].remove();assert(resolveCursor(anchor)===null,'same title matched wrong document');fixture.append(heads[0]);
             }
         } finally {fixture.remove();}
@@ -659,10 +683,10 @@ function fontDragFixture() {
             fixture.querySelector('[data-name="editor"]').classList.remove('b3-list-item--focus');nav.classList.add('b3-list-item--focus');
             assert(resolveCursor(anchor,plugin),'nav did not survive category change');
             const panel=fixture.querySelector('.config__tab-container[data-name="editor"]'),button=panel.querySelector('button'),content=capture(button);
-            assert(content?.ui.kind==='settings','settings content not scoped');
+            assert(content?.ui.version===3 && componentFollow(componentRoots(content.ui.scope,plugin),content.ui.route)===button,'settings content not scoped');
             const sibling=document.createElement('button');sibling.textContent='新增';button.before(sibling);
             const r=button.getBoundingClientRect(),resolved=resolveCursor(content,plugin);
-            assert(resolved&&near(resolved.x,r.left+r.width*content.x),'settings content followed child index');
+            assert(resolved&&near(resolved.x,r.left+5),'settings content followed child index');
             panel.classList.add('fn__none');assert(resolveCursor(content,plugin)===null,'hidden settings section displayed cursor');
         } finally {fixture.remove();}
     });
@@ -1117,7 +1141,7 @@ function fontDragFixture() {
             assert(samples.every(s=>s.anchor.ui.version===3),'person control used legacy ratio');const check=()=>{for(const s of samples){const p=resolveCursor(s.anchor),q=point(s.row,s.kind);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.02,'person target drifted '+s.row.dataset.name+'/'+s.kind+' '+JSON.stringify({p,q}));}};
             own('B');check();assert(resolveCursor(self)===null,'another window inherited local self label');list.prepend(rows[1]);fixture.style.width='600px';check();own('A');check();assert(resolveCursor(self),'restored self label stayed hidden');
             rows[0].dataset.name='Other';assert(samples.filter(s=>s.row===rows[0]).every(s=>resolveCursor(s.anchor)===null),'replacement person inherited pointers');rows[0].dataset.name='A';own('A');check();rows[0].remove();assert(samples.filter(s=>s.row===rows[0]).every(s=>resolveCursor(s.anchor)===null),'missing person retained pointers');list.append(rows[0]);check();
-            const legacy=uiAnchor(rows[0].querySelector('button'),undefined,point(rows[0],'follow'));assert(legacy&&resolveCursor({surface:'ui',ui:legacy.ui,x:.5,y:.5})===null,'legacy person ratio accepted');
+            const legacy={version:2,kind:'body',path:[],tag:'button'};assert(resolveCursor({surface:'ui',ui:legacy,x:.5,y:.5})===null,'legacy person ratio accepted');
             fixture.style.visibility='hidden';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden people remained visible');fixture.style.visibility='';check();document.getElementById('results').dataset.peopleCases='8';
         }finally{fixture.remove();}
     });
@@ -1128,7 +1152,7 @@ function fontDragFixture() {
         let cases=0;
         try{for(const type of types){side.dataset.packageType=type;side.dataset.name='market-private-one';const samples=[heading,button].flatMap(e=>[false,true].map(blank=>({e,blank,anchor:componentRoundTrip(point(e,blank))}))),main=root.querySelector('.item__main'),box=main.getBoundingClientRect();samples.push({e:main,anchor:componentRoundTrip({x:box.right-2,y:box.bottom-2})});
             const check=()=>{for(const s of samples){const p=resolveCursor(s.anchor),r=s.e.getBoundingClientRect(),q=s.e===main?{x:r.right-2,y:r.bottom-2}:point(s.e,s.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.02,'same package lost target '+type);}};
-            assert(samples.every(s=>s.anchor.ui.version===3),'package control used legacy ratio');const legacy=uiAnchor(button,undefined,point(button,false));assert(legacy&&resolveCursor({surface:'ui',ui:legacy.ui,x:.5,y:.5})===null,'legacy package control was accepted');
+            assert(samples.every(s=>s.anchor.ui.version===3),'package control used legacy ratio');const legacy={version:2,kind:'settings',path:[],tag:'button'};assert(resolveCursor({surface:'ui',ui:legacy,x:.5,y:.5})===null,'legacy package control was accepted');
             const html=root.outerHTML,active=document.activeElement;check();assert(root.outerHTML===html&&document.activeElement===active,'package measurement changed native state');assert(!JSON.stringify(samples.map(s=>s.anchor)).includes('market-private-one'),'raw package name leaked');
             side.dataset.name='market-private-two';assert(samples.every(s=>resolveCursor(s.anchor)===null),'identical text inherited another package');side.dataset.name='market-private-one';check();
             side.dataset.packageType=types[(types.indexOf(type)+1)%types.length];assert(samples.every(s=>resolveCursor(s.anchor)===null),'same package name inherited another type');side.dataset.packageType=type;check();
@@ -1460,7 +1484,7 @@ function fontDragFixture() {
             const expected=offset=>{const segment=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value).containing(offset),r=document.createRange();r.setStart(reference.firstChild,segment.index);r.setEnd(reference.firstChild,segment.index+segment.segment.length);const g=r.getBoundingClientRect(),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();return {x:b.left+g.left-a.left+g.width*.5-field.scrollLeft,y:b.top+g.top-a.top+g.height*.5};};
             const samples=[0,8,11,14,17].map(offset=>({offset,anchor:componentRoundTrip(expected(offset))}));assert(samples.every(s=>s.anchor.ui.version===3&&s.anchor.ui.textHash),'command search still uses control ratios');
             field.style.width='400px';reference.style.width='400px';for(const s of samples){const p=expected(s.offset),a=resolveCursor(s.anchor);assert(a&&Math.hypot(a.x-p.x,a.y-p.y)<.02,'command search glyph drift');}
-            const legacy={...samples[0].anchor,ui:{version:2,kind:'dialog',key:'dialog-commandpanel',label:'命令面板',tag:'input',classes:'b3-text-field b3-text-field--text',path:[],page:{kind:'control',control:'barCommand',title:'命令面板'}},x:.1,y:.5};assert(resolveUIAnchor(legacy.ui)===field,'legacy fixture missing');assert(resolveCursor(legacy)===null,'legacy command ratio bypassed glyph identity');
+            const legacy={...samples[0].anchor,ui:{version:2,kind:'dialog',key:'dialog-commandpanel',label:'命令面板',tag:'input',classes:'b3-text-field b3-text-field--text',path:[],page:{kind:'control',control:'barCommand',title:'命令面板'}},x:.1,y:.5};assert(field.matches('input'),'legacy fixture missing');assert(resolveCursor(legacy)===null,'legacy command ratio bypassed glyph identity');
             field.scrollLeft=100;for(const s of samples){const p=expected(s.offset),b=field.getBoundingClientRect(),a=resolveCursor(s.anchor),visible=p.x>=b.left+32&&p.x<b.right-8;assert(visible?a&&Math.hypot(a.x-p.x,a.y-p.y)<.02:a===null,'command scroll clipping');}
             field.value='other query';assert(samples.every(s=>resolveCursor(s.anchor)===null),'other command query inherited glyph');field.value=value;field.style.display='none';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden command field painted');
         }finally{fixture.remove();reference.remove();}

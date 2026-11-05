@@ -112,129 +112,6 @@ function uiClasses(element) {
 }
 
 const CURSOR_CONTROL = 'button,input,select,textarea,[role="button"],.block__icon,.toolbar__item,.b3-switch,.b3-select,.b3-slider,.b3-text-field,[data-statusbar-entry],[data-topbar-entry],.protyle-title__icon';
-const CURSOR_EXCLUDED = '.protyle-toolbar,iframe,.protyle-breadcrumb__space,.layout__resize,[data-type="NodeAttributeView"],.b3-menu,.protyle-hint';
-const FILE_PARTS = {text:'.b3-list-item__text',icon:'.b3-list-item__icon',toggle:'.b3-list-item__arrow',switch:'.b3-list-item__switch',viewers:'.collab-presence-users',new:'[data-type="new"]','more-file':'[data-type="more-file"]','more-root':'[data-type="more-root"]'};
-
-function uiFingerprint(element) {
-    const result={tag:element.tagName.toLowerCase(),classes:uiClasses(element)};
-    for(const attribute of ['data-statusbar-entry','data-topbar-entry','data-node-id','data-type','data-name','id','data-id']) {
-        const value=element.getAttribute(attribute);
-        if(value && value.length<=512){result.attribute=attribute;result.value=value;break;}
-    }
-    result.label=element.getAttribute('aria-label') || element.getAttribute('title') ||
-        (!element.children.length && !element.matches('input,textarea,[contenteditable]') ? textLabel(element):'');
-    result.label=result.label.slice(0,512);
-    return result;
-}
-
-function uiAnchor(hit, plugin, point) {
-    if(hit.closest(CURSOR_EXCLUDED))return null;
-    let element=hit.closest(CURSOR_CONTROL);
-    const make=(kind,fields={})=>({element,ui:{version:2,kind,path:[],...uiFingerprint(element),...fields}});
-    if(hit.closest('.sy__file')) {
-        const row=hit.closest('li[data-type="navigation-file"],li[data-type="navigation-root"]');
-        const id=row?.closest('ul[data-url]')?.getAttribute('data-url'),key=row?.getAttribute('data-node-id') || '';
-        const part=Object.keys(FILE_PARTS).find(part=>row?.contains(hit.closest(FILE_PARTS[part])));
-        if(!DOCUMENT_ID.test(id || '') || (key && !DOCUMENT_ID.test(key)) || (!key && row.getAttribute('data-type')==='navigation-file') || !part)return null;
-        element=hit.closest(FILE_PARTS[part]);
-        if(part==='text') {
-            const text=captureTextPoint(element,point);
-            return text ? {...make('file',{id,key,part,offset:text.offset}),text}:null;
-        }
-        return make('file',{id,key,part});
-    }
-    const editor=hit.closest('.protyle');
-    if(editor && !hit.closest('.dockPanel')) {
-        const id=editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
-        const title=hit.closest('.protyle-title__input');
-        if(title) {
-            element=title;
-            const text=captureTextPoint(title,point);
-            return text ? {...make('document',{page:{kind:'document',id,title:''},offset:text.offset}),text}:null;
-        }
-        if(!element || !editor.contains(element))return null;
-        return make('document',{page:{kind:'document',id,title:''}});
-    }
-    const head=hit.closest('[data-type="tab-header"]');
-    if(head) {
-        const parts={label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'};
-        const part=Object.keys(parts).find(key=>hit.closest(parts[key]));
-        element=part ? hit.closest(parts[part]):head;
-        return make('tab',{page:tabPage(head),part:part || 'tab'});
-    }
-    const tabControl=hit.closest('.item--readonly [data-type]');
-    if(tabControl){element=tabControl;return make('tab-control',{id:element.getAttribute('data-type')});}
-    const dock=hit.closest('.dock__item[data-type]');
-    if(dock){element=dock;return make('dock',{id:dock.getAttribute('data-type')});}
-    const entry=hit.closest('[data-statusbar-entry], [data-topbar-entry]');
-    if(entry){element=entry;return make('status',{id:entry.getAttribute('data-statusbar-entry') || entry.getAttribute('data-topbar-entry'),attribute:entry.hasAttribute('data-statusbar-entry') ? 'data-statusbar-entry':'data-topbar-entry'});}
-    const setting=hit.closest('.config__side [data-name]');
-    if(setting){element=setting;return make('settings-nav',{id:setting.getAttribute('data-name')});}
-    if(!element)return null;
-    if(element.id && element.closest('.toolbar,#status'))return make('id',{id:element.id});
-    const root=element.closest('.config__tab-container, .b3-dialog__container, .dockPanel, .layout__wnd--active, [data-type="wnd"], .toolbar') || document.body;
-    const page=plugin ? currentPage(plugin):{kind:'workspace',title:''};
-    if(root.classList.contains('config__tab-container'))return make('settings',{page:{...page,kind:'settings',section:root.getAttribute('data-name') || page.section}});
-    if(root.classList.contains('b3-dialog__container'))return make('dialog',{page,key:root.closest('.b3-dialog')?.parentElement?.getAttribute('data-key') || ''});
-    if(root.classList.contains('dockPanel')) {
-        const dockPageValue=dockPage(element);
-        if(dockPageValue)return make('panel',{id:dockPageValue.id});
-    }
-    return make(root===document.body ? 'body':root.classList.contains('toolbar') ? 'toolbar':'layout',{page});
-}
-
-function resolveUIAnchor(anchor, plugin, region) {
-    // Old child-index anchors cannot identify a control after either window changes layout.
-    if(anchor.version!==2)return null;
-    const visible=items=>[...items].filter(visibleElement);
-    const unique=items=>items.length===1 ? items[0]:null;
-    if(anchor.kind==='file') {
-        const rows=visible(document.querySelectorAll('.sy__file li[data-type="navigation-file"],.sy__file li[data-type="navigation-root"]'))
-            .filter(row=>row.closest('ul[data-url]')?.getAttribute('data-url')===anchor.id && (row.getAttribute('data-node-id') || '')===anchor.key);
-        const row=unique(rows);
-        return row ? unique(visible(row.querySelectorAll(FILE_PARTS[anchor.part]))):null;
-    }
-    if(anchor.kind==='id') {
-        const element=document.getElementById(anchor.id);
-        if(anchor.page && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
-        return visibleElement(element) ? element:null;
-    }
-    if(anchor.kind==='dock')return unique(visible(document.querySelectorAll('.dock__item[data-type]')).filter(item=>item.getAttribute('data-type')===anchor.id));
-    if(anchor.kind==='status')return unique(visible(document.querySelectorAll('['+anchor.attribute+']')).filter(item=>item.getAttribute(anchor.attribute)===anchor.id));
-    if(anchor.kind==='settings-nav')return unique(visible(document.querySelectorAll('.config__side [data-name]')).filter(item=>item.getAttribute('data-name')===anchor.id));
-    if(anchor.kind==='tab-control')return unique(visible(document.querySelectorAll('.layout__wnd--active .item--readonly [data-type]')).filter(item=>item.getAttribute('data-type')===anchor.id));
-    if(anchor.kind==='tab') {
-        const heads=visible(document.querySelectorAll('[data-type="tab-header"]')).filter(head=>{
-            const page=tabPage(head);
-            return pageKey(page)===pageKey(anchor.page) && (page.kind!=='workspace' || page.title===anchor.page.title);
-        });
-        const head=unique(heads);
-        if(!head)return null;
-        return anchor.part==='tab' ? head:head.querySelector({label:'.item__text',icon:'.item__icon, .item__graphic',close:'.item__close'}[anchor.part]);
-    }
-    let roots=[];
-    if(anchor.kind==='document') {
-        roots=visible(document.querySelectorAll('.protyle')).filter(editor=>editor.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id')===anchor.page.id && matchesRegion(editor,region));
-        if(roots.length!==1)return null;
-    } else if(anchor.kind==='settings') {
-        roots=visible(document.querySelectorAll('.config__tab-container')).filter(root=>(root.getAttribute('data-name') || document.querySelector('.config__side .b3-list-item--focus')?.getAttribute('data-name'))===anchor.page.section);
-    } else if(anchor.kind==='dialog') {
-        roots=visible(document.querySelectorAll('.b3-dialog__container')).filter(root=>{
-            if(anchor.key)return root.closest('.b3-dialog')?.parentElement?.getAttribute('data-key')===anchor.key;
-            const form={participants:'.collab-people','chord-settings':'.collab-tick-form','chord-name':'.collab-name-form'}[anchor.page?.kind];
-            return form ? !!root.querySelector(form):textLabel(root.querySelector('.b3-dialog__header'))===anchor.page?.title;
-        });
-    } else if(anchor.kind==='panel') {
-        try { const root=getModelByDockType(anchor.id)?.parent?.panelElement;if(visibleElement(root))roots=[root]; } catch {}
-    } else {
-        if(anchor.kind!=='toolbar' && plugin && pageKey(currentPage(plugin))!==pageKey(anchor.page))return null;
-        roots=visible(document.querySelectorAll({layout:'.layout__wnd--active',toolbar:'.toolbar',body:'body'}[anchor.kind]));
-    }
-    const candidates=roots.flatMap(root=>[root,...root.querySelectorAll(anchor.tag)]).filter(element=>element.tagName.toLowerCase()===anchor.tag && visibleElement(element) &&
-        uiClasses(element)===anchor.classes && (!anchor.attribute || element.getAttribute(anchor.attribute)===anchor.value) && uiFingerprint(element).label===anchor.label);
-    return candidates.length===1 ? candidates[0]:null;
-}
-
 function captureShortcut(event) {
     if (event.repeat || event.isComposing || !(event.ctrlKey || event.metaKey || event.altKey) || ['Control','Meta','Alt','Shift','AltGraph','Dead','Unidentified','Process'].includes(event.key)) return null;
     // Password inputs never announce key combinations, even though no typed text is shared.
@@ -310,41 +187,12 @@ function captureCursor(point, plugin) {
     if (anchored&&!onScrollbar) return {...anchored,screen,page,...activity};
     const pdf=capturePDF(hit,plugin,point);
     if(pdf!==undefined)return pdf ? {surface:'ui',documentId:null,blockId:null,page,screen,...pdf,...activity}:null;
-    const fallback=()=>{
-        const component=captureComponent(hit,plugin,point);
-        return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
-    };
-    if(onScrollbar || hit.closest('#configBazaarReadme,.collab-person') || hit.matches('input[type="range"],select') || componentTextField(hit) || hit.closest('.protyle-util')?.querySelector('textarea'))return fallback();
-    const target=uiAnchor(hit,plugin,point);
-    if(!target)return fallback();
-    const rect=target.element.getBoundingClientRect();
-    if(!validUIAnchor(target.ui) || !rect.width || !rect.height)return fallback();
-    const region=cursorRegion(hit);
-    const cursor={surface:'ui',documentId:null,blockId:null,page,screen,ui:target.ui,...activity,...(region ? {region}:{}),
-        x:target.text ? target.text.x : Math.max(0,Math.min(1,(point.x-rect.left)/rect.width)),
-        y:target.text ? target.text.y : Math.max(0,Math.min(1,(point.y-rect.top)/rect.height))};
-    const local=resolveCursor(cursor,plugin);
-    return local && Math.hypot(local.x-point.x,local.y-point.y)<.001 ? cursor:fallback();
+    const component=captureComponent(hit,plugin,point);
+    return component ? {surface:'ui',documentId:null,blockId:null,page,screen,...component,...activity}:null;
 }
 
 function resolveCursor(cursor, plugin) {
-    if(cursor?.surface==='ui' && cursor.ui?.version===3)return resolveComponent(cursor,plugin);
-    if(cursor.surface!=='ui')return resolveDocumentCursor(cursor);
-    const element=resolveUIAnchor(cursor.ui,plugin,cursor.region);
-    if(!element || element.closest(CURSOR_EXCLUDED))return null;
-    if(element.closest('#configBazaarReadme,.collab-person') || element.matches('input[type="range"],select') || componentTextField(element) || element.closest('.protyle-util')?.querySelector('textarea'))return null;
-    if(element.closest('.sy__file') && cursor.ui.kind!=='file')return null;
-    if(cursor.region && !matchesRegion(element,cursor.region))return null;
-    if(!['file','dock','tab','tab-control','settings-nav'].includes(cursor.ui.kind) && !element.matches(CURSOR_CONTROL) && !element.matches('.protyle-title__input'))return null;
-    let rect=element.getBoundingClientRect();
-    if(cursor.ui.offset!==undefined) {
-        const character=characterAt(element,cursor.ui.offset);
-        if(!character || /\s/.test(character.node.textContent[character.offset]))return null;
-        rect=characterRect(character.node,character.offset);
-    } else if(element.matches('.protyle-title__input'))return null;
-    if(!rect?.width || !rect.height)return null;
-    const point={x:rect.left+rect.width*cursor.x,y:rect.top+rect.height*cursor.y};
-    const scrollbar=componentScrollbar(element,point,false);if(scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
-    const hit=componentHit(document,point);
-    return hit && visibleElement(hit) && element.contains(hit) ? point:null;
+    // Legacy whole-box ratios cannot preserve glyphs or gaps after receiver reflow.
+    if(cursor?.surface==='ui')return cursor.ui?.version===3 ? resolveComponent(cursor,plugin):null;
+    return resolveDocumentCursor(cursor);
 }

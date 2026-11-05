@@ -125,6 +125,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
     }
     function cursorControl(row) {
         row.setAttribute('data-statusbar-entry','test-control');
+        row.children=[];row.ownerDocument=document;
         row.closest=selector=>selector.includes('[data-statusbar-entry]') ? row:null;
         row.matches=selector=>selector.includes('[data-statusbar-entry]');
         return row;
@@ -471,6 +472,16 @@ test('tree scopes retain only bounded hashes and optional pane identity',async()
     for(const bad of [{key:'raw tag'},{key:'a'.repeat(17)},{pane:'private pane'},{part:'event'},{group:scope.key},{kind:'unknown-tree'}])await assert.rejects(update('tree-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
 });
 
+test('named control scopes validate hashes and discard raw names at the protocol boundary',async()=>{
+    const kernel=await createKernel(),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    await kernel.methods.get('presenceHeartbeat')('control-scope-test',{generation:1});
+    const scope={kind:'control',key:'1234567890abcdef',name:'private control name'},edge={kind:'self',side:'start'};
+    const cursor={surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.4,y:.5},x:.4,y:.5,ui:{version:3,kind:'component',scope,route:[],edges:{x:[edge,edge],y:[edge,edge]}}};
+    await update('control-scope-test',1,1,cursor);
+    assert.deepEqual(JSON.parse(JSON.stringify((await snapshot()).cursors[0].cursor.ui.scope)),{kind:'control',key:scope.key});
+    for(const bad of [{key:'raw name'},{key:'a'.repeat(17)},{part:'button'},{group:scope.key},{kind:'unknown-control'}])await assert.rejects(update('control-scope-test',1,2,{...cursor,ui:{...cursor.ui,scope:{...scope,...bad}}}),/Invalid UI cursor/);
+});
+
 test('component cursor routes and gap edges are bounded, validated and copied without private fields',async()=>{
     const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('cursorUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
     await heartbeat('component-user-test',{generation:1});
@@ -696,7 +707,7 @@ test('pointer bursts coalesce and idle timers send zero position updates',async(
     const kernel=await createKernel(),frontend=await createFrontend(kernel,'zh-CN',{now:()=>now});
     const row=frontend.addRow('20261030165150-skkm1a3');
     frontend.cursorControl(row);
-    row.getBoundingClientRect=()=>({left:0,top:0,width:400,height:40});
+    row.getBoundingClientRect=()=>({left:0,top:0,right:400,bottom:40,width:400,height:40});
     frontend.document.elementFromPoint=()=>row;
     for(let i=0;i<100;i++)frontend.listeners.get('pointermove')({pointerType:'mouse',clientX:i,clientY:20});
     assert.equal([...frontend.timers.values()].filter(timer=>timer.delay<1000).length,1);
@@ -758,7 +769,7 @@ test("pointer updates are throttled and leave clears the remote marker", async (
     const frontend = await createFrontend(kernel, "zh-CN", { now: () => now });
     const row = frontend.addRow("20261030165150-skkm1a3");
     frontend.cursorControl(row);
-    row.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 40 });
+    row.getBoundingClientRect = () => ({ left: 0, top: 0, right:400, bottom:40, width: 400, height: 40 });
     frontend.document.elementFromPoint = () => row;
     frontend.listeners.get("pointermove")({ clientX: 100, clientY: 20, pointerType: "mouse" });
     await frontend.plugin.sendCursor();
@@ -770,7 +781,7 @@ test("pointer updates are throttled and leave clears the remote marker", async (
     let snapshot = await kernel.methods.get("cursorSnapshot")();
     assert.equal(snapshot.cursors[0].cursor.x, 0.25);
     // 鼠标不动、列表滚动后，同一屏幕位置重新锚定到行内的新位置。
-    row.getBoundingClientRect = () => ({ left: 0, top: -10, width: 400, height: 40 });
+    row.getBoundingClientRect = () => ({ left: 0, top: -10, right:400, bottom:30, width: 400, height: 40 });
     frontend.listeners.get("scroll")();
     await frontend.plugin.sendCursor();
     snapshot = await kernel.methods.get("cursorSnapshot")();
@@ -787,7 +798,7 @@ test('moving into blank space clears a pointer after an in-flight send at every 
         const kernel=await createKernel(),frontend=await createFrontend(kernel,'zh-CN',{now:()=>now}),plugin=frontend.plugin;
         plugin.tick=tick;
         const row=frontend.cursorControl(frontend.addRow('20261030165150-skkm1a3'));
-        row.getBoundingClientRect=()=>({left:0,top:0,width:400,height:40});frontend.document.elementFromPoint=()=>row;
+        row.getBoundingClientRect=()=>({left:0,top:0,right:400,bottom:40,width:400,height:40});frontend.document.elementFromPoint=()=>row;
         const update=kernel.methods.get('cursorUpdate');let first=true;
         kernel.methods.set('cursorUpdate',async(...args)=>{if(first){first=false;await new Promise(resolve=>release=resolve);}return update(...args);});
         const run=()=>{const timer=plugin.activityTimer,callback=frontend.timers.get(timer).callback;frontend.timers.delete(timer);return callback();};
@@ -808,7 +819,7 @@ test("reconnection and long suspension resend unchanged anchors once", async () 
     const frontend = await createFrontend(kernel, "zh-CN", { now: () => now });
     const row = frontend.addRow("20261030165150-skkm1a3");
     frontend.cursorControl(row);
-    row.getBoundingClientRect = () => ({ left: 0, top: 0, width: 400, height: 40 });
+    row.getBoundingClientRect = () => ({ left: 0, top: 0, right:400, bottom:40, width: 400, height: 40 });
     frontend.document.elementFromPoint = () => row;
     frontend.plugin.pointer = { x: 100, y: 20 };
     await frontend.plugin.sendCursor();
@@ -849,11 +860,11 @@ test("remote glowing pointers follow local scrolling, stay text-only and exclude
     const second = await createFrontend(kernel);
     const row = first.addRow("20261030165150-skkm1a3");
     let top = 80;
-    row.getBoundingClientRect = () => ({ left: 10, top, width: 200, height: 40 });
+    row.getBoundingClientRect = () => ({ left: 10, top, right:210, bottom:top+40, width: 200, height: 40 });
     first.cursorControl(row);
     first.document.elementFromPoint = () => row;
     const cursor = { surface:'ui',documentId:null,blockId:null,page:{kind:'workspace',title:''},screen:{x:.5,y:.5},x:.5,y:.5,
-        ui:{version:2,kind:'status',id:'test-control',attribute:'data-statusbar-entry',path:[],tag:'li'} };
+        ui:{version:3,kind:'component',scope:{kind:'control',key:'4b5928dcf2ace432'},route:[],edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:[{kind:'self',side:'start'},{kind:'self',side:'end'}]}} };
     const update = kernel.methods.get("cursorUpdate");
     await update(first.plugin.sessionId, first.plugin.generation, 1, cursor);
     await update(second.plugin.sessionId, second.plugin.generation, 1, cursor);

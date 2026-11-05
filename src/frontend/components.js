@@ -418,6 +418,21 @@ function componentFollow(root,route) {
 const COMPONENT_FLOATING='.b3-menu,.block__popover,.protyle-hint,.tooltip,.b3-tooltip,.config-font-family__chip.b3-chip--dragclone';
 const COMPONENT_AV_REGIONS='.av__cell[data-col-id],.av__cell[data-field-id],.av__calc[data-col-id],.av__gallery-field,.av__firstcol,.av__row[data-id],.av__gallery-item[data-id],.av__row--header,.av__row--footer,.av__group-title,.av__body[data-group-id]';
 const COMPONENT_CALENDAR_REGIONS='.av__calendar,.av__calendar-day,.av__calendar-week,.av__calendar-week-row,.av__calendar-week-number,.av__calendar-days,.av__calendar-events,.av__calendar-weekdays > div,.av__calendar-item,.av__calendar-field,.av__calendar-undated-item[data-calendar-undated-row]';
+const COMPONENT_CONTROL_REGIONS='[data-type="tab-header"],.dock__item[data-type],[data-statusbar-entry],[data-topbar-entry],.config__side [data-name],.layout__wnd--active .item--readonly [data-type],.toolbar [id],#status [id]';
+
+function componentControlRegion(element) {
+    if(element.closest('.protyle,.dockPanel'))return null;
+    const root=element.closest(COMPONENT_CONTROL_REGIONS);if(!root)return null;
+    if(root.matches('[data-type="tab-header"]')){
+        const page=tabPage(root);return {root,identity:['tab',pageKey(page),['workspace','custom'].includes(page.kind) ? page.title:'']};
+    }
+    if(root.matches('.dock__item[data-type]'))return {root,identity:['dock',root.getAttribute('data-type')]};
+    if(root.matches('.config__side [data-name]'))return {root,identity:['settings-nav',root.getAttribute('data-name')]};
+    if(root.closest('.b3-dialog'))return null;
+    for(const name of ['data-statusbar-entry','data-topbar-entry'])if(root.hasAttribute(name))return {root,identity:[name,root.getAttribute(name)]};
+    if(root.matches('.item--readonly [data-type]'))return {root,identity:['tab-control',root.getAttribute('data-type')]};
+    return {root,identity:['id',root.id]};
+}
 
 function componentBacklinkContext(element) {
     const panel=element.closest('.sy__backlink,.sy__backlink--bottom');if(!panel)return null;
@@ -436,6 +451,11 @@ function componentTextHash(element) {
 }
 
 function componentTreeRegion(element) {
+    const files=element.closest('.sy__file'),file=files && element.closest('li[data-type="navigation-file"],li[data-type="navigation-root"]');
+    if(file && files.contains(file)){
+        const notebook=file.closest('ul[data-url]')?.getAttribute('data-url'),id=file.getAttribute('data-node-id') || '';
+        return {panel:files,root:file,identity:DOCUMENT_ID.test(notebook || '') && (id ? DOCUMENT_ID.test(id):file.getAttribute('data-type')==='navigation-root') ? ['file',notebook,id]:null};
+    }
     const backlink=componentBacklinkContext(element);
     if(backlink){
         const {panel,section,identity}=backlink,item=element.closest('.backlinkList__item[data-node-id]'),row=element.closest('.backlinkList__item > li[data-node-id]'),counter=element.closest('.backlinkList__header .counter,.backlinkMList__header .counter');
@@ -545,6 +565,8 @@ function componentScope(element,plugin) {
         const scope=componentAVScope(av,plugin);
         return scope ? {root,scope:{...scope,row:componentHash(part==='cell' ? row:'@'+part+'|'+row),column:componentHash(column || '@'+part),group:componentHash(group),...(part==='cell' ? {}:{part})}}:null;
     }
+    const control=componentControlRegion(element);
+    if(control)return make(control.root,'control',JSON.stringify(control.identity));
     const dialog=element.closest('.b3-dialog');
     if(dialog)return make(dialog,'dialog',(dialog.getAttribute('data-key') || dialog.parentElement?.getAttribute('data-key') || '')+'|'+textLabel(dialog.querySelector('.b3-dialog__header')));
     const floating=element.closest(COMPONENT_FLOATING);
@@ -586,8 +608,14 @@ function componentRoots(scope,plugin) {
 }
 
 function findComponentRoots(scope,plugin) {
+    if(scope.kind==='control'){
+        const roots=[...document.querySelectorAll(COMPONENT_CONTROL_REGIONS)].filter(root=>{
+            const region=componentControlRegion(root);return region?.root===root && componentHash(JSON.stringify(region.identity))===scope.key && visibleElement(root);
+        });
+        return roots.length===1 ? roots[0]:null;
+    }
     if(scope.kind==='tree'){
-        const roots=[...document.querySelectorAll('.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1,.backlinkList,.backlinkMList,.backlinkList__item,.backlinkList__item > li,.backlinkList__header .counter,.backlinkMList__header .counter')].filter(root=>{
+        const roots=[...document.querySelectorAll('.sy__file li[data-type="navigation-file"],.sy__file li[data-type="navigation-root"],.sy__tag li[data-treetype],.sy__bookmark li[data-treetype],.sy__tag ul,.sy__bookmark ul,.sy__outline li[data-treetype],.sy__outline ul,.sy__outline > .b3-list-item,.sy__outline > .fn__flex-1,.backlinkList,.backlinkMList,.backlinkList__item,.backlinkList__item > li,.backlinkList__header .counter,.backlinkMList__header .counter')].filter(root=>{
             const region=componentTreeRegion(root);return region?.root===root && componentTreeScope(region,plugin)?.key===scope.key && visibleElement(root);
         });
         return roots.length===1 ? roots[0]:null;
