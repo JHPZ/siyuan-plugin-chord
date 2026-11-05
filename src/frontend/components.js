@@ -629,6 +629,13 @@ function componentPickerPlane(element,css) {
 }
 
 function componentPicker(element) {
+    const cache=componentMeasurements?.pickers;
+    if(cache?.has(element))return cache.get(element);
+    const result=measureComponentPicker(element);
+    cache?.set(element,result);return result;
+}
+
+function measureComponentPicker(element) {
     if(!element.matches('select:open') || element.closest('[data-private]'))return null;
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element,'::picker(select)'),anchored=typeof view.HTMLElement.prototype.showPopover==='function' && view.CSS.supports('left','anchor(--collab-picker-measure left)') && view.CSS.supports('width','anchor-size(--collab-picker-measure width)'),horizontal=css.writingMode==='horizontal-tb',matrix=new view.DOMMatrix(css.transform==='none' ? undefined:css.transform);
     // shortcut: projective and multicolumn pickers still need a projective fragment map.

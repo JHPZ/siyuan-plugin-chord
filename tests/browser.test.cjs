@@ -1794,6 +1794,38 @@ async function test(name, run) {
                 const peer={name:'picker-peer',hue:290};plugin.clients.push(peer);let inputs=0,changes=0;field.addEventListener('input',()=>inputs++);field.addEventListener('change',()=>changes++);
                 try{
                     await click('展开原生下拉框进行层级验证',()=>field.showPicker());await frame();assert(field.matches(':open'),'native picker did not open');
+                    await test('原生下拉弹层内多光标跨选项平滑移动，重复提升层级不中断过渡',async()=>{
+                        const old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,refreshInBackground:plugin.refreshInBackground,tick:plugin.tick},active=document.activeElement,events=[],rows=[];
+                        const record=event=>events.push({type:event.type,target:event.target.tagName,open:field.matches(':open')});for(const type of ['beforetoggle','toggle','focusin','focusout'])document.addEventListener(type,record,true);
+                        try{plugin.refreshInBackground=()=>{};for(const tick of [3,10,30]){
+                            plugin.tick=tick;plugin.clients=[peer];plugin.presenceReceivedAt=Date.now();const first=componentRoundTrip(point(),plugin),r=componentCharacter(field.options[1],0),to={x:r.left+r.width*.5,y:r.top+r.height*.5},second=componentRoundTrip(to,plugin);
+                            plugin.remoteCursors=[{...peer,cursor:first}];plugin.renderCursors(false);await frame();const marker=plugin.cursorMarkers.get(peer.name);assert(marker,'initial native marker missing');const start=marker.getBoundingClientRect();
+                            plugin.remoteCursors=[{...peer,cursor:second}];plugin.renderCursors(true);const animation=marker.getAnimations().find(a=>a.transitionProperty==='transform');rows.push({tick,animations:marker.getAnimations().map(a=>a.transitionProperty),start:{x:start.left,y:start.top},target:to,position:marker.getBoundingClientRect().toJSON()});document.getElementById('results').dataset.pickerMotion=JSON.stringify({rows,events});assert(animation,'native picker move teleported at '+tick+'Hz');
+                            animation.pause();animation.currentTime=animation.effect.getTiming().duration/2;const middle=marker.getBoundingClientRect();assert(Math.abs(middle.top-start.top)>.1&&Math.abs(middle.top-to.y)>.1,'native picker lacks intermediate position');plugin.renderCursors(true);const repeated=marker.getBoundingClientRect();assert(marker.getAnimations().includes(animation)&&Math.hypot(repeated.left-middle.left,repeated.top-middle.top)<.1,'native picker lift interrupted animation');animation.finish();assert(Math.hypot(marker.getBoundingClientRect().left-to.x,marker.getBoundingClientRect().top-to.y)<.1,'native picker endpoint drift');assert(document.activeElement===active&&field.matches(':open'),'native movement changed picker focus or state');
+                        }}finally{for(const type of ['beforetoggle','toggle','focusin','focusout'])document.removeEventListener(type,record,true);Object.assign(plugin,old);plugin.renderCursors(false);}
+                    });
+                    await test('原生下拉弹层十个光标共享当帧测量，下一帧重新验证几何与可见性',async()=>{
+                        const old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,refreshInBackground:plugin.refreshInBackground,tick:plugin.tick},active=document.activeElement,original=field.innerHTML,events={inputs,changes},style=document.createElement('style'),metrics=[];
+                        fixture.append(style);const observer=new MutationObserver(()=>{});observer.observe(field,{childList:true,subtree:true});
+                        try{plugin.refreshInBackground=()=>{};plugin.tick=30;plugin.clients=Array.from({length:10},(_,i)=>({name:'picker-load-'+i,hue:i*30}));
+                            for(const mode of ['plain','rotated']){
+                                const apply=left=>{style.textContent='#native-picker::picker(select){appearance:base-select;display:block;position:fixed;position-area:none;position-try-fallbacks:none;inset:auto;left:'+left+'px;top:250px;margin:0;box-sizing:border-box;width:400px;height:220px;min-width:0;max-width:none;max-height:none;border:4px solid gray;padding:20px;overflow:auto;transform:'+(mode==='rotated'?'rotate(6deg)':'none')+'}';};
+                                apply(80);await frame();const picker=componentPicker(field),project=p=>picker.toParent?picker.toParent(p):p,points=[picker.bounds.left+2,picker.bounds.right-2].map(x=>project({x,y:(picker.bounds.top+picker.bounds.bottom)/2})),anchors=points.map(p=>componentRoundTrip(p,plugin)),samples=[];let previous;
+                                observer.takeRecords();
+                                for(let i=0;i<60;i++){
+                                    const now=await new Promise(requestAnimationFrame);if(i===30)apply(90);
+                                    plugin.remoteCursors=plugin.clients.map((peer,j)=>({...peer,cursor:anchors[(i+j)%2]}));plugin.presenceReceivedAt=Date.now();
+                                    const start=performance.now();plugin.renderCursors(true);const duration=performance.now()-start,records=observer.takeRecords(),measurements=records.reduce((n,r)=>n+[...r.addedNodes].filter(e=>e.nodeType===1&&e.classList.contains('collab-picker-measure')).length,0);
+                                    samples.push({duration,interval:previous===undefined?null:now-previous,measurements});previous=now;assert(plugin.cursorMarkers.size===10,'picker lost a visible peer');
+                                }
+                                const durations=samples.map(s=>s.duration).sort((a,b)=>a-b);metrics.push({mode,median:durations[30],p95:durations[57],max:durations[59],maxInterval:Math.max(...samples.map(s=>s.interval||0)),maxMeasurements:Math.max(...samples.map(s=>s.measurements)),samples});document.getElementById('results').dataset.pickerLoad=JSON.stringify(metrics);
+                                for(const peer of plugin.remoteCursors){const marker=plugin.cursorMarkers.get(peer.name);for(const animation of marker.getAnimations())animation.finish();const expected=resolveCursor(peer.cursor,plugin),r=marker.getBoundingClientRect();assert(expected&&Math.hypot(r.left-expected.x,r.top-expected.y)<.1,'picker cache survived next-frame layout change');}
+                                style.textContent+='#native-picker::picker(select){opacity:0}';plugin.renderCursors(true);assert(plugin.cursorMarkers.size===0,'hidden picker kept cached geometry');apply(80);plugin.renderCursors(false);assert(plugin.cursorMarkers.size===10,'visible picker failed to recover');
+                            }
+                            assert(metrics.every(m=>m.maxMeasurements<=1),'same picker measured repeatedly: '+metrics.map(m=>m.mode+'='+m.maxMeasurements).join(', '));
+                            assert(field.innerHTML===original&&document.activeElement===active&&field.matches(':open')&&inputs===events.inputs&&changes===events.changes,'picker rendering changed native state');
+                        }finally{observer.disconnect();style.remove();Object.assign(plugin,old);plugin.renderCursors(false);}
+                    });
                     await test('原生下拉弹层边框、内边距及行间留白使用独立弹层边界',async()=>{
                         const style=document.createElement('style');fixture.append(style);const active=document.activeElement,original=field.outerHTML;
                         let layout={left:50,top:250,width:300,height:200,border:2,px:18,py:12};

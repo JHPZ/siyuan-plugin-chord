@@ -1150,6 +1150,13 @@ function componentPickerPlane(element,css) {
 }
 
 function componentPicker(element) {
+    const cache=componentMeasurements?.pickers;
+    if(cache?.has(element))return cache.get(element);
+    const result=measureComponentPicker(element);
+    cache?.set(element,result);return result;
+}
+
+function measureComponentPicker(element) {
     if(!element.matches('select:open') || element.closest('[data-private]'))return null;
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element,'::picker(select)'),anchored=typeof view.HTMLElement.prototype.showPopover==='function' && view.CSS.supports('left','anchor(--collab-picker-measure left)') && view.CSS.supports('width','anchor-size(--collab-picker-measure width)'),horizontal=css.writingMode==='horizontal-tb',matrix=new view.DOMMatrix(css.transform==='none' ? undefined:css.transform);
     // shortcut: projective and multicolumn pickers still need a projective fragment map.
@@ -2399,7 +2406,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderCursors(animate) {
         const previousMeasurements=componentMeasurements;
-        componentMeasurements={scrollbars:new WeakMap(),roots:new Map(),routes:new WeakMap()};
+        componentMeasurements={scrollbars:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap()};
         try {
             const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
             if(picker && this.cursorLayer.showPopover){
