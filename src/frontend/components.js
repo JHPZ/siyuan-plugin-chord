@@ -88,8 +88,18 @@ function componentRange(element) {
 
 function componentSwitch(element) {
     if(!element.matches('input.b3-switch[type="checkbox"]') || element.closest('[data-private]'))return null;
-    const view=element.ownerDocument.defaultView,css=view.getComputedStyle(element),thumb=view.getComputedStyle(element,'::after'),box=frameBox(element);
-    if(!box || css.appearance!=='none' || !['relative','absolute','fixed'].includes(css.position) || thumb.content!=='""' || thumb.position!=='absolute' || thumb.display==='none' || thumb.visibility!=='visible' || Number(thumb.opacity)===0 || thumb.rotate!=='none' || thumb.scale!=='none' || thumb.translate!=='none')return null;
+    const view=element.ownerDocument.defaultView,css=view.getComputedStyle(element),box=frameBox(element);
+    if(!box || css.appearance!=='none' || !['relative','absolute','fixed'].includes(css.position))return null;
+    const rect=componentSwitchPart(element,box,view.getComputedStyle(element,'::after'),css);
+    if(!rect || rect.left<0 || rect.top<0 || rect.right>box.bounds.right || rect.bottom>box.bounds.bottom)return null;
+    const before=view.getComputedStyle(element,'::before'),color=before.backgroundColor.match(/^rgba?\([\d.]+, [\d.]+, [\d.]+(?:, ([\d.]+))?\)$/);
+    const halo=before.borderRadius==='50%' && before.backgroundImage==='none' && before.boxShadow==='none' && before.filter==='none' && color && Number(color[1]??1)>0 ? componentSwitchPart(element,box,before,css):null;
+    return {box,content:box.content,track:box.content,thumb:rect,halo};
+}
+
+function componentSwitchPart(element,box,thumb,css) {
+    const view=element.ownerDocument.defaultView;
+    if(thumb.content!=='""' || thumb.position!=='absolute' || thumb.display==='none' || thumb.visibility!=='visible' || Number(thumb.opacity)===0 || thumb.rotate!=='none' || thumb.scale!=='none' || thumb.translate!=='none')return null;
     const size=axis=>parseFloat(thumb[axis])+(thumb.boxSizing==='border-box' ? 0:(axis==='width'?['Left','Right']:['Top','Bottom']).reduce((n,side)=>n+parseFloat(thumb['padding'+side])+parseFloat(thumb['border'+side+'Width']),0)),width=size('width'),height=size('height');
     const inset=side=>parseFloat(css['border'+side+'Width']),position=(value,total)=>/^[-\d.]+(px|%)$/.test(value) ? parseFloat(value)*(value.endsWith('%')?total/100:1):NaN;
     const left=inset('Left')+position(thumb.left,box.bounds.right-inset('Left')-inset('Right'))+parseFloat(thumb.marginLeft),top=inset('Top')+position(thumb.top,box.bounds.bottom-inset('Top')-inset('Bottom'))+parseFloat(thumb.marginTop);
@@ -97,8 +107,11 @@ function componentSwitch(element) {
     // shortcut: native switch knobs only translate and scale; reject custom rotated knobs until their local plane is calibrated.
     if(![width,height,left,top,...origin.slice(0,2)].every(Number.isFinite) || width<=0 || height<=0 || !matrix.is2D || matrix.b!==0 || matrix.c!==0 || matrix.a<=0 || matrix.d<=0)return null;
     const first=matrix.transformPoint({x:-origin[0],y:-origin[1]}),last=matrix.transformPoint({x:width-origin[0],y:height-origin[1]}),rect={left:left+origin[0]+first.x,top:top+origin[1]+first.y,right:left+origin[0]+last.x,bottom:top+origin[1]+last.y};
-    if(rect.left<0 || rect.top<0 || rect.right>box.bounds.right || rect.bottom>box.bounds.bottom)return null;
-    return {box,content:box.content,track:box.content,thumb:rect};
+    return rect;
+}
+
+function componentSwitchHaloContains(rect,point) {
+    return !!rect && ((2*point.x-rect.left-rect.right)/(rect.right-rect.left))**2+((2*point.y-rect.top-rect.bottom)/(rect.bottom-rect.top))**2<=1;
 }
 
 function rememberRenderTarget({detail}) {
@@ -934,6 +947,7 @@ function frameToParent(frame,point) {
 
 function componentBox(hit,point) {
     if(hit.matches('select:open'))return hit;
+    if(hit.matches('input.b3-switch[type="checkbox"]'))return hit;
     if(hit.matches('mark') && hit.parentElement.matches(COMPONENT_HIGHLIGHT_TEXT))hit=hit.parentElement;
     if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=(hit.closest('select:open option') ? hit.closest('svg'):hit.closest(CURSOR_CONTROL) || hit.closest('svg')) || hit;
     if(hit.matches('.b3-list-item__arrow') && componentTreeRegion(hit))hit=hit.closest('.b3-list-item__toggle') || hit;
@@ -1032,6 +1046,10 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     if(box)point=box.toLocal(parentPoint);
     const onThumb=range && point.x>=range.thumb.left && point.x<=range.thumb.right && point.y>=range.thumb.top && point.y<=range.thumb.bottom;
     let bounds=textPlane ? textPlane.rect(element):box ? box.bounds:element.getBoundingClientRect();if(!bounds)return null;
+    if(toggle && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom)){
+        if(!componentSwitchHaloContains(range.halo,point))return null;
+        return {edges:{x:[{kind:'switch-halo',side:'start'},{kind:'switch-halo',side:'end'}],y:[{kind:'switch-halo',side:'start'},{kind:'switch-halo',side:'end'}]},x:(point.x-range.halo.left)/(range.halo.right-range.halo.left),y:(point.y-range.halo.top)/(range.halo.bottom-range.halo.top)};
+    }
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
@@ -1153,7 +1171,8 @@ function resolveComponent(cursor,plugin) {
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || select && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),toggle=element.matches('input.b3-switch[type="checkbox"]'),range=slider ? componentRange(element):toggle ? componentSwitch(element):null;
-    if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track','frame','frame-box'].includes(edge.kind))))return null;
+    if((slider || toggle) && (!range || !Object.values(anchor.edges).flat().some(edge=>[(toggle?'switch-':'range-')+'thumb',(toggle?'switch-':'range-')+'track',...(toggle?['switch-halo']:[]),'frame','frame-box'].includes(edge.kind))))return null;
+    const haloAnchor=toggle && Object.values(anchor.edges).flat().every(edge=>edge.kind==='switch-halo');
     const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
     const offsets=[...new Set(Object.values(anchor.edges).flat().filter(edge=>edge.kind==='text').map(edge=>edge.offset))];
     const field=picker ? null:componentFieldContent(element),fieldRects=offsets.length && componentTextField(element) ? componentFieldMeasure(element,(_,character)=>new Map(offsets.map(offset=>[offset,character(offset)]))):null;
@@ -1173,11 +1192,12 @@ function resolveComponent(cursor,plugin) {
             values[0]===values[1] && JSON.stringify(anchor.edges[axis][0])!==JSON.stringify(anchor.edges[axis][1]) && !collapsedField)return null;
         point[axis]=values[0]+(values[1]-values[0])*cursor[axis];
     }
+    if(haloAnchor && !componentSwitchHaloContains(range.halo,point))return null;
     if(box)Object.assign(point,box.toParent(point));
     if(!scrollbarAnchor&&componentScrollbar(element,point,false)?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
     const precise=element.matches('input,textarea') || scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field' || edge.kind==='field-viewport');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
-    if(precise || gaps.length){
+    if(!haloAnchor && (precise || gaps.length)){
         // Textarea text can scroll into padding, but remains clipped at the native viewport.
         const clip=element.matches('textarea') ? field?.viewport:field;
         if(fieldRects && clip && !element.matches('select') && (point.x<clip.left || point.x>=clip.right || point.y<clip.top || point.y>=clip.bottom))return null;
@@ -1196,10 +1216,11 @@ function resolveComponent(cursor,plugin) {
     }
     const hit=componentHit(element.ownerDocument,point);
     const target=anchor.target ? componentFollow(element,anchor.target):element;
+    if(target!==element && target?.matches('input.b3-switch[type="checkbox"]'))return null;
     const highlight=target===element && element.matches(COMPONENT_HIGHLIGHT_TEXT) && hit?.matches('mark') && hit.parentElement===element;
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
-    if(!visibleElement(target) || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || componentBazaarPackage(target)===null || !visibleElement(hit) || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
+    if(!visibleElement(target) || target.closest('[data-private]') || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || componentBazaarPackage(target)===null || !visibleElement(hit) || hit.closest('[data-private]') || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
     if(element.matches('iframe') && frameToContent(element,point))return null;
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
