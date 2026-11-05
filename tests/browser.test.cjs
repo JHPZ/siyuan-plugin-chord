@@ -1763,6 +1763,8 @@ function fontDragFixture() {
             ${frontendSource}
             module.exports.testPage=currentPage;
             module.exports.testPickerStyle=componentPickerStyle;
+            module.exports.testSiblingWork=run=>{const original=componentKey;let calls=0;componentKey=(...args)=>{calls++;return original(...args);};try{run();return calls;}finally{componentKey=original;}};
+            module.exports.testMeasurements=()=>componentMeasurements;
             return module.exports;
         })();
         const rangeStyle=document.createElement('style');rangeStyle.textContent='input.b3-slider::-webkit-slider-thumb{width:10px;height:10px}';document.head.append(rangeStyle);
@@ -1789,6 +1791,21 @@ function fontDragFixture() {
                 plugin.peopleDialog.destroy();await settleDialog();assert(!plugin.peoplePanel&&plugin.topBar.getAttribute('aria-expanded')==='false','native close leaked panel');
                 plugin.openPeople();plugin.peoplePanel.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
                 assert(!plugin.peoplePanel,'Escape did not close dialog');await settleDialog();
+            });
+            await test('同帧不同卡片共享兄弟身份，下一帧重新检查重排、替换、隐藏和歧义',async()=>{
+                const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='shared-card-frame';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:500px;z-index:100;background:white;display:flex;flex-wrap:wrap;align-content:start';
+                fixture.innerHTML=Array.from({length:160},(_,i)=>'<div class="b3-card" data-name="shared-card-'+i+'" style="width:80px;height:24px;flex:none"><span class="b3-card__info">卡片</span></div>').join('');document.body.append(fixture);
+                const old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt},targets=[...fixture.children].slice(0,16),point=e=>{const r=rectAt(e.firstElementChild,0);return {x:r.left+r.width*.4,y:r.top+r.height*.6};};let calls=0;
+                try{const anchors=targets.map(e=>componentRoundTrip(point(e),plugin));assert(anchors.every(a=>a.ui?.version===3),'card fixture bypassed component routes');plugin.clients=targets.map((_,i)=>({name:'shared-frame-'+i,hue:120}));plugin.remoteCursors=plugin.clients.map((peer,i)=>({...peer,cursor:anchors[i]}));plugin.remoteSelections=[];plugin.remoteEditing=[];plugin.presenceReceivedAt=Date.now();
+                    calls=NativePlugin.testSiblingWork(()=>plugin.renderCursors(false));assert(calls<500,'different card routes repeated sibling scan: '+calls);
+                    const check=(missing=[])=>{plugin.renderCursors(false);for(let i=0;i<16;i++){const marker=plugin.cursorMarkers.get(plugin.clients[i].name);if(missing.includes(i)){assert(!marker,'stale target remained visible '+i);continue;}const r=marker?.getBoundingClientRect(),p=point(targets[i]);assert(r&&Math.hypot(r.left-p.x,r.top-p.y)<.1,'shared card endpoint drift '+i);}};check();
+                    fixture.prepend(targets[15]);check();const replacement=targets[2].cloneNode(true);targets[2].replaceWith(replacement);targets[2]=replacement;check();
+                    targets[3].hidden=true;check([3]);targets[3].hidden=false;check();targets[4].dataset.private='';check([4]);delete targets[4].dataset.private;check();
+                    targets[5].dataset.name='changed-card';check([5]);targets[5].dataset.name='shared-card-5';check();
+                    const duplicate=targets[6].cloneNode(true);fixture.append(duplicate);check([6]);duplicate.remove();check();targets[7].remove();check([7]);fixture.append(targets[7]);check();
+                    const render=plugin.renderSelections;plugin.renderSelections=()=>{throw Error('injected sibling-cache failure');};try{let failed=false;try{plugin.renderCursors(false);}catch(e){failed=e.message==='injected sibling-cache failure';}assert(failed&&!NativePlugin.testMeasurements(),'exception retained sibling identity cache');}finally{plugin.renderSelections=render;}targets[8].hidden=true;check([8]);
+                    document.getElementById('results').dataset.sharedCards=JSON.stringify({cards:160,cursors:16,keyCalls:calls});
+                }finally{fixture.remove();Object.assign(plugin,old);plugin.renderCursors(false);}
             });
             await test('多光标跨组件平滑移动，同位置重绘不中断动画，布局变化和隐藏立即重新验明',async()=>{
                 const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='cursor-motion';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:150px;z-index:100;background:white';fixture.innerHTML='<button id="motion-first" style="position:absolute;left:20px;top:20px;width:100px;height:50px">起点</button><button id="motion-second" style="position:absolute;left:420px;top:20px;width:100px;height:50px">终点</button>';document.body.append(fixture);
@@ -1945,11 +1962,13 @@ function fontDragFixture() {
                 assert(editing?.blockId===block.dataset.nodeId,'focused caret not captured');
                 const legacyEditing={...editing};delete legacyEditing.region;
                 const activity={name:'<b>Bob</b>',hue:210,editing:legacyEditing};
-                plugin.clients.push({name:activity.name});
+                const previousPresence=presenceClients;presenceClients=[...previousPresence,{name:activity.name,hue:activity.hue,documentId:editing.documentId}];
+                try{await plugin.refreshInBackground();
                 plugin.updateCursors({tick:10,cursors:[],editing:[{name:'A',hue:120,editing},activity]});
                 await frame();
+                await plugin.refreshInBackground();plugin.renderEditing();
                 let markers=document.querySelectorAll('.collab-editing');
-                assert(markers.length===1 && markers[0].textContent==='A、<b>Bob</b> 正在编辑','same-block participants missing');
+                assert(markers.length===1 && markers[0].textContent==='A、<b>Bob</b> 正在编辑','same-block participants missing '+JSON.stringify({clients:plugin.clients,editing:plugin.remoteEditing,markers:[...markers].map(e=>e.textContent)}));
                 assert(!markers[0].querySelector('b'),'name interpreted as HTML');
                 assert(getComputedStyle(markers[0]).pointerEvents==='none','editing frame intercepts input');
                 assert(block.outerHTML===before,'frame rewrote block');
@@ -1979,12 +1998,13 @@ function fontDragFixture() {
                 await plugin.refreshInBackground();
                 plugin.updateCursors({tick:10,cursors:[],editing:[]});
                 assert(saved===editing.documentId && block.outerHTML===before,'rendering modified activity or note');
+                }finally{presenceClients=previousPresence;await plugin.refreshInBackground();plugin.updateCursors({tick:10,cursors:[],editing:[]});}
             });
             await test('不同反链分区同时编辑相同块时分别显示光晕与名字',async()=>{
                 const fixture=document.createElement('div');fixture.className='sy__backlink sy__backlink--bottom dockPanel';fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;background:white;z-index:100';
-                for(const section of ['backlinkList','backlinkMList'])fixture.insertAdjacentHTML('beforeend','<div class="'+section+'"><div class="backlinkList__item" data-node-id="20261104190000-source1"><div class="protyle" style="position:relative;width:400px"><div class="protyle-wysiwyg"><div data-node-id="20261104190000-repeat1">重复来源块</div></div></div></div></div>');document.body.append(fixture);const tab={model:{backlink:{element:fixture,type:'bottom',blockId:'20261104190000-target1'}}};testTabs.push(tab);const names=['A','region-peer'];plugin.clients.push({name:names[1]});
-                try{const editors=[...fixture.querySelectorAll('.protyle')],editing=editors.map((editor,index)=>({name:names[index],hue:120+index*90,editing:{documentId:'20261104190000-source1',blockId:'20261104190000-repeat1',region:cursorRegion(editor)}}));plugin.updateCursors({tick:10,cursors:[],editing});await frame();for(const [index,editor]of editors.entries()){const markers=editor.querySelectorAll('.collab-editing');assert(markers.length===1&&markers[0].textContent===names[index]+' 正在编辑','same block merged participants across regions: '+[...fixture.querySelectorAll('.collab-editing')].map(marker=>marker.textContent).join('|'));}fixture.firstElementChild.style.display='none';plugin.renderEditing();assert(!editors[0].querySelector('.collab-editing')&&editors[1].querySelector('.collab-editing'),'hidden first region swallowed visible peer');}
-                finally{plugin.updateCursors({tick:10,cursors:[],editing:[]});fixture.remove();testTabs.splice(testTabs.indexOf(tab),1);plugin.clients=plugin.clients.filter(client=>client.name!==names[1]);}
+                for(const section of ['backlinkList','backlinkMList'])fixture.insertAdjacentHTML('beforeend','<div class="'+section+'"><div class="backlinkList__item" data-node-id="20261104190000-source1"><div class="protyle" style="position:relative;width:400px"><div class="protyle-wysiwyg"><div data-node-id="20261104190000-repeat1">重复来源块</div></div></div></div></div>');document.body.append(fixture);const tab={model:{backlink:{element:fixture,type:'bottom',blockId:'20261104190000-target1'}}};testTabs.push(tab);const names=['A','region-peer'],previousPresence=presenceClients;presenceClients=[...previousPresence,{name:names[1],hue:210,documentId:'20261104190000-source1'}];plugin.updatePresence({count:presenceClients.length,clients:presenceClients});
+                try{const editors=[...fixture.querySelectorAll('.protyle')],editing=editors.map((editor,index)=>({name:names[index],hue:120+index*90,editing:{documentId:'20261104190000-source1',blockId:'20261104190000-repeat1',region:cursorRegion(editor)}}));plugin.updateCursors({tick:10,cursors:[],editing});await frame();for(const [index,editor]of editors.entries()){const markers=editor.querySelectorAll('.collab-editing');assert(markers.length===1&&markers[0].textContent===names[index]+' 正在编辑','same block merged participants across regions: '+[...fixture.querySelectorAll('.collab-editing')].map(marker=>marker.textContent).join('|'));}fixture.firstElementChild.style.display='none';await plugin.refreshInBackground();plugin.renderEditing();assert(!editors[0].querySelector('.collab-editing')&&editors[1].querySelector('.collab-editing'),'hidden first region swallowed visible peer');}
+                finally{plugin.updateCursors({tick:10,cursors:[],editing:[]});fixture.remove();testTabs.splice(testTabs.indexOf(tab),1);presenceClients=previousPresence;plugin.updatePresence({count:presenceClients.length,clients:presenceClients});}
             });
             await test('搜索标签、弹窗和普通正文的同块编辑光晕分别显示，关闭预览不转移光晕',async()=>{
                 const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:25px;top:25px;width:420px;background:white;z-index:100';const names=['A','search-peer','dialog-peer'],previousPresence=presenceClients;presenceClients=[...previousPresence,...names.slice(1).map((name,index)=>({name,hue:190+index*70,documentId:'20261104210000-doc0001'}))];plugin.updatePresence({count:presenceClients.length,clients:presenceClients});
@@ -2064,7 +2084,7 @@ function fontDragFixture() {
                 const fixture=document.createElement('div');fixture.dataset.key='dialog-native-picker';fixture.innerHTML='<div class="b3-dialog" style="position:fixed;left:30px;top:30px;width:420px;height:100px;z-index:100;background:white"><div class="b3-dialog__container"><select id="native-picker" style="appearance:base-select;width:280px"><option value="first">中文 English 😀</option><option value="second">第二项</option></select></div></div><style>#native-picker::picker(select){appearance:base-select}#native-picker option{font:16px/24px sans-serif}</style>';document.body.append(fixture);
                 const field=fixture.querySelector('select'),option=field.options[0],point=()=>{const r=componentCharacter(option,1);return {x:r.left+r.width*.5,y:r.top+r.height*.5};};
                 const click=(name,action)=>new Promise((resolve,reject)=>{const button=document.createElement('button');button.textContent=name;button.style.cssText='position:fixed;left:30px;top:150px;z-index:100';fixture.append(button);button.onclick=()=>{try{action?.();button.remove();resolve();}catch(error){button.remove();reject(error);}};});
-                const peer={name:'picker-peer',hue:290};plugin.clients.push(peer);let inputs=0,changes=0;field.addEventListener('input',()=>inputs++);field.addEventListener('change',()=>changes++);
+                const peer={name:'picker-peer',hue:290,documentId:null},previousPresence=presenceClients;presenceClients=[...previousPresence,peer];plugin.updatePresence({count:presenceClients.length,clients:presenceClients});let inputs=0,changes=0;field.addEventListener('input',()=>inputs++);field.addEventListener('change',()=>changes++);
                 try{
                     await click('展开原生下拉框进行层级验证',()=>field.showPicker());await frame();assert(field.matches(':open'),'native picker did not open');
                     await test('原生弹层重复测量不增删样式表且保留主题锚点',async()=>{
@@ -2277,7 +2297,7 @@ function fontDragFixture() {
                     plugin.clients.push(peer);plugin.presenceReceivedAt=Date.now();field.showPicker();await frame();plugin.renderCursors(false);assert(field.matches(':open')&&plugin.cursorLayer.matches(':popover-open'),'reopened picker covered pointer');check();
                     document.getElementById('results').dataset.nativePicker='choose-second';await new Promise(resolve=>field.addEventListener('change',resolve,{once:true}));await frame();plugin.renderCursors(false);assert(field.value==='second'&&inputs===1&&changes===1,'cursor layer changed native input/change behavior');assert(!field.matches(':open')&&!plugin.cursorLayer.hasAttribute('popover'),'native selection left top layer open');
                     document.getElementById('results').dataset.nativePicker='complete';
-                }finally{fixture.remove();plugin.updateCursors({tick:10,cursors:[]});plugin.clients=plugin.clients.filter(client=>client.name!==peer.name);plugin.renderCursors(false);}
+                }finally{fixture.remove();plugin.updateCursors({tick:10,cursors:[]});presenceClients=previousPresence;plugin.updatePresence({count:presenceClients.length,clients:presenceClients});plugin.renderCursors(false);}
             });
             for(const disconnected of [false,true]) {
                 offline=disconnected;await plugin.refreshInBackground();await plugin.loadCursors();

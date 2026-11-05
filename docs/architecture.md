@@ -174,3 +174,5 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 三个原生字体只读 input.b3-select 限定 appearance 栏目、具体 ID（appearance.globalFontFamilies、editor.fontFamilies、editor.codeFontFamilies）、readonly 与 data-menu=true；文字复用公开字段测量，背景 SVG 箭头复用收起下拉框几何，输入文字仍按真实内容区裁剪。原生字体菜单仅识别三个 appearanceFontFamily-* 名称及 text 类型 font-search。列表行与原生已选字体芯片使用有界字体族和 1–1000 字重生成身份哈希，配置组保留 data-font-config-key；不使用列表位置或 data-index 区分字体。重复身份和无效元数据的路径拒绝解析，mark 搜索高亮不进入组件身份。协议不增加字段，也不传字体族明文。
 
 字体字重右键菜单没有原生名称，直接读取 window.siyuan.menus.menu.position.target，并核对菜单元素与仍可见、连接且唯一的原生字体标签。菜单身份包含目标配置组与字体族，行身份使用目标字体族及原生 label 的内联字重，并校验字体样式；不新增监听器或包装菜单方法。无效目标拒绝解析，选中字重改变不改变其余菜单行身份。只有已验证原生标签的 b3-chip--dragging 类不参与身份；body 下的拖拽克隆不能充当缺失标签。克隆自身通过不透明度为零、保留同级堆叠顺序的临时命中副本进行视觉命中，映射回原件；同帧共享副本，在帧结束或异常退出时移除，帧外测量立即移除。测量节点沿用观察器忽略规则。克隆作用域由唯一、可见、非私有的原生 dragging 标签及其设置组、字体族、字重和基础作用域决定。接收端须存在对应克隆，不能退回原标签或下方内容；正文可见性复用视觉命中，滚动条的特殊命中仍由组件层处理。
+
+组件路径与留白边界在 renderCursors 的当帧 measurements 中共用 parent → 身份 → children 分组，componentStep 与 componentChild 使用同一分组。帧外保持即时计算；帧结束和异常退出均恢复先前测量上下文，不保留跨帧身份，也不改变重复数量、索引或字体歧义校验。

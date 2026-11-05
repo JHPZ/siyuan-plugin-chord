@@ -372,13 +372,28 @@ function componentPane(element) {
     return wnd ? [...wnd.querySelectorAll('[data-type="tab-header"]')].map(head=>pageKey(tabPage(head))).sort().join('|'):'';
 }
 
+function componentSiblings(parent,key) {
+    const cache=componentMeasurements?.siblings;
+    if(!cache)return componentChildren(parent).filter(child=>componentKey(child)===key);
+    if(!cache.has(parent)){
+        const groups=new Map();
+        for(const child of componentChildren(parent)){
+            const identity=componentKey(child);
+            if(!groups.has(identity))groups.set(identity,[]);
+            groups.get(identity).push(child);
+        }
+        cache.set(parent,groups);
+    }
+    return cache.get(parent).get(key) || [];
+}
+
 function componentStep(element) {
-    const key=componentKey(element),siblings=componentChildren(element.parentElement).filter(child=>componentKey(child)===key);
+    const key=componentKey(element),siblings=componentSiblings(element.parentElement,key);
     return {key,count:siblings.length,index:siblings.indexOf(element)};
 }
 
 function componentChild(parent,step) {
-    const children=componentChildren(parent).filter(child=>componentKey(child)===step.key);
+    const children=componentSiblings(parent,step.key);
     return children.length===step.count && !(children.length>1 && children.some(child=>componentFontIdentity(child)!==undefined)) ? children[step.index]:null;
 }
 
