@@ -43,10 +43,10 @@ const results = [];
 const settleDialog = () => new Promise(resolve=>setTimeout(resolve,60));
 const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 const assert = (value, message) => { if (!value) throw new Error(message); };
-const near = (a,b) => Math.abs(a-b) < 1;
+const near = (a,b) => Math.abs(a-b) < .1;
 function componentRoundTrip(point,plugin) {
     const anchor=captureCursor(point,plugin);assert(anchor && validCursor(anchor),'missing anchor at '+JSON.stringify(point));
-    const resolved=resolveCursor(anchor,plugin);assert(resolved && near(point.x,resolved.x) && near(point.y,resolved.y),'round trip drift: '+JSON.stringify({point,anchor,resolved}));
+    const resolved=resolveCursor(anchor,plugin);assert(resolved && Math.hypot(point.x-resolved.x,point.y-resolved.y)<.1,'round trip drift: '+JSON.stringify({point,anchor,resolved}));
     return anchor;
 }
 function projectedFramePoint(element,point) {
@@ -629,14 +629,14 @@ async function test(name, run) {
             const days=row.querySelector('.av__calendar-days');for(let d=0;d<7;d++){const date=start+(w*7+d)*day;days.insertAdjacentHTML('beforeend','<div class="av__calendar-day" data-calendar-day="'+date+'" style="width:80px;height:60px;flex-shrink:0"><span>'+new Date(date).getDate()+'</span><button data-calendar-add="'+date+'">+</button></div>');}
             const events=row.querySelector('.av__calendar-events');for(let e=1;e<=2;e++)events.insertAdjacentHTML('beforeend','<div class="av__calendar-item av__calendar-item--start av__calendar-item--end" data-id="20261104140000-event0'+e+'" role="button" style="height:40px;width:300px"><div class="av__calendar-item-content"><div class="av__calendar-field" data-field-id="20261104140000-field01" data-col-id="20261104140000-field01"><span>同名事件</span></div></div></div>');grid.append(row);
         }document.body.append(fixture);
-        const point=e=>{const r=e.getBoundingClientRect();return {x:r.left+8,y:r.top+8};},check=(anchor,e)=>{const p=resolveCursor(anchor),q=point(e);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'calendar target drift: '+e.className);};
+        const point=e=>{const r=e.getBoundingClientRect();return {x:r.left+8,y:r.top+8};},check=(anchor,e)=>{const p=resolveCursor(anchor),q=point(e);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,'calendar target drift: '+e.className);};
         try{
             const weeks=[...grid.querySelectorAll('.av__calendar-week')],date=weeks[0].querySelectorAll('.av__calendar-day')[2],dr=date.getBoundingClientRect();
             const blank=componentRoundTrip({x:dr.left+65,y:dr.top+50});assert(blank.ui.scope.kind==='calendar','calendar whitespace has no date identity');
             const event=weeks[0].querySelector('.av__calendar-item'),field=event.querySelector('.av__calendar-field'),label=field.firstElementChild,anchor=componentRoundTrip(point(label)),weekLabel=weeks[0].previousElementSibling,weekAnchor=componentRoundTrip(point(weekLabel));
             const next=fixture.querySelector('[data-calendar-action="next"]'),nextAnchor=componentRoundTrip(point(next));
             weeks[0].parentElement.parentElement.prepend(weeks[1].parentElement);date.parentElement.prepend(date);event.parentElement.append(event);fixture.querySelector('.av__calendar-toolbar').prepend(next);
-            check(anchor,label);check(weekAnchor,weekLabel);check(nextAnchor,next);let r=date.getBoundingClientRect(),p=resolveCursor(blank);assert(p&&Math.hypot(p.x-r.left-65,p.y-r.top-50)<.6,'date reorder lost whitespace');
+            check(anchor,label);check(weekAnchor,weekLabel);check(nextAnchor,next);let r=date.getBoundingClientRect(),p=resolveCursor(blank);assert(p&&Math.hypot(p.x-r.left-65,p.y-r.top-50)<.1,'date reorder lost whitespace');
             const otherField=document.createElement('div');otherField.className='av__calendar-field';otherField.dataset.fieldId='20261104140000-field02';otherField.textContent='其他字段';field.before(otherField);check(anchor,label);otherField.remove();
             const duplicated=event.cloneNode(true);event.after(duplicated);assert(resolveCursor(anchor)===null,'duplicate event segment guessed');duplicated.remove();
             event.remove();assert(resolveCursor(anchor)===null,'another visible week segment inherited pointer');weeks[0].querySelector('.av__calendar-events').append(event);check(anchor,label);
@@ -688,7 +688,7 @@ async function test(name, run) {
         try{
             const button=fixture.firstElementChild,point={x:85,y:95},blank=componentRoundTrip(point),control=componentRoundTrip({x:90,y:45});
             for(const state of ['opacity','visibility']){
-                button.style[state]=state==='opacity'?'0':'hidden';const mapped=resolveCursor(blank);assert(mapped&&Math.hypot(mapped.x-point.x,mapped.y-point.y)<.6,'transparent layout boundary lost whitespace');assert(resolveCursor(control)===null,'invisible hover button painted');button.style[state]='';
+                button.style[state]=state==='opacity'?'0':'hidden';const mapped=resolveCursor(blank);assert(mapped&&Math.hypot(mapped.x-point.x,mapped.y-point.y)<.1,'transparent layout boundary lost whitespace');assert(resolveCursor(control)===null,'invisible hover button painted');button.style[state]='';
             }
             button.style.display='none';assert(resolveCursor(blank)===null,'removed layout boundary was guessed');button.style.display='';assert(resolveCursor(blank),'restored boundary did not restore whitespace');
         }finally{fixture.remove();}
@@ -699,7 +699,7 @@ async function test(name, run) {
         const board=fixture.querySelector('.av__kanban');
         for(const group of ['20261104141000-group01','20261104141000-group02'])board.insertAdjacentHTML('beforeend','<div class="av__kanban-group" data-group-id="'+group+'" style="width:260px"><div class="av__group-title" style="height:40px"><span class="av__group-name">同名栏目</span><span class="av__group-counter">1</span></div><div class="av__body" data-group-id="'+group+'" style="padding:8px;min-height:170px"><div class="av__gallery"><div class="av__gallery-item" data-id="20261104141000-row0001" style="height:120px;padding:8px"><div class="av__gallery-fields"><div class="av__gallery-field"><div class="av__gallery-name">同名字段</div><div class="av__cell" data-field-id="20261104141000-col0001"><span>同名内容</span></div></div></div></div></div></div></div>');
         document.body.append(fixture);const column=board.firstElementChild,title=column.querySelector('.av__group-name'),body=column.querySelector('.av__body'),card=column.querySelector('.av__gallery-item'),field=column.querySelector('.av__gallery-name');
-        const at=(e,x=8,y=10)=>{const r=e.getBoundingClientRect();return {x:r.left+x,y:r.top+y};},check=(a,e,x=8,y=10)=>{const p=resolveCursor(a),q=at(e,x,y);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'kanban target lost or drifted: '+e.className);};
+        const at=(e,x=8,y=10)=>{const r=e.getBoundingClientRect();return {x:r.left+x,y:r.top+y};},check=(a,e,x=8,y=10)=>{const p=resolveCursor(a),q=at(e,x,y);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,'kanban target lost or drifted: '+e.className);};
         try{
             const titleAnchor=componentRoundTrip(at(title)),fieldAnchor=componentRoundTrip(at(field)),blank=componentRoundTrip(at(card,230,110));assert(titleAnchor.ui.scope.part==='group-title','native kanban title has no column identity');
             board.append(column);check(titleAnchor,title);check(fieldAnchor,field);check(blank,card,230,110);
@@ -709,7 +709,7 @@ async function test(name, run) {
             column.dataset.groupId='20261104141000-othergp';assert(resolveCursor(titleAnchor)===null,'another same-name column inherited title');column.dataset.groupId='20261104141000-group01';
             column.style.height='480px';const bounds=column.getBoundingClientRect(),content=body.getBoundingClientRect(),outerPoint={x:bounds.right-5,y:bounds.bottom-4},outer=componentRoundTrip(outerPoint);assert(!outer.ui.textHash,'column whitespace froze all descendant text');
             const ratio=(outerPoint.y-content.bottom)/(bounds.bottom-content.bottom),extra=card.cloneNode(true);extra.dataset.id='20261104141000-row0002';extra.querySelector('.av__cell').textContent='另一张卡片';card.after(extra);
-            let mapped=resolveCursor(outer),after=column.getBoundingClientRect(),end=body.getBoundingClientRect().bottom;assert(mapped&&Math.hypot(mapped.x-outerPoint.x,mapped.y-(end+(after.bottom-end)*ratio))<.6,'unrelated card changed column gap identity');extra.remove();
+            let mapped=resolveCursor(outer),after=column.getBoundingClientRect(),end=body.getBoundingClientRect().bottom;assert(mapped&&Math.hypot(mapped.x-outerPoint.x,mapped.y-(end+(after.bottom-end)*ratio))<.1,'unrelated card changed column gap identity');extra.remove();
             column.remove();assert(resolveCursor(titleAnchor)===null,'missing column title moved to another group');
         }finally{fixture.remove();}
     });
@@ -724,7 +724,7 @@ async function test(name, run) {
             scroll.append(title,body);return {title,body};
         });for(const frozen of fixture.querySelectorAll('.av__colsticky'))frozen.style.display='flex';document.body.append(fixture);
         const at=(element,x=8,y=10)=>{const r=element.getBoundingClientRect();return {x:r.left+x,y:r.top+y};};
-        const check=(anchor,element,x=8,y=10)=>{const p=resolveCursor(anchor),expected=at(element,x,y);assert(p&&Math.hypot(p.x-expected.x,p.y-expected.y)<.6,'wrong or missing '+element.className+': '+JSON.stringify(p));};
+        const check=(anchor,element,x=8,y=10)=>{const p=resolveCursor(anchor),expected=at(element,x,y);assert(p&&Math.hypot(p.x-expected.x,p.y-expected.y)<.1,'wrong or missing '+element.className+': '+JSON.stringify(p));};
         try{
             const group=groups[0],title=group.title.querySelector('.av__group-name'),header=group.body.querySelector('.av__cell--header'),label=header.firstElementChild,calc=group.body.querySelector('.av__calc'),row=group.body.querySelector('.av__row[data-id]'),control=row.querySelector('.av__firstcol'),cell=row.querySelector('.av__cell');
             const anchors={title:componentRoundTrip(at(title)),header:componentRoundTrip(at(label)),calc:componentRoundTrip(at(calc.firstElementChild)),control:componentRoundTrip(at(control)),blank:componentRoundTrip(at(row,620,45)),cell:componentRoundTrip(at(cell.firstElementChild))};
@@ -753,9 +753,9 @@ async function test(name, run) {
             const anchor=componentRoundTrip(point());assert(anchor.ui?.scope.kind==='av','database text used whole-block character offsets');
             const cr=cell.getBoundingClientRect(),blank=componentRoundTrip({x:cr.right-12,y:cr.bottom-8});
             body.prepend(rows[1]);rows[0].prepend(cell);cell.style.width='270px';
-            let actual=resolveCursor(anchor),expected=point();assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'row or column reordering changed cell');
+            let actual=resolveCursor(anchor),expected=point();assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.1,'row or column reordering changed cell');
             const blankAfter=resolveCursor(blank),after=cell.getBoundingClientRect();assert(blankAfter&&blankAfter.x>after.left&&blankAfter.x<after.right&&blankAfter.y>after.top&&blankAfter.y<after.bottom,'cell blank moved to another row');
-            const frozen=document.createElement('div');frozen.className='av__colsticky';rows[0].prepend(frozen);frozen.append(cell);actual=resolveCursor(anchor);expected=point();assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.6,'frozen column wrapper broke cell identity');
+            const frozen=document.createElement('div');frozen.className='av__colsticky';rows[0].prepend(frozen);frozen.append(cell);actual=resolveCursor(anchor);expected=point();assert(actual&&Math.hypot(actual.x-expected.x,actual.y-expected.y)<.1,'frozen column wrapper broke cell identity');
             const spare=rows[0].querySelector('.av__cell:not([data-col-id="20261104130000-col0002"])');spare.remove();assert(resolveCursor(anchor),'unrelated hidden column removed target');
             rows[0].style.display='none';assert(resolveCursor(anchor)===null,'filtered row painted');rows[0].style.display='';
             cell.style.opacity='0';assert(resolveCursor(blank)===null,'transparent database cell painted');cell.style.opacity='1';
@@ -821,7 +821,7 @@ async function test(name, run) {
                 const lr=list.getBoundingClientRect(),tailPoint={x:lr.left+lr.width/2,y:lr.bottom-2},tail=componentRoundTrip(tailPoint),arrow=groups[0].querySelector('svg'),arrowAnchor=componentRoundTrip(point(arrow,false));
                 assert(samples.every(s=>!JSON.stringify(s.anchor).includes('private-root-')),'tree identity leaked raw paths');
                 for(const i of [1,0]){list.append(groups[i],nested[i]);}
-                const check=s=>{const p=resolveCursor(s.anchor),q=point(s.root,s.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,kind+' nested group followed sibling order '+JSON.stringify({html:s.root.outerHTML,p,q,anchor:s.anchor}));};samples.forEach(check);const tailResolved=resolveCursor(tail);assert(tailResolved&&Math.hypot(tailResolved.x-tailPoint.x,tailResolved.y-tailPoint.y)<.6,'tree list perimeter followed previous group');
+                const check=s=>{const p=resolveCursor(s.anchor),q=point(s.root,s.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,kind+' nested group followed sibling order '+JSON.stringify({html:s.root.outerHTML,p,q,anchor:s.anchor}));};samples.forEach(check);const tailResolved=resolveCursor(tail);assert(tailResolved&&Math.hypot(tailResolved.x-tailPoint.x,tailResolved.y-tailPoint.y)<.1,'tree list perimeter followed previous group');
                 const counter=groups[0].lastElementChild,counterAnchor=componentRoundTrip(point(counter,false));counter.textContent='3';samples.forEach(check);assert(resolveCursor(counterAnchor)===null,'changed count glyph inherited old character');
                 const owner=kind==='tag'?leaf[0]:groups[0],old=owner.getAttribute(attribute);owner.setAttribute(attribute,'private-replacement');for(const s of samples.filter(s=>owner.contains(s.root)))assert(resolveCursor(s.anchor)===null,'same-name replacement inherited tree pointer');owner.setAttribute(attribute,old);samples.forEach(check);
                 nested[0].style.display='none';arrow.classList.remove('b3-list-item__arrow--open');assert(resolveCursor(arrowAnchor),'visible tree toggle disappeared after collapsing its children');for(const s of samples.filter(s=>leaf[0].contains(s.root)))assert(resolveCursor(s.anchor)===null,'collapsed tree branch inherited same-name leaf');nested[0].style.display='';arrow.classList.add('b3-list-item__arrow--open');samples.forEach(check);
@@ -938,8 +938,8 @@ async function test(name, run) {
             const rect=list.getBoundingClientRect(),tailPoint={x:rect.left+20,y:rect.bottom-4},tail=componentRoundTrip(tailPoint);
             assert(samples.every(sample=>!JSON.stringify(sample.anchor).includes('private-')&&!JSON.stringify(sample.anchor).includes('同名动作')),'AI identity leaked raw IDs, prompts or names');
             list.prepend(rows[2]);rows[0].classList.add('b3-list-item--focus');
-            const check=sample=>{const p=resolveCursor(sample.anchor),q=point(sample.root);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'same-name AI action followed list order');};samples.forEach(check);
-            const tailResolved=resolveCursor(tail);assert(tailResolved&&Math.hypot(tailResolved.x-tailPoint.x,tailResolved.y-tailPoint.y)<.6,'separated-list perimeter followed former last action');
+            const check=sample=>{const p=resolveCursor(sample.anchor),q=point(sample.root);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,'same-name AI action followed list order');};samples.forEach(check);
+            const tailResolved=resolveCursor(tail);assert(tailResolved&&Math.hypot(tailResolved.x-tailPoint.x,tailResolved.y-tailPoint.y)<.1,'separated-list perimeter followed former last action');
             rows[1].dataset.id='replacement';for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'replacement AI action inherited pointer');rows[1].dataset.id='private-action-second';
             const clone=rows[0].cloneNode(true);list.append(clone);for(const sample of samples.filter(s=>rows[0].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'duplicate AI identity guessed');clone.remove();
             for(const property of ['opacity','visibility','display']){rows[1].style[property]={opacity:'0',visibility:'hidden',display:'none'}[property];for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'hidden AI action painted: '+property);rows[1].style[property]=property==='display'?'flex':'';}samples.forEach(check);
@@ -954,7 +954,7 @@ async function test(name, run) {
             const samples=rows.flatMap(row=>[{root:row,blank:true},{root:row.firstElementChild,blank:false}]).map(sample=>({...sample,anchor:componentRoundTrip(point(sample.root,sample.blank))}));
             assert(samples.every(s=>!JSON.stringify(s.anchor).includes('plugin/')&&!JSON.stringify(s.anchor).includes('同名命令')),'command identity leaked raw labels or IDs');
             list.prepend(rows[2]);rows[0].classList.add('b3-list-item--focus');
-            for(const sample of samples){const p=resolveCursor(sample.anchor),q=point(sample.root,sample.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'same-name command followed list position');}
+            for(const sample of samples){const p=resolveCursor(sample.anchor),q=point(sample.root,sample.blank);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,'same-name command followed list position');}
             rows[1].dataset.commandId='plugin/example/identity_replacement';for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'replacement command inherited pointer');rows[1].dataset.commandId='plugin/example/identity_b';
             const duplicate=rows[0].cloneNode(true);list.append(duplicate);for(const sample of samples.filter(s=>rows[0].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'duplicate command identity guessed an occurrence');duplicate.remove();
             rows[1].style.opacity='0';for(const sample of samples.filter(s=>rows[1].contains(s.root)))assert(resolveCursor(sample.anchor)===null,'transparent command painted');rows[1].style.opacity='';
@@ -981,7 +981,7 @@ async function test(name, run) {
         try{
             const samples=[title,input,stable].map(root=>({root,anchor:componentRoundTrip(point(root))})),blank=componentRoundTrip({x:510,y:100});
             header.id='dialog-title-22222222-2222-4222-8222-222222222222';container.setAttribute('aria-labelledby',header.id);
-            for(const sample of samples){const p=resolveCursor(sample.anchor),q=point(sample.root);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.6,'reopened dialog lost '+sample.root.className);}
+            for(const sample of samples){const p=resolveCursor(sample.anchor),q=point(sample.root);assert(p&&Math.hypot(p.x-q.x,p.y-q.y)<.1,'reopened dialog lost '+sample.root.className);}
             assert(resolveCursor(blank),'dialog header whitespace lost after generated ID changed');
             stable.id='other-header-action';assert(resolveCursor(samples[2].anchor)===null,'stable header control ID ignored');stable.id='stable-header-action';
             header.id='unrelated-stable-header';container.setAttribute('aria-labelledby',header.id);assert(resolveCursor(samples[0].anchor)===null,'stable title ID ignored');
@@ -1436,6 +1436,29 @@ async function test(name, run) {
         }Object.assign(document.getElementById('results').dataset,{nativeSearchCases:String(cases),nativeSearchMaxDrift:String(maxDrift)});}finally{fixture.remove();reference.remove();}
     });
 
+    await test('编辑器数字设置按字形、内边距与留白定位，改宽、改值和原生外观不误画',async()=>{
+        const fixture=document.createElement('div');fixture.className='config__tab-container';fixture.dataset.name='editor';fixture.style.cssText='position:fixed;left:30px;top:30px;width:600px;height:180px;background:white;z-index:100';
+        fixture.innerHTML='<style>.config__tab-container[data-name="editor"] input[type="number"]::-webkit-inner-spin-button{appearance:none}</style><input class="b3-text-field" type="number">';const field=fixture.querySelector('input'),reference=document.createElement('div');document.body.append(fixture,reference);
+        const value='12345',ids=['editor.cursorSurroundingLines','editor.dynamicLoadBlocks','editor.blockRefDynamicAnchorTextMaxLen','editor.backlinkExpandCount','editor.backmentionExpandCount'];let cases=0,maxDrift=0;
+        const apply=(width,font)=>{const css='appearance:none;font:'+font+'px/30px monospace;padding:6px 12px 8px 20px;border:1px solid;box-sizing:border-box;width:'+width+'px;height:50px;white-space:pre;text-align:center;';field.style.cssText=css;reference.style.cssText=css+'position:fixed;left:-10000px;top:0;line-height:34px';};
+        const glyph=offset=>{const r=document.createRange();r.setStart(reference.firstChild,offset);r.setEnd(reference.firstChild,offset+1);const g=r.getBoundingClientRect(),a=reference.getBoundingClientRect(),b=field.getBoundingClientRect();return {x:b.left+g.left-a.left+g.width*.3-field.scrollLeft,y:b.top+g.top-a.top+g.height*.7};};
+        const blank=side=>{const r=field.getBoundingClientRect();return side==='left'?{x:r.left+10,y:r.top+r.height*.5}:side==='right'?{x:r.right-6,y:r.top+r.height*.5}:side==='top'?{x:(r.left+21+r.right-13)*.5,y:r.top+3}:{x:(r.left+21+r.right-13)*.5,y:r.bottom-3};};
+        const trailing=()=>{const end=glyph(value.length-1),r=reference.getBoundingClientRect(),g=document.createRange();g.setStart(reference.firstChild,value.length-1);g.setEnd(reference.firstChild,value.length);const a=g.getBoundingClientRect(),b=field.getBoundingClientRect(),left=b.left+a.right-r.left-field.scrollLeft;return {x:left+(b.right-13-left)*.4,y:end.y};};
+        const check=(anchor,point)=>{const actual=resolveCursor(anchor);assert(actual,'numeric target missing');const error=Math.hypot(actual.x-point.x,actual.y-point.y);maxDrift=Math.max(maxDrift,error);assert(error<.1,'numeric drift '+JSON.stringify({actual,point,error,id:field.id}));cases++;};
+        try{for(const id of ids){field.id=id;field.value=value;reference.textContent=value;apply(240,20);field.focus();const before=field.outerHTML,samples=[0,2,4].map(offset=>({offset,anchor:componentRoundTrip(glyph(offset))})),padding=['left','right','top','bottom'].map(side=>({side,anchor:componentRoundTrip(blank(side))})),gap=componentRoundTrip(trailing());
+                assert(samples.every(s=>s.anchor.ui.version===3&&s.anchor.ui.textHash&&Object.values(s.anchor.ui.edges).flat().every(e=>e.kind==='text')),'numeric setting still uses box ratios');assert(!JSON.stringify(samples).includes(value),'numeric value entered wire payload');
+                for(const width of [180,360])for(const font of [20,24]){apply(width,font);for(const s of samples)check(s.anchor,glyph(s.offset));for(const s of padding)check(s.anchor,blank(s.side));check(gap,trailing());}
+                field.value='678';assert([...samples,{anchor:gap}].every(s=>resolveCursor(s.anchor)===null),'different numeric value inherited glyph or gap');for(const s of padding)check(s.anchor,blank(s.side));field.value=value;
+                const old={...samples[0].anchor,ui:{...samples[0].anchor.ui,edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:[{kind:'self',side:'start'},{kind:'self',side:'end'}]}}};assert(resolveCursor(old)===null,'old numeric box anchor painted');
+                Object.defineProperty(field,'validity',{configurable:true,value:{badInput:true}});assert(samples.every(s=>resolveCursor(s.anchor)===null)&&captureCursor(glyph(0))===null,'incomplete numeric input guessed text');delete field.validity;
+                field.style.appearance='auto';assert(samples.every(s=>resolveCursor(s.anchor)===null),'uncalibrated numeric spinner guessed');field.style.appearance='none';
+                field.dataset.private='';Object.defineProperty(field,'value',{configurable:true,get(){throw Error('private numeric value read');}});assert(!componentTextField(field)&&samples.every(s=>resolveCursor(s.anchor)===null),'private numeric field painted');delete field.value;delete field.dataset.private;field.value=value;
+                field.style.visibility='hidden';assert(samples.every(s=>resolveCursor(s.anchor)===null),'hidden numeric field painted');field.style.visibility='';assert(document.activeElement===field&&!document.querySelector('.collab-text-measure'),'numeric measurement changed focus or leaked');apply(240,20);assert(field.outerHTML===before,'numeric measurement changed HTML');
+            }
+            fixture.dataset.name='account';Object.defineProperty(field,'value',{configurable:true,get(){throw Error('unknown numeric settings value read');}});assert(!componentTextField(field)&&componentTextHash(field)===componentHash(field.textContent),'unknown numeric field measured');delete field.value;fixture.dataset.name='editor';field.type='password';assert(!componentTextField(field),'password accepted');
+            Object.assign(document.getElementById('results').dataset,{numericSettingCases:String(cases),numericSettingMaxDrift:String(maxDrift)});
+        }finally{fixture.remove();reference.remove();}
+    });
     await test('搜索输入框四周内边距留白按内容边界定位，不继承被裁掉的字形',async()=>{
         const field=document.createElement('input'),header=document.createElement('div');header.className='search__header';header.style.cssText='position:fixed;left:30px;top:30px;z-index:100';field.className='b3-text-field';field.style.cssText='font:18px/30px monospace;width:500px;height:42px;padding:6px 8px 6px 32px;border:0;box-sizing:border-box';field.value='x'.repeat(100);header.append(field);document.body.append(header);
         try{

@@ -150,3 +150,6 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 公开搜索字段还包括 config__panel 内的 config__tab-head 搜索、bazaar 栏的 config-bazaar__filter，以及 keymap 栏的 keymapInput/searchByKey；按原生结构限定范围，仍要求 text/search 类型且未标记私有或文本遮掩。复用字段字素、占位文字和内边距测量，不读取其他设置输入值。
 
 主文档与嵌入文档都捕获 input/change 安排光标核验；主布局观察器同时观察 data-private，避免仅改变值或隐私标记时等待其他 DOM 变动。监听在卸载时对称清理。
+
+
+编辑器设置的 config__tab-container[data-name="editor"] 内，b3-text-field[type="number"] 且 id 以 editor. 开头的原生数值控件接入现有公开字段字形与留白测量。复用数字字段的 appearance:none 与 validity.badInput 校验，仅传有界文本哈希、字符位置和边界比例；不增加协议字段，不读取其他设置分区的未知数字值。旧组件整框边界和 v2 设置比例锚点拒绝绘制，数值改变后字形与内容间隙隐藏，仍存在的内边距继续按本端边界核验。
