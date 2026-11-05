@@ -712,8 +712,7 @@ function componentGeometry(element,point) {
         for(const {child,rect} of references){
             for(const [side,key] of [['start',start],['end',end]])if((onPicker || rect[key]>=bounds[start] && rect[key]<=bounds[end]) && (column || (adjacent ? adjacent.includes(child):distance(rect)<=nearest[rect[key]>point[axis] ? 1:0]))){
                 // At grid crossings, keep shared row edges independent of column distance.
-                const step=componentStep(onPicker && !adjacent ? references.find(({rect:r})=>r[key]===rect[key]).child:child);
-                const entry={value:rect[key],edge:{kind:'child',side,step}};
+                const entry={value:rect[key],edge:{kind:'child',side,child:onPicker && !adjacent ? references.find(({rect:r})=>r[key]===rect[key]).child:child}};
                 if(onPicker || column && child.hasAttribute('data-node-id'))entries.unshift(entry);else entries.push(entry);
             }
         }
@@ -724,7 +723,8 @@ function componentGeometry(element,point) {
         const lower=pair.every(Boolean) ? pair[0]:entries.filter(item=>item.value<=point[axis]).sort((a,b)=>b.value-a.value)[0];
         const upper=pair.every(Boolean) ? pair[1]:entries.filter(item=>item.value>=point[axis]).sort((a,b)=>a.value-b.value)[0];
         if(!lower || !upper)return null;
-        edges[axis]=[lower.edge,upper.edge];relative[axis]=upper.value===lower.value ? 0:(point[axis]-lower.value)/(upper.value-lower.value);
+        // Build sibling identities only for the chosen boundaries, not every candidate in a large list.
+        edges[axis]=[lower.edge,upper.edge].map(edge=>edge.kind==='child' ? {kind:edge.kind,side:edge.side,step:componentStep(edge.child)}:edge);relative[axis]=upper.value===lower.value ? 0:(point[axis]-lower.value)/(upper.value-lower.value);
         usedText ||= lower.edge.kind==='text' || upper.edge.kind==='text';
     }
     return {edges,...relative,...(usedText ? {textHash:componentTextHash(element)}:{}),...(imagePoint ? {imagePoint}:{})};

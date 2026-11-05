@@ -1055,6 +1055,20 @@ async function test(name, run) {
             assert(resolveCursor(anchor)===null,'covered blank painted');overlay.remove();
         }finally{fixture.remove();}
     });
+    await test('大型卡片列表留白只为选中的边界计算兄弟身份，工作量随列表线性增长',async()=>{
+        const fixture=document.createElement('div');fixture.id='large-marketplace-cards';fixture.style.cssText='position:fixed;left:30px;top:30px;width:500px;height:300px;overflow:auto;background:white;z-index:100;padding:12px';document.body.append(fixture);
+        const originalKey=componentKey,measurements=[];let calls=0;componentKey=element=>{calls++;return originalKey(element);};
+        try{
+            for(const count of [80,160]){
+                fixture.replaceChildren(...Array.from({length:count},(_,i)=>{const card=document.createElement('div');card.dataset.name='package-'+i;card.style.cssText='height:28px;margin-bottom:16px';card.textContent='插件 '+i;return card;}));
+                const first=fixture.children[0],second=fixture.children[1],a=first.getBoundingClientRect(),b=second.getBoundingClientRect(),point={x:(a.left+a.right)/2,y:(a.bottom+b.top)/2};assert(document.elementFromPoint(point.x,point.y)===fixture,'large-list sample did not hit whitespace');
+                calls=0;const anchor=componentRoundTrip(point),keyCalls=calls;assert(keyCalls<count*20+200,'list rebuilt sibling keys for every candidate '+JSON.stringify({count,keyCalls}));measurements.push({count,keyCalls});
+                first.style.height='40px';first.style.marginBottom='24px';const moved=resolveCursor(anchor),r=first.getBoundingClientRect(),s=second.getBoundingClientRect();assert(moved&&Math.abs(moved.y-(r.bottom+s.top)/2)<.02,'deferred identities lost local gap boundaries');
+                second.remove();assert(resolveCursor(anchor)===null,'large list retained a missing gap neighbour');
+            }
+            assert(measurements[1].keyCalls<measurements[0].keyCalls*2.5,'doubling the list produced quadratic identity work');document.getElementById('results').dataset.largeListWork=JSON.stringify(measurements);
+        }finally{componentKey=originalKey;fixture.remove();}
+    });
     await test('同源嵌入按内部组件与文字定位，边框缩放和内部滚动不会用整帧比例',async()=>{
         const frameElement=document.createElement('iframe');frameElement.id='component-frame';frameElement.style.cssText='position:fixed;left:30px;top:30px;width:400px;height:220px;border:7px solid black;z-index:100';
         frameElement.srcdoc='<style>body{margin:12px;height:800px}button{display:block;margin-top:30px;width:180px;height:40px}</style><button data-name="inside">内部按钮</button><div style="height:100px">内部留白</div>';
