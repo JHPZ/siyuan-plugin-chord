@@ -3,10 +3,11 @@ const COMPONENT_HIGHLIGHT_TEXT='.protyle-hint .b3-list-item__text,.search__list 
 const componentRenderTargets=new WeakMap();
 const componentRangeStyles=new Map();
 const componentPickerStyles=new Map();
+const componentFieldStyles=new Map();
 let componentMeasurements;
 
 function clearComponentStyles(doc) {
-    for(const styles of [componentRangeStyles,componentPickerStyles]){
+    for(const styles of [componentRangeStyles,componentPickerStyles,componentFieldStyles]){
         if(doc){styles.get(doc)?.remove();styles.delete(doc);}
         else{for(const style of styles.values())style.remove();styles.clear();}
     }
@@ -103,22 +104,38 @@ function componentFieldText(field) {
     return field.value || field.getAttribute('placeholder') || '';
 }
 
+function componentFieldStyle(doc) {
+    if(!doc.head)return null;
+    let style=componentFieldStyles.get(doc);
+    if(!style){style=doc.createElement('style');style.className='collab-text-measure';style.textContent='.collab-field-measure::-webkit-scrollbar{width:var(--collab-field-scrollbar-width)!important;height:var(--collab-field-scrollbar-height)!important}';componentFieldStyles.set(doc,style);}
+    if(!style.isConnected)doc.head.append(style);
+    return style;
+}
+
 function componentFieldContent(field) {
-    if(!field.matches('input,select') || !componentTextField(field))return null;
+    if(!field.matches('input,select,textarea') || !componentTextField(field))return null;
+    const cache=componentMeasurements?.fields;if(cache?.has(field))return cache.get(field);
     const css=field.ownerDocument.defaultView.getComputedStyle(field),rect=field.getBoundingClientRect(),inset=side=>parseFloat(css['border'+side+'Width'])+parseFloat(css['padding'+side]);
     if(field.type==='number' && css.appearance!=='none')return null;
     const left=inset('Left'),right=inset('Right'),top=inset('Top'),bottom=inset('Bottom'),sx=rect.width/(parseFloat(css.width)+(css.boxSizing==='border-box' ? 0:left+right)),sy=rect.height/(parseFloat(css.height)+(css.boxSizing==='border-box' ? 0:top+bottom));
     if(![left,right,top,bottom,sx,sy].every(Number.isFinite) || sx<=0 || sy<=0)return null;
-    return {left:rect.left+left*sx,right:rect.right-right*sx,top:rect.top+top*sy,bottom:rect.bottom-bottom*sy};
+    const content=field.matches('textarea') ? componentFieldMeasure(field,mirror=>{
+        const marker=field.ownerDocument.createElement('i');marker.style.cssText='position:absolute;inset:0;padding:0;margin:0;border:0;visibility:hidden;pointer-events:none';mirror.append(marker);
+        const port=marker.getBoundingClientRect(),viewport={left:port.left+field.scrollLeft*sx,right:port.right+field.scrollLeft*sx,top:port.top+field.scrollTop*sy,bottom:port.bottom+field.scrollTop*sy};
+        return {left:viewport.left+parseFloat(css.paddingLeft)*sx,right:viewport.right-parseFloat(css.paddingRight)*sx,top:viewport.top+parseFloat(css.paddingTop)*sy,bottom:viewport.bottom-parseFloat(css.paddingBottom)*sy,viewport};
+    }):{left:rect.left+left*sx,right:rect.right-right*sx,top:rect.top+top*sy,bottom:rect.bottom-bottom*sy};
+    cache?.set(field,content);return content;
 }
 
 function componentFieldMeasure(field,run) {
     if(typeof Intl.Segmenter!=='function')return null;
     const doc=field.ownerDocument,css=doc.defaultView.getComputedStyle(field);
     if(field.type==='number' && (field.validity.badInput || css.appearance!=='none'))return null;
+    if(field.matches('textarea')&&!componentFieldStyle(doc))return null;
     const bounds=field.getBoundingClientRect(),mirror=doc.createElement('div'),value=componentFieldText(field);
     mirror.className='collab-text-measure';mirror.setAttribute('aria-hidden','true');mirror.textContent=value+'\u200b';
     for(const name of ['box-sizing','width','height','padding-top','padding-right','padding-bottom','padding-left','border-top-width','border-right-width','border-bottom-width','border-left-width','border-style','overflow-x','overflow-y','scrollbar-gutter','font-family','font-size','font-style','font-weight','font-stretch','font-variant','font-feature-settings','font-variation-settings','font-kerning','line-height','letter-spacing','word-spacing','tab-size','white-space','word-break','overflow-wrap','text-indent','text-align','text-transform','direction','writing-mode','text-orientation'])mirror.style.setProperty(name,css.getPropertyValue(name));
+    if(field.matches('textarea')){const bar=doc.defaultView.getComputedStyle(field,'::-webkit-scrollbar');mirror.classList.add('collab-field-measure');mirror.style.setProperty('--collab-field-scrollbar-width',bar.width);mirror.style.setProperty('--collab-field-scrollbar-height',bar.height);mirror.style.scrollbarWidth=css.scrollbarWidth;mirror.style.scrollbarColor=css.scrollbarColor;}
     if(field.matches('select'))for(const name of ['display','flex-direction','flex-wrap','align-items','justify-content','gap'])mirror.style.setProperty(name,css.getPropertyValue(name));
     if(!field.matches('select') && !field.value && field.getAttribute('placeholder')){
         const placeholder=doc.defaultView.getComputedStyle(field,'::placeholder');
@@ -130,9 +147,15 @@ function componentFieldMeasure(field,run) {
         mirror.style.whiteSpace='pre';mirror.style.overflowWrap='normal';mirror.style.wordBreak='normal';mirror.style.overflow='hidden';
     }
     mirror.style.cssText+=';position:fixed;left:'+bounds.left+'px;top:'+bounds.top+'px;margin:0;opacity:0;pointer-events:auto;z-index:2147483647;transform-origin:0 0;';
+    // Keep ancestor zoom during layout: scaling alone loses native font and border quantization.
+    let zoom=1;for(let parent=field;parent&&parent!==doc.body;parent=parent.parentElement)zoom*=Number(doc.defaultView.getComputedStyle(parent).zoom)||1;mirror.style.zoom=String(zoom);
+    let pageZoom=zoom;for(let parent=doc.body;parent;parent=parent.parentElement)pageZoom*=Number(doc.defaultView.getComputedStyle(parent).zoom)||1;
+    if(pageZoom!==1)for(const name of ['width','height','border-top-width','border-right-width','border-bottom-width','border-left-width'])mirror.style.setProperty(name,(Math.round(parseFloat(css.getPropertyValue(name))*pageZoom*64)/(pageZoom*64)+.000001)+'px');
     doc.body.append(mirror);
     try{
         const rect=mirror.getBoundingClientRect();if(!rect.width || !rect.height)return null;
+        const layout=doc.defaultView.getComputedStyle(mirror),size=axis=>parseFloat(layout[axis])+(layout.boxSizing==='border-box' ? 0:(axis==='width'?['Left','Right']:['Top','Bottom']).reduce((sum,side)=>sum+parseFloat(layout['padding'+side])+parseFloat(layout['border'+side+'Width']),0));
+        mirror.style.left=(bounds.left+(bounds.left-rect.left)*size('width')/rect.width)+'px';mirror.style.top=(bounds.top+(bounds.top-rect.top)*size('height')/rect.height)+'px';
         mirror.style.transform='scale('+bounds.width/rect.width+','+bounds.height/rect.height+')';mirror.scrollTop=field.scrollTop;mirror.scrollLeft=field.scrollLeft;
         const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value);
         const position=offset=>offset>=0 && offset<value.length ? segments.containing(offset).index:offset===value.length ? offset:-1;
@@ -827,7 +850,7 @@ function measureComponentScrollbar(element,point,parts) {
     return result;
 }
 
-function componentGeometry(element,point,scrollbar=componentScrollbar(element,point)) {
+function componentGeometry(element,point,scrollbar=componentScrollbar(element,point),fieldText) {
     const contains=rect=>point.x>=rect.left&&point.x<rect.right&&point.y>=rect.top&&point.y<rect.bottom;
     if(scrollbar?.areas.some(contains)){
         const part=Object.entries(scrollbar.parts).find(([,rect])=>contains(rect));if(!part)return null;
@@ -852,11 +875,11 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     const field=onPicker ? null:componentFieldContent(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
     const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     // Person-local badges must not change shared row gaps or their text offsets.
-    let text=onPicker || box&&!textPlane || padding && !select || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:componentNearText(element,parentPoint,textPlane) || [];
+    let text=onPicker || box&&!textPlane || padding && !element.matches('select,textarea') || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:fieldText || componentNearText(element,parentPoint,textPlane) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
     if(glyph){const {rect,offset}=glyph;return {edges:{x:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}],y:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}]},x:(point.x-rect.left)/rect.width,y:(point.y-rect.top)/rect.height,textHash:componentTextHash(element)};}
     if(select && imagePoint)return {edges:{x:[{kind:'image',side:'start'},{kind:'image',side:'end'}],y:[{kind:'image',side:'start'},{kind:'image',side:'end'}]},x:imagePoint.x,y:imagePoint.y,imagePoint};
-    if(select && padding && !glyph)text=[];
+    if(padding && !glyph)text=[];
     if(select && !glyph && !image && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage!=='none')return null;
     if(!onPicker && componentTextField(element) && !text.length && !padding && !imagePoint)return null;
     const edges={},relative={};let usedText=!!(element.matches('.counter') && (componentTreeRegion(element) || element.closest('.search__list')));
@@ -872,6 +895,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
             const rect=range[part];if(axis==='y' && (point.x<rect.left || point.x>rect.right))continue;
             for(const [side,key] of [['start',start],['end',end]])if(rect[key]>=bounds[start] && rect[key]<=bounds[end])entries.push({value:rect[key],edge:{kind:'range-'+part,side}});
         }
+        if(field?.viewport)for(const [side,key] of [['start',start],['end',end]])entries.push({value:field.viewport[key],edge:{kind:'field-viewport',side}});
         // A collapsed content box still has visible padding on each outward side.
         if(field && !text.some(item=>point[axis]>=item.rect[start] && point[axis]<item.rect[end]))for(const [side,key] of point[axis]>=field[end] ? [['end',end],['start',start]]:[['start',start],['end',end]]){
             const entry={value:field[key],edge:{kind:'field',side}};
@@ -964,7 +988,7 @@ function resolveComponent(cursor,plugin) {
     const textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     const select=element.matches('select') && !picker;
     if(select && !componentTextField(element))return null;
-    if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || select && edge.kind==='image'))return null;
+    if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || select && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
     if(slider && (!range || !Object.values(anchor.edges).flat().some(edge=>['range-thumb','range-track','frame','frame-box'].includes(edge.kind))))return null;
     const box=range?.box || (element.matches('iframe') ? frameBox(element):null) || (picker?.toLocal ? picker:textPlane);if(element.matches('iframe') && !box)return null;
@@ -978,7 +1002,7 @@ function resolveComponent(cursor,plugin) {
         }
         const values=anchor.edges[axis].map(edge=>{
             const target=edge.kind==='self' ? element:edge.kind==='child' ? componentChild(element,edge.step):null;
-            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
+            const rect=edge.kind.startsWith('scrollbar-') ? scrollbar?.parts[edge.kind]:edge.kind.startsWith('picker-') ? picker?.[edge.kind==='picker-box' ? 'bounds':edge.kind.slice(7)]:edge.kind==='text' ? fieldRects ? fieldRects.get(edge.offset):componentCharacter(element,edge.offset,textPlane):edge.kind==='paint' ? componentPaintRect(element):edge.kind==='image' ? componentImageRect(element,textPlane):edge.kind==='list' ? componentListRect(element):['list-first','list-last'].includes(edge.kind) ? componentListRect(element,edge.kind.slice(5)):edge.kind==='field' ? field:edge.kind==='field-viewport' ? field?.viewport:edge.kind==='frame' ? range?.content || box?.content:edge.kind==='frame-box' ? box?.bounds:edge.kind.startsWith('range-') ? range?.[edge.kind.slice(6)]:box?.rect&&target ? box.rect(target):box && target===element ? box.bounds:target?.getBoundingClientRect();
             return rect?.[edge.side==='start' ? start:end];
         });
         const collapsedField=field && anchor.edges[axis].every(edge=>edge.kind==='field') && field[start]===field[end];
@@ -988,12 +1012,14 @@ function resolveComponent(cursor,plugin) {
     }
     if(box)Object.assign(point,box.toParent(point));
     if(!scrollbarAnchor&&componentScrollbar(element,point,false)?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
-    const precise=scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field');
+    const precise=scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field' || edge.kind==='field-viewport');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
     if(precise || gaps.length){
-        // Padding is visible whitespace; text underneath it is clipped by the native input.
-        if(fieldRects && field && !select && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom))return null;
-        const local=componentGeometry(element,point,scrollbarAnchor?scrollbar:undefined);
+        // Textarea text can scroll into padding, but remains clipped at the native viewport.
+        const clip=element.matches('textarea') ? field?.viewport:field;
+        if(fieldRects && clip && !select && (point.x<clip.left || point.x>=clip.right || point.y<clip.top || point.y>=clip.bottom))return null;
+        const glyph=fieldRects && Object.values(anchor.edges).flat().every(edge=>edge.kind==='text' && edge.offset===offsets[0]) && {offset:offsets[0],rect:fieldRects.get(offsets[0])};
+        const local=componentGeometry(element,point,scrollbarAnchor?scrollbar:undefined,glyph?.rect ? [glyph]:undefined);
         if(!local)return null;
         const same=['x','y'].every(axis=>!precise && !gaps.includes(axis) || anchor.edges[axis].every((edge,index)=>{
             const match=local.edges[axis][index],collapsed=field && (axis==='x' ? field.left===field.right:field.top===field.bottom);

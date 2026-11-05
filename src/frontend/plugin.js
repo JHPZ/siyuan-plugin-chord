@@ -533,7 +533,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderCursors(animate) {
         const previousMeasurements=componentMeasurements;
-        componentMeasurements={scrollbars:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap()};
+        componentMeasurements={fields:new WeakMap(),scrollbars:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap()};
         try {
             const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
             if(picker && this.cursorLayer.showPopover){
