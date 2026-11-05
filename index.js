@@ -538,6 +538,7 @@ const COMPONENT_TEXT_SETTINGS=new Map([
     ['editor',['editor.plantUMLServePath']],
     ['file',['fileTree.docCreateSavePath','fileTree.docCreateTemplatePath','fileTree.refCreateSavePath']],
     ['flashcard',['flashcard.weights']],
+    ['ai',['ai.embedding.baseURL','ai.embedding.name','ai.rerank.endpoint','ai.rerank.name']],
     ['export',['export.blockRefTextLeft','export.blockRefTextRight','export.tagOpenMarker','export.tagCloseMarker','export.pdfFooter','export.pdfWatermarkStr','export.imageWatermarkStr','export.pdfWatermarkDesc','export.imageWatermarkDesc']]
 ]);
 const componentRenderTargets=new WeakMap();
@@ -626,8 +627,13 @@ function componentSourceField(element) {
     return element.matches('textarea') && popup && componentRenderTargets.get(popup)?.field===element && !!componentRenderTarget(popup);
 }
 
-function componentFontField(element) {
-    return element.matches('input.b3-select[readonly][data-menu="true"]') && element.type==='text' && element.closest('.config__tab-container')?.dataset.name==='appearance' && ['appearance.globalFontFamilies','editor.fontFamilies','editor.codeFontFamilies'].includes(element.id);
+function componentSelectField(element) {
+    if(!element.matches('input.b3-select[readonly][data-menu="true"]') || element.type!=='text')return false;
+    const section=element.closest('.config__tab-container');
+    if(section?.dataset.name==='appearance')return ['appearance.globalFontFamilies','editor.fontFamilies','editor.codeFontFamilies'].includes(element.id);
+    const group=element.getAttribute('data-group'),owner=element.closest('.config-item[data-type="aiModelPicker"]');
+    return section?.dataset.name==='ai' && element.getAttribute('data-type')==='groupedModelPicker' && ['editing','agent','imageGeneration'].includes(group) &&
+        owner?.id==='aiModelPickerBlock-'+group && owner.dataset.name===group && section.querySelectorAll('input[data-type="groupedModelPicker"][data-group="'+group+'"]').length===1;
 }
 
 function componentFontIdentity(element) {
@@ -669,7 +675,7 @@ function componentTextField(element) {
     const pdfNumber=element.matches('.pdf__outer input#pageNumber.toolbarField.pageNumber[type="number"]') && pdfModel(element);
     const settingField=element.matches('.config__tab-container[data-name="editor"] textarea.b3-text-field[id^="editor."]') || element.matches('input.b3-text-field[type="number"]') && COMPONENT_NUMBER_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
     const textSetting=element.matches('input.b3-text-field,textarea.b3-text-field') && ['text','textarea'].includes(element.type) && COMPONENT_TEXT_SETTINGS.get(element.closest('.config__tab-container')?.dataset.name)?.includes(element.id);
-    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting || componentFontField(element) || element.matches('input.b3-text-field[data-type="font-search"]') && element.type==='text' && !!element.closest(COMPONENT_FONT_MENU)) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
+    return ((element.matches('textarea.search__input,input[type="search"],input#searchAssetInput,input.switch-doc__search,input.search__label,.search__header input.b3-text-field,.config__panel .config__tab-head input.b3-text-field,.config__tab-container[data-name="bazaar"] input.config-bazaar__filter,.config__tab-container[data-name="keymap"] input:is(#keymapInput,#searchByKey)') || element.matches('.pdf__outer #findbar input#findInput') && !!pdfModel(element)) && ['text','search','textarea'].includes(element.type) || pdfNumber || settingField || textSetting || componentSelectField(element) || element.matches('input.b3-text-field[data-type="font-search"]') && element.type==='text' && !!element.closest(COMPONENT_FONT_MENU)) && element.ownerDocument.defaultView.getComputedStyle(element).getPropertyValue('-webkit-text-security')==='none';
 }
 
 function componentFieldText(field) {
@@ -1241,7 +1247,7 @@ function componentNearText(element,point,plane) {
 }
 
 function componentImageRect(image,plane) {
-    if(image.matches('select') || componentFontField(image))return componentSelectImage(image);
+    if(image.matches('select') || componentSelectField(image))return componentSelectImage(image);
     if(image.matches('.av__gallery-cover'))image=image.querySelector(':scope > img.av__gallery-img');
     if(!image || !visibleElement(image))return null;
     if(!image.matches('img') || !image.naturalWidth || !image.naturalHeight)return null;
@@ -1501,6 +1507,7 @@ function measureComponentScrollbar(element,point,parts) {
 }
 
 function componentGeometry(element,point,scrollbar=componentScrollbar(element,point),fieldText) {
+    if(element.matches('input,textarea') && ['text','search','number','email','url','tel','password','textarea'].includes(element.type) && !componentTextField(element))return null;
     const contains=rect=>point.x>=rect.left&&point.x<rect.right&&point.y>=rect.top&&point.y<rect.bottom;
     if(scrollbar?.areas.some(contains)){
         const part=Object.entries(scrollbar.parts).find(([,rect])=>contains(rect));if(!part)return null;
@@ -1509,7 +1516,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
     const parentPoint=point,textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     if(picker?.toLocal)point=picker.toLocal(point);
-    const onPicker=inside(picker?.bounds),select=(element.matches('select') || componentFontField(element)) && !onPicker;if(select && !componentTextField(element))return null;
+    const onPicker=inside(picker?.bounds),select=(element.matches('select') || componentSelectField(element)) && !onPicker;if(select && !componentTextField(element))return null;
     if(!onPicker)point=parentPoint;
     // Native scrollbar thumbs need their own geometry; a reserved gutter is never ordinary padding.
     if(onPicker && inside(picker.border) && !inside(picker.viewport))return null;
@@ -1636,7 +1643,7 @@ function resolveComponent(cursor,plugin) {
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
     const textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
-    const select=(element.matches('select') || componentFontField(element)) && !picker;
+    const select=(element.matches('select') || componentSelectField(element)) && !picker;
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || select && edge.kind==='image'))return null;
     const slider=element.matches('input[type="range"]'),range=slider ? componentRange(element):null;
@@ -1662,7 +1669,7 @@ function resolveComponent(cursor,plugin) {
     }
     if(box)Object.assign(point,box.toParent(point));
     if(!scrollbarAnchor&&componentScrollbar(element,point,false)?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom))return null;
-    const precise=scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field' || edge.kind==='field-viewport');
+    const precise=element.matches('input,textarea') || scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field' || edge.kind==='field-viewport');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
     if(precise || gaps.length){
         // Textarea text can scroll into padding, but remains clipped at the native viewport.

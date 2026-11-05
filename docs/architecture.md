@@ -169,7 +169,7 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 
 字段非字形留白先寻找最近文字行，再取该行水平方向最近的端点，重合端点按字符位置确定，避免依赖原生 caret 四舍五入顺序。测量副本末尾哨兵只在原文本为空或以换行结尾时参与候选，防止其取整后的零宽边界替代普通末尾字形；真实末尾空行仍可定位。字形内部命中保留原快速路径，候选端点线性扫描，不新增协议或缓存。
 
-公开设置文本通过 COMPONENT_TEXT_SETTINGS 按栏目和具体 ID 注册：editor.plantUMLServePath、file 栏目的 fileTree.docCreateSavePath/docCreateTemplatePath/refCreateSavePath、flashcard.weights，以及上述九项 export 字段，共 14 项。沿用公开字段只读字素测量及本端滚动裁剪，不增加协议字段；原生输入未写 type 时仍按 element.type 判断。条件出现的 shorthandSavePath 和未知动态字段尚未验收，不由此表自动放行。
+公开设置文本通过 COMPONENT_TEXT_SETTINGS 按栏目和具体 ID 注册：editor.plantUMLServePath、file 栏目的 fileTree.docCreateSavePath/docCreateTemplatePath/refCreateSavePath、flashcard.weights，ai 栏目的 ai.embedding.baseURL/name、ai.rerank.endpoint/name，以及上述九项 export 字段，共 18 项。沿用公开字段只读字素测量及本端滚动裁剪，不增加协议字段；原生输入未写 type 时仍按 element.type 判断。条件出现的 shorthandSavePath 和未知动态字段尚未验收，不由此表自动放行。
 
 三个原生字体只读 input.b3-select 限定 appearance 栏目、具体 ID（appearance.globalFontFamilies、editor.fontFamilies、editor.codeFontFamilies）、readonly 与 data-menu=true；文字复用公开字段测量，背景 SVG 箭头复用收起下拉框几何，输入文字仍按真实内容区裁剪。原生字体菜单仅识别三个 appearanceFontFamily-* 名称及 text 类型 font-search。列表行与原生已选字体芯片使用有界字体族和 1–1000 字重生成身份哈希，配置组保留 data-font-config-key；不使用列表位置或 data-index 区分字体。重复身份和无效元数据的路径拒绝解析，mark 搜索高亮不进入组件身份。协议不增加字段，也不传字体族明文。
 
@@ -178,3 +178,5 @@ picker 锚点测量的条件规则按文档持有，测量结束仅移除临时�
 组件路径与留白边界在 renderCursors 的当帧 measurements 中共用 parent → 身份 → children 分组，componentStep 与 componentChild 使用同一分组。帧外保持即时计算；帧结束和异常退出均恢复先前测量上下文，不保留跨帧身份，也不改变重复数量、索引或字体歧义校验。
 
 界面采集统一进入 captureComponent，移除 surfaces.js 的 v2 uiAnchor/resolveUIAnchor 与本地整框往返校验。组件 geometry 依据字形、图像、子控件及相邻留白边界重新测量接收端；v2 信封仍可由内核解码以兼容历史报文，但前端不绘制旧比例位置。文件树 li 使用 notebook ID + row ID 构成 tree 作用域；命名控件新增 control 作用域，仅携带 16 位身份哈希。页签按页面及必要标题、dock 按类型、导航按栏目、顶栏/状态栏按入口属性、工具栏按 ID、当前窗口页签动作按 data-type 匹配，不把外围布局或窗口 UUID 带入控件路径。文件树基础作用域仍使用原生 dock 模型；文档内部控件继续使用所属文档作用域。接收端作用域必须可见且唯一，后续路径、文本哈希、隐私、遮挡与命中核验保持生效。所有客户端及内核应一同升级；旧客户端不会解析新的 control 作用域。未注册文本输入、其他原生输入外观及移动端独有控件仍需逐项校准，不能由本次统一入口推导全组件精度。
+
+AI 模型只读框复用 componentSelectField 的字体选择框几何，要求 ai 栏目、text 类型、b3-select、readonly、data-menu=true，以及 groupedModelPicker 的 editing/agent/imageGeneration 分组。所属 config-item 的 aiModelPicker 类型、aiModelPickerBlock-分组 ID、data-name 与分组必须一致，栏目中同组输入必须唯一。私有和文本遮掩继续在读取值前拒绝。未准入的 text/search/number/email/url/tel/password/textarea 在 componentGeometry 中返回 null；接收端所有 input/textarea 必须重新核验本地几何，伪造 self 整框边界也不能绕过。未校准字段会暂时隐藏光标，其公开字段需要后续逐项准入，不能据此声称所有组件已完成。
