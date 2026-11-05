@@ -1049,7 +1049,8 @@ function componentNearText(element,point,plane) {
     const hit=candidates.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom);
     if(hit)return [hit];
     const distance=rect=>Math.max(rect.top-point.y,point.y-rect.bottom,0),nearest=Math.min(...candidates.map(item=>distance(item.rect)));
-    return candidates.filter(item=>distance(item.rect)===nearest);
+    // Inverse projection can separate otherwise aligned glyph rows by tiny roundoff.
+    return candidates.filter(item=>distance(item.rect)<=nearest+(plane ? .001:0));
 }
 
 function componentImageRect(image,plane) {
@@ -1078,6 +1079,32 @@ function componentPickerTransformed(css) {
     return !matrix.is2D || matrix.a<=0 || matrix.d<=0 || Math.abs(matrix.b)>1e-10 || Math.abs(matrix.c)>1e-10 || css.rotate!=='none' || css.scale!=='none' && css.scale.split(' ').some(value=>!(parseFloat(value)>0));
 }
 
+function componentPlaneRects(root,plane,origin) {
+    const doc=root.ownerDocument,view=doc.defaultView,rects=new Map(),marker=parent=>{const m=doc.createElement('div');m.className='collab-text-measure';m.inert=true;m.setAttribute('aria-hidden','true');m.style.cssText='all:initial!important;display:block!important;position:absolute!important;inset:auto!important;left:0!important;top:0!important;width:0!important;height:0!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;';parent.append(m);return m;};
+    return target=>{
+        if(target===root)return {...plane.bounds,width:plane.bounds.right-plane.bounds.left,height:plane.bounds.bottom-plane.bounds.top};
+        if(rects.has(target))return rects.get(target);
+        let zoom=1,transformed=false;for(let e=target;e&&e!==root;e=e.parentElement){const s=view.getComputedStyle(e);if(s.display!=='inline'||e.namespaceURI!=='http://www.w3.org/1999/xhtml')transformed ||= s.transform!=='none'||s.rotate!=='none'||s.scale!=='none'||s.translate!=='none';zoom*=parseFloat(s.zoom)||1;}
+        if(transformed){const box=frameBox(target,root,plane);if(!box)return null;const points=[[0,0],[box.bounds.right,0],[0,box.bounds.bottom],[box.bounds.right,box.bounds.bottom]].map(([x,y])=>plane.toLocal(box.toParent({x,y}))),r={left:Math.min(...points.map(p=>p.x)),right:Math.max(...points.map(p=>p.x)),top:Math.min(...points.map(p=>p.y)),bottom:Math.max(...points.map(p=>p.y))};r.width=r.right-r.left;r.height=r.bottom-r.top;rects.set(target,r);return r;}
+        const native=target.getBoundingClientRect(),css=view.getComputedStyle(target),n=name=>parseFloat(css[name]),width=(n('width')+(css.boxSizing==='border-box'?0:n('paddingLeft')+n('paddingRight')+n('borderLeftWidth')+n('borderRightWidth')))*zoom,height=(n('height')+(css.boxSizing==='border-box'?0:n('paddingTop')+n('paddingBottom')+n('borderTopWidth')+n('borderBottomWidth')))*zoom,{a,b,c,d}=plane;
+        if(width>0&&height>0&&Math.abs(native.width-Math.abs(a)*width-Math.abs(c)*height)<.01&&Math.abs(native.height-Math.abs(b)*width-Math.abs(d)*height)<.01){const center=plane.toLocal({x:(native.left+native.right)/2,y:(native.top+native.bottom)/2}),r={left:center.x-width/2,right:center.x+width/2,top:center.y-height/2,bottom:center.y+height/2,width,height};rects.set(target,r);return r;}
+        const indicator=marker(target),rule=doc.createElement('style');indicator.classList.add('collab-plane-box');rule.className='collab-text-measure';const names=view.getComputedStyle(target).anchorName;rule.textContent='*:has(> .collab-plane-box){anchor-name:'+(names==='none' ? '':names+', ')+'--collab-plane-target!important}';doc.head.append(rule);
+        const zero=origin?null:marker(root),probe=marker(root);probe.style.cssText+='left:anchor(--collab-plane-target left,-1234567px)!important;top:anchor(--collab-plane-target top,-1234567px)!important;width:anchor-size(--collab-plane-target width,0px)!important;height:anchor-size(--collab-plane-target height,0px)!important;';
+        try{const originPoint=origin||plane.toLocal(zero.getBoundingClientRect()),s=view.getComputedStyle(probe),left=parseFloat(s.left),top=parseFloat(s.top),width=parseFloat(s.width),height=parseFloat(s.height),during=target.getBoundingClientRect();if(left===-1234567||top===-1234567||![left,top,width,height].every(Number.isFinite)||width<=0||height<=0||['left','right','top','bottom'].some(k=>Math.abs(native[k]-during[k])>.001))return null;const r={left:originPoint.x+left,top:originPoint.y+top,right:originPoint.x+left+width,bottom:originPoint.y+top+height,width,height};rects.set(target,r);return r;}finally{probe.remove();zero?.remove();indicator.remove();rule.remove();}
+    };
+}
+
+function componentPickerElementPlane(element) {
+    const select=element.closest('select:open');if(!select||select===element)return undefined;
+    const view=element.ownerDocument.defaultView,css=view.getComputedStyle(select,'::picker(select)');let own=false;
+    for(let e=element;e&&e!==select;e=e.parentElement){const s=view.getComputedStyle(e);if(s.display!=='inline'||e.namespaceURI!=='http://www.w3.org/1999/xhtml')own ||= s.transform!=='none'||s.rotate!=='none'||s.scale!=='none'||s.translate!=='none';}
+    if(!own&&!componentPickerTransformed(css))return undefined;
+    const picker=componentPicker(select);if(!picker)return null;if(!own)return picker.toLocal?picker:null;
+    const size=axis=>parseFloat(css[axis])+(css.boxSizing==='border-box'?0:(axis==='width'?['Left','Right']:['Top','Bottom']).reduce((sum,side)=>sum+parseFloat(css['padding'+side])+parseFloat(css['border'+side+'Width']),0)),basis=picker.toLocal?picker:{a:(picker.bounds.right-picker.bounds.left)/size('width'),b:0,c:0,d:(picker.bounds.bottom-picker.bounds.top)/size('height')};
+    for(let root=element;root&&root!==select;root=root.parentElement){const style=view.getComputedStyle(root);if(style.display==='inline'&&root.namespaceURI==='http://www.w3.org/1999/xhtml')continue;const plane=frameBox(root,select,basis);if(!plane)return null;plane.rect=componentPlaneRects(root,plane);return plane;}
+    return null;
+}
+
 function componentPickerPlane(element,css) {
     const doc=element.ownerDocument,view=doc.defaultView,children=componentChildren(element).filter(child=>(child!==element.firstElementChild || !child.matches('button'))&&child.getBoundingClientRect().width&&child.getBoundingClientRect().height),before=children.map(child=>child.getBoundingClientRect()),style=doc.createElement('style'),markers=[];
     const marker=(position,rules,parent=element)=>{const m=doc.createElement('div');m.className='collab-text-measure';m.inert=true;m.setAttribute('aria-hidden','true');m.style.cssText='all:initial!important;display:block!important;position:'+position+'!important;inset:auto!important;margin:0!important;padding:0!important;border:0!important;visibility:hidden!important;pointer-events:none!important;'+rules;parent.append(m);return m;};
@@ -1090,17 +1117,7 @@ function componentPickerPlane(element,css) {
         const points=markers.slice(2).map(m=>m.getBoundingClientRect()),portCSS=view.getComputedStyle(port),pw=parseFloat(portCSS.width),ph=parseFloat(portCSS.height),width=n('width')+(css.boxSizing==='border-box' ? 0:n('borderLeftWidth')+n('borderRightWidth')+n('paddingLeft')+n('paddingRight')),height=n('height')+(css.boxSizing==='border-box' ? 0:n('borderTopWidth')+n('borderBottomWidth')+n('paddingTop')+n('paddingBottom'));
         const a=(points[1].x-points[0].x)/pw,b=(points[1].y-points[0].y)/pw,c=(points[2].x-points[0].x)/ph,d=(points[2].y-points[0].y)/ph,det=a*d-b*c,rect=top.getBoundingClientRect();
         if(![a,b,c,d,det,width,height,pw,ph].every(Number.isFinite) || Math.abs(det)<1e-10 || Math.min(width,height,pw,ph)<=0 || Math.hypot(points[3].x-points[1].x-points[2].x+points[0].x,points[3].y-points[1].y-points[2].y+points[0].y)>.01 || Math.abs(rect.width-Math.abs(a)*width-Math.abs(c)*height)>.1 || Math.abs(rect.height-Math.abs(b)*width-Math.abs(d)*height)>.1)return null;
-        const x=rect.left-Math.min(0,a*width,c*height,a*width+c*height),y=rect.top-Math.min(0,b*width,d*height,b*width+d*height),toLocal=p=>({x:(d*(p.x-x)-c*(p.y-y))/det,y:(a*(p.y-y)-b*(p.x-x))/det}),toParent=p=>({x:x+a*p.x+c*p.y,y:y+b*p.x+d*p.y}),origin=toLocal(points[0]),rects=new Map();
-        const localRect=target=>{
-            if(rects.has(target))return rects.get(target);
-            // shortcut: descendants with their own transforms need a separate plane; do not reuse the picker's axes.
-            let zoom=1;for(let e=target;e&&e!==element;e=e.parentElement){const s=view.getComputedStyle(e);if(s.transform!=='none'||s.rotate!=='none'||s.scale!=='none'||s.translate!=='none')return null;zoom*=parseFloat(s.zoom)||1;}
-            const native=target.getBoundingClientRect(),css=view.getComputedStyle(target),n=name=>parseFloat(css[name]),width=(n('width')+(css.boxSizing==='border-box'?0:n('paddingLeft')+n('paddingRight')+n('borderLeftWidth')+n('borderRightWidth')))*zoom,height=(n('height')+(css.boxSizing==='border-box'?0:n('paddingTop')+n('paddingBottom')+n('borderTopWidth')+n('borderBottomWidth')))*zoom;
-            if(width>0&&height>0&&Math.abs(native.width-Math.abs(a)*width-Math.abs(c)*height)<.01&&Math.abs(native.height-Math.abs(b)*width-Math.abs(d)*height)<.01){const center=toLocal({x:(native.left+native.right)/2,y:(native.top+native.bottom)/2}),r={left:center.x-width/2,right:center.x+width/2,top:center.y-height/2,bottom:center.y+height/2,width,height};rects.set(target,r);return r;}
-            const original=target.getBoundingClientRect(),indicator=marker('absolute','left:0!important;top:0!important;width:0!important;height:0!important;',target),rule=doc.createElement('style');indicator.classList.add('collab-plane-box');rule.className='collab-text-measure';const names=view.getComputedStyle(target).anchorName;rule.textContent='*:has(> .collab-plane-box){anchor-name:'+(names==='none' ? '':names+', ')+'--collab-plane-target!important}';doc.head.append(rule);
-            const probe=marker('absolute','left:anchor(--collab-plane-target left,-1234567px)!important;top:anchor(--collab-plane-target top,-1234567px)!important;width:anchor-size(--collab-plane-target width,0px)!important;height:anchor-size(--collab-plane-target height,0px)!important;');
-            try{const s=view.getComputedStyle(probe),left=parseFloat(s.left),top=parseFloat(s.top),width=parseFloat(s.width),height=parseFloat(s.height),during=target.getBoundingClientRect();if(left===-1234567||top===-1234567||![left,top,width,height].every(Number.isFinite)||width<=0||height<=0||['left','right','top','bottom'].some(k=>Math.abs(original[k]-during[k])>.001))return null;const r={left:origin.x+left,top:origin.y+top,right:origin.x+left+width,bottom:origin.y+top+height,width,height};rects.set(target,r);return r;}finally{probe.remove();indicator.remove();rule.remove();}
-        };
+        const x=rect.left-Math.min(0,a*width,c*height,a*width+c*height),y=rect.top-Math.min(0,b*width,d*height,b*width+d*height),toLocal=p=>({x:(d*(p.x-x)-c*(p.y-y))/det,y:(a*(p.y-y)-b*(p.x-x))/det}),toParent=p=>({x:x+a*p.x+c*p.y,y:y+b*p.x+d*p.y}),origin=toLocal(points[0]),localRect=componentPlaneRects(element,{bounds:{left:0,top:0,right:width,bottom:height},a,b,c,d,toLocal,toParent},origin);
         for(const child of children)if(!localRect(child))return null;
         if(children.some((child,index)=>{const r=child.getBoundingClientRect();return ['left','right','top','bottom'].some(k=>Math.abs(r[k]-before[index][k])>.001);}))return null;
         const horizontal=css.writingMode==='horizontal-tb',scrollbarX=css.scrollbarWidth==='none' ? 0:Math.max(0,width-n('borderLeftWidth')-n('borderRightWidth')-pw),scrollbarY=css.scrollbarWidth==='none' ? 0:Math.max(0,height-n('borderTopWidth')-n('borderBottomWidth')-ph),both=css.scrollbarGutter.includes('both-edges'),gl=horizontal ? both ? scrollbarX/2:css.direction==='rtl' ? scrollbarX:0:0,gt=!horizontal&&both ? scrollbarY/2:0;
@@ -1158,14 +1175,14 @@ function componentSelectImage(element) {
     return {left:rect.left+x*sx,right:rect.left+(x+width)*sx,top:rect.top+y*sy,bottom:rect.top+(y+height)*sy,width:width*sx,height:height*sy};
 }
 
-function frameBox(frame) {
+function frameBox(frame,root,basis) {
     const view=frame.ownerDocument.defaultView,style=view.getComputedStyle(frame),rect=frame.getBoundingClientRect();
     const inset=side=>parseFloat(style['border'+side+'Width'])+parseFloat(style['padding'+side]);
     const left=inset('Left'),top=inset('Top'),right=inset('Right'),bottom=inset('Bottom');
     const width=parseFloat(style.width)+(style.boxSizing==='border-box' ? 0:left+right),height=parseFloat(style.height)+(style.boxSizing==='border-box' ? 0:top+bottom);
     if(![width,height,left,top,right,bottom].every(Number.isFinite) || width<=left+right || height<=top+bottom)return null;
     let matrix=new view.DOMMatrix();
-    for(let element=frame;element;element=element.parentElement){
+    for(let element=frame;element&&element!==root;element=element.parentElement){
         const css=view.getComputedStyle(element);
         if(element!==frame && css.display==='inline' && element.namespaceURI==='http://www.w3.org/1999/xhtml')continue;
         // shortcut: perspective needs a projective box map; reject it until that map is available.
@@ -1187,13 +1204,14 @@ function frameBox(frame) {
         if(!local.is2D)return null;
         matrix=local.multiply(matrix);
     }
+    if(basis)matrix=new view.DOMMatrix([basis.a,basis.b,basis.c,basis.d,0,0]).multiply(matrix);
     let {a,b,c,d}=matrix;
     const sx=rect.width/(Math.abs(a)*width+Math.abs(c)*height),sy=rect.height/(Math.abs(b)*width+Math.abs(d)*height);
     a*=sx;c*=sx;b*=sy;d*=sy;
     const determinant=a*d-b*c;
     if(![a,b,c,d,determinant].every(Number.isFinite) || Math.abs(determinant)<1e-10)return null;
     const x=rect.left-Math.min(0,a*width,c*height,a*width+c*height),y=rect.top-Math.min(0,b*width,d*height,b*width+d*height);
-    return {bounds:{left:0,top:0,right:width,bottom:height},content:{left,top,right:width-right,bottom:height-bottom},
+    return {a,b,c,d,bounds:{left:0,top:0,right:width,bottom:height},content:{left,top,right:width-right,bottom:height-bottom},
         toLocal:point=>({x:(d*(point.x-x)-c*(point.y-y))/determinant,y:(a*(point.y-y)-b*(point.x-x))/determinant}),
         toParent:point=>({x:x+a*point.x+c*point.y,y:y+b*point.x+d*point.y})};
 }
@@ -1212,7 +1230,7 @@ function frameToParent(frame,point) {
 function componentBox(hit,point) {
     if(hit.matches('select:open'))return hit;
     if(hit.matches('mark') && hit.parentElement.matches(COMPONENT_HIGHLIGHT_TEXT))hit=hit.parentElement;
-    if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=hit.closest(CURSOR_CONTROL) || hit.closest('svg') || hit;
+    if(hit.namespaceURI==='http://www.w3.org/2000/svg')hit=(hit.closest('select:open option') ? hit.closest('svg'):hit.closest(CURSOR_CONTROL) || hit.closest('svg')) || hit;
     if(hit.matches('.b3-list-item__arrow') && componentTreeRegion(hit))hit=hit.closest('.b3-list-item__toggle') || hit;
     // Overflowing option text still belongs to the native option hit by the browser.
     if(hit.closest('select:open option'))return hit;
@@ -1232,7 +1250,7 @@ function componentPaintRect(element) {
 
 function componentGeometry(element,point) {
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
-    const parentPoint=point,parentSelect=!element.matches('select')&&element.closest('select:open'),projected=parentSelect&&componentPickerTransformed(element.ownerDocument.defaultView.getComputedStyle(parentSelect,'::picker(select)')),textPlane=projected&&componentPicker(parentSelect);if(projected&&(!textPlane?.toLocal || element.textContent && typeof Intl.Segmenter!=='function'))return null;
+    const parentPoint=point,textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     if(picker?.toLocal)point=picker.toLocal(point);
     const onPicker=inside(picker?.bounds),select=element.matches('select') && !onPicker;if(select && !componentTextField(element))return null;
     if(!onPicker)point=parentPoint;
@@ -1356,7 +1374,7 @@ function resolveComponent(cursor,plugin) {
     // A grid crossing can be bounded entirely by option edges.
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
-    const parentSelect=!element.matches('select')&&element.closest('select:open'),projected=parentSelect&&componentPickerTransformed(element.ownerDocument.defaultView.getComputedStyle(parentSelect,'::picker(select)')),textPlane=projected&&componentPicker(parentSelect);if(projected&&(!textPlane?.toLocal || element.textContent && typeof Intl.Segmenter!=='function'))return null;
+    const textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     const select=element.matches('select') && !picker;
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || select && edge.kind==='image'))return null;
