@@ -262,20 +262,20 @@ function resolveSelection(selection) {
     return ranges;
 }
 
-function validEditing(editing) {
-    return editing && (editing.region===undefined || validRegion(editing.region)) && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
-}
-
 function captureEditing() {
     if (document.hidden || !document.hasFocus?.()) return null;
     const active = document.activeElement;
     if (!active?.isContentEditable || !active.closest('.protyle-wysiwyg')) return null;
     const node = document.getSelection()?.focusNode;
     const element = node?.nodeType === 3 ? node.parentElement : node;
-    const block = element?.closest?.('.protyle-wysiwyg [data-node-id]');
-    if (!block || block.closest('.fn__none') || !active.contains(node)) return null;
+    const root=active.closest('.protyle-wysiwyg');
+    const selected=[...root.querySelectorAll('.protyle-wysiwyg--select[data-node-id]')]
+        .filter(block=>!block.closest('.fn__none') && !block.parentElement.closest('.protyle-wysiwyg--select'));
+    const block = selected.find(block=>block.contains(node)) || selected.at(-1) || element?.closest?.('.protyle-wysiwyg [data-node-id]');
+    if (!block || block.closest('.fn__none') || !active.contains(node) && !selected.length) return null;
     const editing = { blockId: block.getAttribute('data-node-id'),
-        documentId: editorDocumentId(block.closest('.protyle')) };
+        documentId: editorDocumentId(block.closest('.protyle')),
+        ...(selected.length>1 ? {blockIds:selected.map(block=>block.getAttribute('data-node-id'))}:{}) };
     const region=cursorRegion(block);
     return validEditing(editing) && region ? {...editing,region}:null;
 }

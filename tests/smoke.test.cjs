@@ -583,6 +583,20 @@ test("text selections share the cursor channel without claiming locks; validate,
     assert.equal((await snapshot()).selections.length,0);
 });
 
+test('multiblock editing validates the complete set, copies only IDs and retains legacy focused blocks',async()=>{
+    const kernel=await createKernel(),heartbeat=kernel.methods.get('presenceHeartbeat'),update=kernel.methods.get('editingUpdate'),snapshot=kernel.methods.get('cursorSnapshot');
+    const blockIds=['20261106173000-block01','20261106173000-block02','20261106173000-block03'],editing={documentId:'20261106173000-doc0001',blockId:blockIds[2],blockIds};
+    await heartbeat('multi-peer',{generation:1});await update('multi-peer',1,1,{...editing,secret:'not shared'});
+    let value=(await snapshot()).editing[0].editing;assert.deepEqual(JSON.parse(JSON.stringify(value)),editing);assert(!JSON.stringify(value).includes('secret'));
+    blockIds.pop();assert.equal((await snapshot()).editing[0].editing.blockIds.length,3,'caller mutated stored selection');
+    for(const ids of [null,[],{},['bad'],['20261106173000-block01'],[editing.blockId,editing.blockId],[editing.blockId,7],Array(10001).fill(editing.blockId)])await assert.rejects(update('multi-peer',1,2,{...editing,blockIds:ids}),/Invalid editing activity/);
+    const large=Array.from({length:10000},(_,i)=>'20261106173000-'+String(i).padStart(7,'0'));
+    await update('multi-peer',1,2,{...editing,blockId:large[9999],blockIds:large});assert.equal((await snapshot()).editing[0].editing.blockIds.length,10000);
+    await update('multi-peer',1,3,{documentId:editing.documentId,blockId:editing.blockId});assert(!('blockIds' in (await snapshot()).editing[0].editing));
+    await update('multi-peer',1,4,null);assert.equal((await snapshot()).editing.length,0);
+    const frontend=await createFrontend(kernel);assert.throws(()=>frontend.plugin.updateCursors({tick:10,cursors:[],editing:[{name:'peer',hue:210,editing:{...editing,blockIds:['bad']}}]}),/Invalid editing response/);await frontend.plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
 test('editing activity is nonexclusive, validated, ordered and cleared independently of presence', async () => {
     const kernel=await createKernel(), heartbeat=kernel.methods.get('presenceHeartbeat'), update=kernel.methods.get('editingUpdate');
     const snapshot=kernel.methods.get('cursorSnapshot'), flushActivity=[...kernel.timers.values()].find(timer=>timer.delay===100).callback;

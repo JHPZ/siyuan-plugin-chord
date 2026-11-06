@@ -134,3 +134,11 @@ function cleanComponentAnchor(value) {
 function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
 }
+
+function validEditing(editing) {
+    return editing && (editing.region===undefined || validRegion(editing.region)) &&
+        [editing.documentId,editing.blockId].every(id=>typeof id==='string' && COLLAB_ID.test(id)) &&
+        (editing.blockIds===undefined || Array.isArray(editing.blockIds) && editing.blockIds.length>0 && editing.blockIds.length<=10000 &&
+            editing.blockIds.every(id=>typeof id==='string' && COLLAB_ID.test(id)) &&
+            new Set(editing.blockIds).size===editing.blockIds.length && editing.blockIds.includes(editing.blockId));
+}

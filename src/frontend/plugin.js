@@ -606,8 +606,6 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (!visible.has(name)) {
                     marker.remove();
                     this.cursorMarkers.delete(name);
-                    const notices=this.shortcutNotices.get(name);
-                    if(notices){for(const notice of notices){clearTimeout(notice.timer);notice.element.remove();}this.shortcutNotices.delete(name);}
                 }
             }
             this.renderSelections();
@@ -620,23 +618,31 @@ module.exports = class CollaborationPlugin extends Plugin {
         const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
-            const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, client.editing.blockId]);
+            const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, [...(client.editing.blockIds || [client.editing.blockId])].sort()]);
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(client);
         }
-        for (const clients of groups.values()) {
+        const blockMaps=new Map();
+        for (const [key,clients] of groups) {
             const { editing, hue } = clients[0];
-            for (const block of document.querySelectorAll('.protyle-wysiwyg [data-node-id="' + editing.blockId + '"]')) {
+            for (const editor of document.querySelectorAll('.protyle')) {
                 // Modal dialogs hide the background; other floating UI occludes the editor's native layer.
-                if (dialog && !dialog.contains(block)) continue;
-                const editor = block.closest('.protyle');
-                if (!visibleElement(block) || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
-                const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();
-                const left = Math.max(rect.left, clip.left, 0), top = Math.max(rect.top, clip.top, 0);
-                const right = Math.min(rect.right, clip.right, window.innerWidth), bottom = Math.min(rect.bottom, clip.bottom, window.innerHeight);
-                if (right <= left || bottom <= top) continue;
-                visible.add(block);
-                let marker = this.editingMarkers.get(block);
+                if (dialog && !dialog.contains(editor)) continue;
+                if (!visibleElement(editor) || !matchesRegion(editor,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
+                if(!blockMaps.has(editor))blockMaps.set(editor,new Map([...editor.querySelectorAll('.protyle-wysiwyg [data-node-id]')].filter(block=>block.closest('.protyle')===editor).map(block=>[block.getAttribute('data-node-id'),block])));
+                const blocks=blockMaps.get(editor),clip = (editor.querySelector('.protyle-content') || editor).getBoundingClientRect();
+                let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity;
+                for(const id of editing.blockIds || [editing.blockId]){
+                    const block=blocks.get(id);
+                    if(!block || !visibleElement(block))continue;
+                    const rect=block.getBoundingClientRect(),x1=Math.max(rect.left,clip.left,0),y1=Math.max(rect.top,clip.top,0),x2=Math.min(rect.right,clip.right,window.innerWidth),y2=Math.min(rect.bottom,clip.bottom,window.innerHeight);
+                    if(x2<=x1 || y2<=y1)continue;
+                    left=Math.min(left,x1);top=Math.min(top,y1);right=Math.max(right,x2);bottom=Math.max(bottom,y2);
+                }
+                if (!Number.isFinite(left)) continue;
+                let markers=this.editingMarkers.get(editor);
+                if(!markers){markers=new Map();this.editingMarkers.set(editor,markers);}
+                let marker = markers.get(key);
                 if (!marker) {
                     marker = document.createElement('div');
                     marker.className = 'collab-editing';
@@ -647,19 +653,23 @@ module.exports = class CollaborationPlugin extends Plugin {
                         editor.append(layer);this.editingLayers.set(editor,layer);
                     }
                     layer.append(marker);
-                    this.editingMarkers.set(block, marker);
+                    markers.set(key, marker);
                 }
+                visible.add(marker);
                 marker.firstElementChild.textContent = this.i18n.editingNames.replace('${names}', clients.map((client) => client.name).join('、'));
                 marker.classList.toggle('collab-editing--inset', top - 22 < Math.max(clip.top, 0));
                 marker.style.setProperty('--collab-editing-hue', String(hue));
                 const layer=marker.parentElement, origin=layer.getBoundingClientRect();
-                const scaleX=origin.width/(layer.clientWidth || origin.width),scaleY=origin.height/(layer.clientHeight || origin.height);
+                const style=getComputedStyle(layer),scaleX=origin.width/(parseFloat(style.width) || origin.width),scaleY=origin.height/(parseFloat(style.height) || origin.height);
                 marker.style.transform = 'translate3d(' + (left-origin.left)/scaleX + 'px,' + (top-origin.top)/scaleY + 'px,0)';
                 marker.style.width = (right - left)/scaleX + 'px';
                 marker.style.height = (bottom - top)/scaleY + 'px';
             }
         }
-        for (const [block, marker] of this.editingMarkers) if (!visible.has(block)) { marker.remove(); this.editingMarkers.delete(block); }
+        for (const [editor,markers] of this.editingMarkers) {
+            for(const [key,marker] of markers)if(!visible.has(marker)){marker.remove();markers.delete(key);}
+            if(!markers.size)this.editingMarkers.delete(editor);
+        }
         for(const [editor,layer] of this.editingLayers)if(!layer.childElementCount || !editor.isConnected){layer.remove();this.editingLayers.delete(editor);}
     }
 

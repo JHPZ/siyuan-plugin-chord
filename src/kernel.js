@@ -51,8 +51,10 @@ function normalizeSelection(value) {
 
 function normalizeEditing(value) {
     if (value === null) return null;
-    if (!value || ![value.documentId, value.blockId].every((id) => typeof id === 'string' && BLOCK_ID.test(id))) throw new Error("Invalid editing activity");
-    return { ...(value.region!==undefined ? {region:cleanRegion(value.region)}:{}), documentId: value.documentId, blockId: value.blockId };
+    const region=value?.region!==undefined ? cleanRegion(value.region):undefined;
+    if (!validEditing(value)) throw new Error("Invalid editing activity");
+    return { ...(region ? {region}:{}), documentId: value.documentId, blockId: value.blockId,
+        ...(value.blockIds!==undefined ? {blockIds:[...value.blockIds]}:{}) };
 }
 
 function cursorSnapshot() {
@@ -223,7 +225,7 @@ plugin.lifecycle.onload = async () => {
         client.editing = editing;
         client.editingSeen = Date.now();
         return true;
-    }, "Share a focused block; never reserve it or restrict editing.");
+    }, "Share focused or selected blocks; never reserve them or restrict editing.");
     await rpc.bind('shortcut', async (id,generation,sequence,value) => {
         validateSession(id);validateGeneration(generation);
         if (!Number.isSafeInteger(sequence) || sequence<1 || !validShortcut(value)) throw new Error('Invalid shortcut');

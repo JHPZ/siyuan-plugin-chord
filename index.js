@@ -136,6 +136,14 @@ function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
 }
 
+function validEditing(editing) {
+    return editing && (editing.region===undefined || validRegion(editing.region)) &&
+        [editing.documentId,editing.blockId].every(id=>typeof id==='string' && COLLAB_ID.test(id)) &&
+        (editing.blockIds===undefined || Array.isArray(editing.blockIds) && editing.blockIds.length>0 && editing.blockIds.length<=10000 &&
+            editing.blockIds.every(id=>typeof id==='string' && COLLAB_ID.test(id)) &&
+            new Set(editing.blockIds).size===editing.blockIds.length && editing.blockIds.includes(editing.blockId));
+}
+
 const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getAllTabs, getModelByDockType, globalCommand } = require("siyuan");
 const PRESENCE_TIMEOUT = 90000;
 const DOCUMENT_ID = /^\d{14}-[a-z0-9]{7}$/;
@@ -400,20 +408,20 @@ function resolveSelection(selection) {
     return ranges;
 }
 
-function validEditing(editing) {
-    return editing && (editing.region===undefined || validRegion(editing.region)) && [editing.documentId, editing.blockId].every((id) => typeof id === 'string' && DOCUMENT_ID.test(id));
-}
-
 function captureEditing() {
     if (document.hidden || !document.hasFocus?.()) return null;
     const active = document.activeElement;
     if (!active?.isContentEditable || !active.closest('.protyle-wysiwyg')) return null;
     const node = document.getSelection()?.focusNode;
     const element = node?.nodeType === 3 ? node.parentElement : node;
-    const block = element?.closest?.('.protyle-wysiwyg [data-node-id]');
-    if (!block || block.closest('.fn__none') || !active.contains(node)) return null;
+    const root=active.closest('.protyle-wysiwyg');
+    const selected=[...root.querySelectorAll('.protyle-wysiwyg--select[data-node-id]')]
+        .filter(block=>!block.closest('.fn__none') && !block.parentElement.closest('.protyle-wysiwyg--select'));
+    const block = selected.find(block=>block.contains(node)) || selected.at(-1) || element?.closest?.('.protyle-wysiwyg [data-node-id]');
+    if (!block || block.closest('.fn__none') || !active.contains(node) && !selected.length) return null;
     const editing = { blockId: block.getAttribute('data-node-id'),
-        documentId: editorDocumentId(block.closest('.protyle')) };
+        documentId: editorDocumentId(block.closest('.protyle')),
+        ...(selected.length>1 ? {blockIds:selected.map(block=>block.getAttribute('data-node-id'))}:{}) };
     const region=cursorRegion(block);
     return validEditing(editing) && region ? {...editing,region}:null;
 }
@@ -2880,8 +2888,6 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (!visible.has(name)) {
                     marker.remove();
                     this.cursorMarkers.delete(name);
-                    const notices=this.shortcutNotices.get(name);
-                    if(notices){for(const notice of notices){clearTimeout(notice.timer);notice.element.remove();}this.shortcutNotices.delete(name);}
                 }
             }
             this.renderSelections();
@@ -2894,23 +2900,31 @@ module.exports = class CollaborationPlugin extends Plugin {
         const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
         if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
-            const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, client.editing.blockId]);
+            const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, [...(client.editing.blockIds || [client.editing.blockId])].sort()]);
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key).push(client);
         }
-        for (const clients of groups.values()) {
+        const blockMaps=new Map();
+        for (const [key,clients] of groups) {
             const { editing, hue } = clients[0];
-            for (const block of document.querySelectorAll('.protyle-wysiwyg [data-node-id="' + editing.blockId + '"]')) {
+            for (const editor of document.querySelectorAll('.protyle')) {
                 // Modal dialogs hide the background; other floating UI occludes the editor's native layer.
-                if (dialog && !dialog.contains(block)) continue;
-                const editor = block.closest('.protyle');
-                if (!visibleElement(block) || !matchesRegion(block,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
-                const rect = block.getBoundingClientRect(), clip = (block.closest('.protyle-content') || editor).getBoundingClientRect();
-                const left = Math.max(rect.left, clip.left, 0), top = Math.max(rect.top, clip.top, 0);
-                const right = Math.min(rect.right, clip.right, window.innerWidth), bottom = Math.min(rect.bottom, clip.bottom, window.innerHeight);
-                if (right <= left || bottom <= top) continue;
-                visible.add(block);
-                let marker = this.editingMarkers.get(block);
+                if (dialog && !dialog.contains(editor)) continue;
+                if (!visibleElement(editor) || !matchesRegion(editor,editing.region) || editorDocumentId(editor) !== editing.documentId) continue;
+                if(!blockMaps.has(editor))blockMaps.set(editor,new Map([...editor.querySelectorAll('.protyle-wysiwyg [data-node-id]')].filter(block=>block.closest('.protyle')===editor).map(block=>[block.getAttribute('data-node-id'),block])));
+                const blocks=blockMaps.get(editor),clip = (editor.querySelector('.protyle-content') || editor).getBoundingClientRect();
+                let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity;
+                for(const id of editing.blockIds || [editing.blockId]){
+                    const block=blocks.get(id);
+                    if(!block || !visibleElement(block))continue;
+                    const rect=block.getBoundingClientRect(),x1=Math.max(rect.left,clip.left,0),y1=Math.max(rect.top,clip.top,0),x2=Math.min(rect.right,clip.right,window.innerWidth),y2=Math.min(rect.bottom,clip.bottom,window.innerHeight);
+                    if(x2<=x1 || y2<=y1)continue;
+                    left=Math.min(left,x1);top=Math.min(top,y1);right=Math.max(right,x2);bottom=Math.max(bottom,y2);
+                }
+                if (!Number.isFinite(left)) continue;
+                let markers=this.editingMarkers.get(editor);
+                if(!markers){markers=new Map();this.editingMarkers.set(editor,markers);}
+                let marker = markers.get(key);
                 if (!marker) {
                     marker = document.createElement('div');
                     marker.className = 'collab-editing';
@@ -2921,19 +2935,23 @@ module.exports = class CollaborationPlugin extends Plugin {
                         editor.append(layer);this.editingLayers.set(editor,layer);
                     }
                     layer.append(marker);
-                    this.editingMarkers.set(block, marker);
+                    markers.set(key, marker);
                 }
+                visible.add(marker);
                 marker.firstElementChild.textContent = this.i18n.editingNames.replace('${names}', clients.map((client) => client.name).join('、'));
                 marker.classList.toggle('collab-editing--inset', top - 22 < Math.max(clip.top, 0));
                 marker.style.setProperty('--collab-editing-hue', String(hue));
                 const layer=marker.parentElement, origin=layer.getBoundingClientRect();
-                const scaleX=origin.width/(layer.clientWidth || origin.width),scaleY=origin.height/(layer.clientHeight || origin.height);
+                const style=getComputedStyle(layer),scaleX=origin.width/(parseFloat(style.width) || origin.width),scaleY=origin.height/(parseFloat(style.height) || origin.height);
                 marker.style.transform = 'translate3d(' + (left-origin.left)/scaleX + 'px,' + (top-origin.top)/scaleY + 'px,0)';
                 marker.style.width = (right - left)/scaleX + 'px';
                 marker.style.height = (bottom - top)/scaleY + 'px';
             }
         }
-        for (const [block, marker] of this.editingMarkers) if (!visible.has(block)) { marker.remove(); this.editingMarkers.delete(block); }
+        for (const [editor,markers] of this.editingMarkers) {
+            for(const [key,marker] of markers)if(!visible.has(marker)){marker.remove();markers.delete(key);}
+            if(!markers.size)this.editingMarkers.delete(editor);
+        }
         for(const [editor,layer] of this.editingLayers)if(!layer.childElementCount || !editor.isConnected){layer.remove();this.editingLayers.delete(editor);}
     }
 

@@ -136,6 +136,14 @@ function validShortcut(value) {
     return typeof value==='string' && value.length<=80 && /^(?:(?:Ctrl|Meta|Alt|Shift)\+){1,4}(?:[A-Z0-9]|F\d{1,2}|Arrow(?:Up|Down|Left|Right)|Enter|Escape|Tab|Backspace|Delete|Home|End|PageUp|PageDown|[+\-=,./;`\[\]\\])$/.test(value);
 }
 
+function validEditing(editing) {
+    return editing && (editing.region===undefined || validRegion(editing.region)) &&
+        [editing.documentId,editing.blockId].every(id=>typeof id==='string' && COLLAB_ID.test(id)) &&
+        (editing.blockIds===undefined || Array.isArray(editing.blockIds) && editing.blockIds.length>0 && editing.blockIds.length<=10000 &&
+            editing.blockIds.every(id=>typeof id==='string' && COLLAB_ID.test(id)) &&
+            new Set(editing.blockIds).size===editing.blockIds.length && editing.blockIds.includes(editing.blockId));
+}
+
 const { plugin, rpc, logger, storage } = siyuan;
 const sessions = new Map();
 let peerSequence = 0;
@@ -189,8 +197,10 @@ function normalizeSelection(value) {
 
 function normalizeEditing(value) {
     if (value === null) return null;
-    if (!value || ![value.documentId, value.blockId].every((id) => typeof id === 'string' && BLOCK_ID.test(id))) throw new Error("Invalid editing activity");
-    return { ...(value.region!==undefined ? {region:cleanRegion(value.region)}:{}), documentId: value.documentId, blockId: value.blockId };
+    const region=value?.region!==undefined ? cleanRegion(value.region):undefined;
+    if (!validEditing(value)) throw new Error("Invalid editing activity");
+    return { ...(region ? {region}:{}), documentId: value.documentId, blockId: value.blockId,
+        ...(value.blockIds!==undefined ? {blockIds:[...value.blockIds]}:{}) };
 }
 
 function cursorSnapshot() {
@@ -361,7 +371,7 @@ plugin.lifecycle.onload = async () => {
         client.editing = editing;
         client.editingSeen = Date.now();
         return true;
-    }, "Share a focused block; never reserve it or restrict editing.");
+    }, "Share focused or selected blocks; never reserve them or restrict editing.");
     await rpc.bind('shortcut', async (id,generation,sequence,value) => {
         validateSession(id);validateGeneration(generation);
         if (!Number.isSafeInteger(sequence) || sequence<1 || !validShortcut(value)) throw new Error('Invalid shortcut');
