@@ -912,17 +912,22 @@ function measureComponentDateField(element,plane=false) {
         const textStyle='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none;zoom:'+css.zoom+';transform:scale('+1/zoom+');transform-origin:0 0';
         const tokens=[...element.value.matchAll(/\d+/g)],raw=element.type==='time'?[null,null,null,...tokens.map(token=>token[0])]:tokens.map(token=>token[0]);
         // Optional empty seconds/milliseconds can serialize as valid zero values while still displaying placeholders.
-        const base=style.textContent,removedFields=!hiddenLayout&&styles.slice(2,9).some(s=>s.get('display')==='none');let layoutRects=rects,values;
+        const removedFields=hiddenLayout?[]:fields.slice(0,7).filter((_,i)=>styles[i+2].get('display')==='none');let layoutRects=rects,values,layoutStyle;
         try{
-            if(removedFields){
-                // Keep separator identities and partial values when a numeric field leaves the layout.
-                style.textContent+='\n'+fields.slice(0,7).map(key=>selector+'::-webkit-datetime-edit-'+key+'-field{display:inline!important}').join('\n');
+            if(removedFields.length){
+                // The first anonymous layer overrides author important rules only during layout measurement.
+                layoutStyle=doc.createElement('style');layoutStyle.className='collab-text-measure collab-date-measure';
+                layoutStyle.textContent='@layer{'+removedFields.map(key=>selector+'::-webkit-datetime-edit-'+key+'-field{transition:none!important;display:inline!important}').join('\n')+'}';doc.head.prepend(layoutStyle);
                 layoutRects=probes.map(probe=>probe.getBoundingClientRect());
             }
             const partial=!element.value||element.validity.badInput||layoutRects[7].width&&Number(raw[5]||0)===0||layoutRects[8].width&&Number(raw[6]||0)===0;
             values=partial?componentPartialDate(element,selector,style,host,styles,layoutRects,probes,inherited,textStyle):raw;
-        }finally{if(removedFields)style.textContent=base;}
-        if(removedFields&&probes.some((probe,i)=>{const r=probe.getBoundingClientRect();return ['left','top','width','height'].some(key=>Math.abs(r[key]-rects[i][key])>.001);}))return null;
+        }finally{if(layoutStyle){
+            // Commit the hidden layout before restoring transitions, so display:none cannot animate.
+            layoutStyle.textContent='@layer{'+removedFields.map(key=>selector+'::-webkit-datetime-edit-'+key+'-field{transition:none!important}').join('\n')+'}';
+            try{element.getBoundingClientRect();}finally{layoutStyle.remove();}
+        }}
+        if(removedFields.length&&probes.some((probe,i)=>{const r=probe.getBoundingClientRect();return ['left','top','width','height'].some(key=>Math.abs(r[key]-rects[i][key])>.001);}))return null;
         const partial=values!==raw;
         if(!values)return null;
         if(element.type==='date')values.length=3;
@@ -942,7 +947,7 @@ function measureComponentDateField(element,plane=false) {
         }
         const literal=rects[10],numericRects=layoutRects.slice(2,9).map((rect,index)=>({index,rect})).filter(row=>row.rect.width&&row.rect.height).sort((a,b)=>a.rect.left-b.rect.left);
         let shift=rects[1].left-layoutRects[1].left;
-        if(removedFields&&Math.abs(layoutRects[1].width-rects[1].width-numericRects.filter(row=>!rects[row.index+2].width).reduce((sum,row)=>sum+row.rect.width,0))>.1)return null;
+        if(removedFields.length&&Math.abs(layoutRects[1].width-rects[1].width-numericRects.filter(row=>!rects[row.index+2].width).reduce((sum,row)=>sum+row.rect.width,0))>.1)return null;
         if(paint(10)&&literal.width&&literal.height)for(let i=1;i<numericRects.length;i++){const a=numericRects[i-1],b=numericRects[i];if(!rects[a.index+2].width)shift-=a.rect.width;if(b.rect.left>a.rect.right)glyphs.push({offset:1024+a.index*16+b.index,rect:{left:a.rect.right+shift,right:b.rect.left+shift,top:literal.top,bottom:literal.bottom,width:b.rect.left-a.rect.right,height:literal.height}});}
         const button=rects[11],buttonStyle=styles[11],image=button.width&&button.height&&visible(11)&&!element.disabled&&!element.readOnly?{left:button.left+parseFloat(buttonStyle.get('padding-left')),right:button.right-parseFloat(buttonStyle.get('padding-right')),top:button.top+parseFloat(buttonStyle.get('padding-top')),bottom:button.bottom-parseFloat(buttonStyle.get('padding-bottom'))}:null;
         if(image){image.width=image.right-image.left;image.height=image.bottom-image.top;}
