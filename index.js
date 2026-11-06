@@ -887,7 +887,7 @@ function measureComponentDateField(element,plane=false) {
     try{
         for(let i=0;i<parts.length;i++){
             const rules=componentNativeRules(doc,'date:'+parts[i],sources);if(!rules)return null;
-            const parent=i===0?css:i===1?styles[0]:styles[1],inherit=inherited.map(name=>name+':'+parent.getPropertyValue(name)).join(';'),numeric=i>=2&&i<10,indicator=i===parts.length-1;
+            const numeric=i>=2&&i<10,indicator=i===parts.length-1,parent=i===0||indicator?css:i===1?styles[0]:styles[1],inherit=inherited.map(name=>name+':'+parent.getPropertyValue(name)).join(';');
             const defaults=numeric?'display:inline;padding:1px;border:0;font:inherit!important':indicator?'display:inline-block;padding:'+(element.type==='time'?'3px':'2px')+';background-origin:content-box;background-size:contain;background-position:0% 0%;background-repeat:no-repeat':'display:inline-block;padding:'+(i===1?'1px 0':'0')+';border:0';
             if(!rules.length){
                 const values=new Map(inherited.map(name=>[name,parent.getPropertyValue(name)]));
@@ -903,8 +903,9 @@ function measureComponentDateField(element,plane=false) {
         const probes=parts.map((_,i)=>{const probe=doc.createElement('i');probe.style.cssText='all:initial;position:fixed;position-anchor:--collab-date-'+i+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(probe);return probe;});element.parentElement.append(host);
         if(plane){host.setAttribute('popover','manual');host.showPopover();if(!host.matches(':popover-open'))return null;}
         probes.forEach(probe=>rects.push(probe.getBoundingClientRect()));
-        const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[1].width)return null;
-        const visible=i=>{for(const index of [0,1,i]){const s=styles[index];if(s.get('display')==='none'||s.get('visibility')!=='visible'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
+        const hiddenLayout=[0,1].some(i=>styles[i].get('display')==='none');
+        const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[1].width&&!hiddenLayout)return null;
+        const visible=i=>{if(styles[i].get('visibility')!=='visible')return false;for(const index of i===parts.length-1?[i]:[0,1,i]){const s=styles[index];if(s.get('display')==='none'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
         const paint=i=>{const color=styles[i].get('color');return visible(i)&&!(color.startsWith('rgba(')&&/,\s*0\)$/.test(color)||/\/\s*0%?\)$/.test(color));};
         let zoom=1;for(let parent=element;parent;parent=parent.parentElement)zoom*=Number(view.getComputedStyle(parent).zoom)||1;
         // Preserve native font quantization at its effective zoom, then measure in the neutral plane.
@@ -933,7 +934,7 @@ function measureComponentDateField(element,plane=false) {
         const button=rects[11],buttonStyle=styles[11],image=button.width&&button.height&&visible(11)&&!element.disabled&&!element.readOnly?{left:button.left+parseFloat(buttonStyle.get('padding-left')),right:button.right-parseFloat(buttonStyle.get('padding-right')),top:button.top+parseFloat(buttonStyle.get('padding-top')),bottom:button.bottom-parseFloat(buttonStyle.get('padding-bottom'))}:null;
         if(image){image.width=image.right-image.left;image.height=image.bottom-image.top;}
         // Keep the full glyph ratio when only part is visible; resolve clips the final point to the viewport.
-        result={content:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.right>rects[0].left&&r.left<rects[0].right&&r.bottom>rects[0].top&&r.top<rects[0].bottom),image,text:partial?values:null};
+        result={content:hiddenLayout?{left:before.left,right:before.right,top:before.top,bottom:before.bottom,viewport:before}:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.right>rects[0].left&&r.left<rects[0].right&&r.bottom>rects[0].top&&r.top<rects[0].bottom),image,text:partial?values:null};
     }finally{host.remove();style.textContent='';}
     return result;
 }
@@ -1852,7 +1853,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
-    const field=onPicker ? null:componentFieldContent(element),empty=field && !element.matches(COMPONENT_DATE_FIELD) && !componentFieldText(element),padding=field && (!inside(field) || element.matches(COMPONENT_DATE_FIELD) && !inside(field.viewport));
+    const field=onPicker ? null:componentFieldContent(element),empty=field && (element.matches(COMPONENT_DATE_FIELD) ? !componentDateField(element).glyphs.length:!componentFieldText(element)),padding=field && (!inside(field) || element.matches(COMPONENT_DATE_FIELD) && !inside(field.viewport));
     const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!checkbox&&!color&&!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     // Person-local badges must not change shared row gaps or their text offsets.
     let text=empty || onPicker || box&&!textPlane || padding && !element.matches('select,textarea') || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:fieldText || componentNearText(element,parentPoint,textPlane) || [];
