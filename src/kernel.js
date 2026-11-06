@@ -11,8 +11,9 @@ let settingsWrite = Promise.resolve();
 const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 
 function normalizeCursor(value) {
+    if(value?.dragging!==undefined && typeof value.dragging!=='boolean')throw Error('Invalid dragging state');
     if(value?.state!==undefined && !['editing','typing'].includes(value.state))throw Error('Invalid cursor state');
-    const metadata={...(value?.region!==undefined ? {region:cleanRegion(value.region)}:{}),...(value?.state!==undefined ? {state:value.state}:{})};
+    const metadata={...(value?.region!==undefined ? {region:cleanRegion(value.region)}:{}),...(value?.state!==undefined ? {state:value.state}:{}),...(value?.dragging!==undefined ? {dragging:value.dragging}:{})};
     if (value?.surface === 'ui') {
         if (value.documentId !== null || value.blockId !== null || !validUIAnchor(value.ui) || ![value.x,value.y,value.screen?.x,value.screen?.y].every((n)=>typeof n==='number' && Number.isFinite(n) && n>=0 && n<=1)) throw new Error('Invalid UI cursor');
         return {...metadata,surface:'ui',documentId:null,blockId:null,page:cleanPage(value.page),ui:cleanUIAnchor(value.ui),screen:{x:value.screen.x,y:value.screen.y},x:value.x,y:value.y};
@@ -238,6 +239,20 @@ plugin.lifecycle.onload = async () => {
         await rpc.broadcast('shortcut-shown',[{peerId:client.peerId,name:client.name,hue:client.hue,keys:value,page:client.page || null}]);
         return true;
     },'Show a key combination without executing it or sharing clipboard content.');
+    await rpc.bind('pointerClick', async (id,generation,sequence,value) => {
+        validateSession(id);validateGeneration(generation);
+        if(!Number.isSafeInteger(sequence) || sequence<1)throw Error('Invalid click sequence');
+        const cursor=normalizeCursor(value);if(!cursor)throw Error('Invalid click anchor');
+        const client=sessions.get(id);
+        if(!client || Date.now()-client.lastSeen>=SESSION_TIMEOUT || client.generation!==generation)throw Error('Session expired or superseded');
+        if(sequence<=(client.clickSequence || 0))return false;
+        client.clickSequence=sequence;
+        client.clickTimes=(client.clickTimes || []).filter(time=>Date.now()-time<1000);
+        if(client.clickTimes.length>=30)return false;
+        client.clickTimes.push(Date.now());
+        await rpc.broadcast('pointer-clicked',[{peerId:client.peerId,name:client.name,hue:client.hue,cursor}]);
+        return true;
+    },'Show an ephemeral click at a validated content anchor; never execute a click.');
     await rpc.bind("getStatus", async () => {
         await expireSessions();
         return { name: plugin.name, version: plugin.version, platform: plugin.platform, onlineCount: sessions.size };
@@ -248,6 +263,7 @@ plugin.lifecycle.onload = async () => {
             throw new Error("Invalid presence state");
         }
         const preferredName = state.name === undefined || state.name === "" ? "" : normalizeName(state.name);
+        if(state.hue!==undefined && (!Number.isInteger(state.hue) || state.hue<0 || state.hue>=360))throw Error('Invalid client hue');
         const generation = state.generation === undefined ? 0 : state.generation;
         validateGeneration(generation);
         if (state.documentId !== undefined && state.documentId !== null &&
@@ -259,7 +275,7 @@ plugin.lifecycle.onload = async () => {
         let client = sessions.get(id);
         if (client && generation < client.generation) throw new Error("Session superseded by a refreshed client");
         if (!client) {
-            client = { peerId: `peer-${++peerSequence}`, name: assignName(preferredName, id), documentId: null, hue: Math.floor(Math.random() * 360), lastSeen: Date.now(), generation };
+            client = { peerId: `peer-${++peerSequence}`, name: assignName(preferredName, id), documentId: null, hue: state.hue ?? Math.floor(Math.random() * 360), lastSeen: Date.now(), generation };
             sessions.set(id, client);
             changed = true;
         }
@@ -272,6 +288,7 @@ plugin.lifecycle.onload = async () => {
             client.editingSequence = 0;
             client.shortcutSequence = 0;
             client.shortcutAt = undefined;
+            client.clickSequence=0;client.clickTimes=[];
             cursorDirty = true;
         }
         client.generation = generation;
@@ -290,10 +307,11 @@ plugin.lifecycle.onload = async () => {
         }
         return snapshot(id);
     }, "Register a frontend, assign its name and update its viewed document.");
-    await rpc.bind("presenceRename", async (id, value, generation = 0) => {
+    await rpc.bind("presenceRename", async (id, value, generation = 0, hue) => {
         validateSession(id);
         validateGeneration(generation);
         const name = normalizeName(value);
+        if(hue!==undefined && (!Number.isInteger(hue) || hue<0 || hue>=360))throw Error('Invalid client hue');
         await expireSessions();
         const client = sessions.get(id);
         if (!client) {
@@ -303,13 +321,14 @@ plugin.lifecycle.onload = async () => {
         if (nameTaken(name, id)) {
             throw new Error("Display name is already in use");
         }
-        if (client.name !== name) {
+        if (client.name !== name || hue!==undefined && client.hue!==hue) {
             client.name = name;
+            if(hue!==undefined)client.hue=hue;
             cursorDirty = true;
             await broadcastPresence();
         }
         return snapshot(id);
-    }, "Change this frontend's display name.");
+    }, "Atomically change this frontend's display name and optional cursor hue.");
     await rpc.bind("presenceLeave", async (id, generation = 0) => {
         validateSession(id);
         validateGeneration(generation);
@@ -335,5 +354,5 @@ plugin.lifecycle.onunload = async () => {
     clearInterval(sweepTimer);
     clearInterval(cursorTimer);
     sessions.clear();
-    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "shortcut", "setCursorTick"].map((name) => rpc.unbind(name)));
+    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "shortcut", "pointerClick", "setCursorTick"].map((name) => rpc.unbind(name)));
 };

@@ -10,9 +10,9 @@
   "onlineCount": "Online: ${count} frontend sessions (including this window)",
   "kernelFailed": "Collaboration status is unavailable. Check that the kernel plugin is running and retry.",
   "restoreFailed": "Could not restore this window's document. Check that it is still accessible and open it manually.",
-  "renameSelf": "Change my name",
+  "renameSelf": "Name and color",
   "nameLabel": "Name (1–24 characters, unique among online clients)",
-  "renameFailed": "Use 1–24 valid characters and a name not already used by an online client.",
+  "renameFailed": "Could not save. Check your connection and use 1–24 valid characters with a unique online name.",
   "save": "Save",
   "cancel": "Cancel",
   "connecting": "Connecting",
@@ -34,5 +34,11 @@
   "pageDocument": "Document",
   "pageSearch": "Search",
   "pageWorkspace": "Workspace",
-  "followBase": "Opened their page. This action dialog must be opened manually."
+  "followBase": "Opened their page. This action dialog must be opened manually.",
+  "profileTip": "Preview your cursor name and color. Save to update every client.",
+  "colorLabel": "My color",
+  "colorHue": "Hue ${hue}°",
+  "profilePreview": "Cursor name and color preview",
+  "profileSaved": "Name and color saved.",
+  "documentViewers": "${count} viewing this document"
 }

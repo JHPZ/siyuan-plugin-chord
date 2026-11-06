@@ -794,7 +794,7 @@ test("settings form validates and saves the tick rate through the kernel", async
     const kernel = await createKernel();
     const frontend = await createFrontend(kernel);
     assert.equal(frontend.plugin.displayName, "和弦");
-    const form = frontend.plugin.setting.items[0].createActionElement();
+    const form = frontend.plugin.setting.items.find(item=>item.title===frontend.plugin.i18n.cursorTick).createActionElement();
     const [input, save, error] = form.children;
     assert.equal(input.value, "10");
     assert.deepEqual(input.children.map(option=>option.value),['3','10','30']);
@@ -1145,7 +1145,7 @@ test('presence never registers editing guards or lock RPCs, even when disconnect
     assert.equal(kernel.methods.has('editSnapshot'), false);
     assert.equal(frontend.plugin.editing, undefined);
     assert.equal(frontend.plugin.history, undefined);
-    const events = ['beforeinput', 'paste', 'cut', 'drop', 'dragstart', 'compositionstart', 'contextmenu'];
+    const events = ['beforeinput', 'paste', 'cut', 'compositionstart', 'contextmenu'];
     const check = () => {
         for (const event of events) {
             assert.equal(frontend.listeners.has(event), false, event);
@@ -1204,3 +1204,44 @@ for (const locale of ["en", "zh-CN"]) {
         assert.equal((await kernel.methods.get("getStatus")()).onlineCount, 1);
     });
 }
+
+test('profile color changes are atomic, generation checked, broadcast and retained across heartbeats',async()=>{
+    const k=await createKernel(),beat=k.methods.get('presenceHeartbeat'),rename=k.methods.get('presenceRename');
+    const first=await beat('profile-user-one',{generation:1,hue:220});assert.equal(first.self.hue,220);
+    await beat('profile-user-two',{generation:1,name:'Taken'});
+    for(const hue of [-1,360,1.5,'120',null,NaN])await assert.rejects(rename('profile-user-one','Changed',1,hue),/hue/);
+    await assert.rejects(rename('profile-user-one','Taken',1,50),/in use/);
+    assert.equal((await beat('profile-user-one',{generation:1})).self.hue,220);
+    await assert.rejects(rename('profile-user-one','Changed',0,50),/superseded/);
+    const saved=await rename('profile-user-one','Changed',1,50);assert.equal(saved.self.hue,50);assert.equal(saved.self.name,'Changed');
+    assert.equal(k.broadcasts.at(-1).args[0].clients.find(p=>p.name==='Changed').hue,50);
+    assert.equal((await beat('profile-user-one',{generation:1,hue:220})).self.hue,50);
+    assert.equal((await beat('profile-user-one',{generation:2,hue:220})).self.hue,50);
+    await k.methods.get('presenceLeave')('profile-user-one',2);
+    assert.equal((await beat('profile-user-one',{generation:3,hue:50})).self.hue,50);
+    await k.plugin.lifecycle.onunload();assert.equal(k.methods.size,0);
+});
+
+test('drag metadata is bounded and clicks are transient, burst safe, ordered and session scoped',async()=>{
+    const k=await createKernel(),beat=k.methods.get('presenceHeartbeat'),click=k.methods.get('pointerClick'),update=k.methods.get('cursorUpdate'),snapshot=k.methods.get('cursorSnapshot');
+    const anchor={surface:'document',documentId:'20261030165150-doc0001',blockId:'20261030165150-block01',x:.4,y:.6,dragging:true,secret:'must disappear'};
+    await beat('pointer-user-one',{generation:1,hue:180});
+    await update('pointer-user-one',1,1,anchor);const cursor=(await snapshot()).cursors[0].cursor;
+    assert.equal(cursor.dragging,true);assert.equal(cursor.secret,undefined);
+    for(const dragging of ['true',1,null,{}])await assert.rejects(update('pointer-user-one',1,2,{...anchor,dragging}),/dragging/);
+    for(const value of [null,{}, {...anchor,x:2},{...anchor,dragging:'yes'}])await assert.rejects(click('pointer-user-one',1,1,value));
+    assert.equal(await click('pointer-user-one',1,1,anchor),true);
+    assert.equal(await click('pointer-user-one',1,1,anchor),false);
+    assert.equal(await click('pointer-user-one',1,2,anchor),true,'double click in the same activity batch survives');
+    for(let i=3;i<=30;i++)assert.equal(await click('pointer-user-one',1,i,anchor),true);
+    assert.equal(await click('pointer-user-one',1,31,anchor),false);
+    const events=k.broadcasts.filter(b=>b.name==='pointer-clicked');assert.equal(events.length,30);
+    const wire=events[0].args[0];assert.equal(wire.hue,180);assert.equal(wire.cursor.secret,undefined);assert.equal(wire.sessionId,undefined);
+    k.advance(1000);assert.equal(await click('pointer-user-one',1,32,anchor),true);
+    const before=k.broadcasts.filter(b=>b.name==='pointer-clicked').length;
+    await snapshot();await beat('pointer-user-two',{generation:1});assert.equal(k.broadcasts.filter(b=>b.name==='pointer-clicked').length,before,'no replay on joins or snapshots');
+    await beat('pointer-user-one',{generation:2});await assert.rejects(click('pointer-user-one',1,33,anchor),/superseded/);
+    assert.equal(await click('pointer-user-one',2,1,anchor),true);
+    k.advance(90000);await assert.rejects(click('pointer-user-one',2,2,anchor),/expired/);
+    await k.plugin.lifecycle.onunload();assert.equal(k.methods.size,0);
+});

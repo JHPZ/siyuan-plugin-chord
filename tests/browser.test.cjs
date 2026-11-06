@@ -2216,7 +2216,7 @@ await test('原生颜色框按色块填充、边框和外围留白定位，改�
                     if(offline)throw Error('Offline');
                     if(name==='presenceHeartbeat')return {count:presenceClients.length,clients:presenceClients.slice(),self:{name:'A',hue:120}};
                     if(name==='cursorSnapshot')return {tick:10,cursors:[],selections:[]};
-                    if(['cursorUpdate','selectionUpdate','editingUpdate','presenceLeave'].includes(name))return true;
+                    if(['cursorUpdate','selectionUpdate','editingUpdate','presenceLeave','pointerClick'].includes(name))return true;
                     throw Error('Unexpected RPC '+name);
                 }})}}});
         const input=cursorTextRoot(block), original=input.innerHTML;
@@ -2224,6 +2224,55 @@ await test('原生颜色框按色块填充、边框和外围留白定位，改�
             await plugin.onload();await plugin.onLayoutReady();
             assert(document.querySelectorAll('.collab-range-measure').length===1,'range measurement style not owned by plugin');
             assert(editorEvents.get("open-noneditableblock")===plugin.handleRenderTarget,"render event not registered");
+await test('交互拖拽光标覆盖框选、原生拖放、取消和同源嵌入且不拦截原生事件',async()=>{
+    await expose(block,10);const point=rectAt(block,10),x=point.left+2,y=point.top+4;
+    const dispatch=(target,type,init={})=>{const event=type.startsWith('drag')||type==='drop' ? new DragEvent(type,{bubbles:true,cancelable:true,clientX:x,clientY:y,...init}):new PointerEvent(type,{bubbles:true,cancelable:true,isPrimary:true,pointerType:'mouse',clientX:x,clientY:y,...init});target.dispatchEvent(event);assert(!event.defaultPrevented,'native '+type+' prevented');};
+    dispatch(input,'pointerdown',{button:0,buttons:1});dispatch(input,'pointermove',{buttons:1,clientX:x+2});assert(!plugin.dragging,'click jitter became drag');
+    dispatch(input,'pointermove',{buttons:1,clientX:x+9});assert(plugin.dragging&&NativePlugin.testCapture(plugin.pointer,plugin).dragging,'selection drag not captured '+JSON.stringify({dragging:plugin.dragging,origin:plugin.dragOrigin,pointer:plugin.pointer,cursor:NativePlugin.testCapture(plugin.pointer,plugin),hit:document.elementFromPoint(plugin.pointer.x,plugin.pointer.y)?.outerHTML.slice(0,140)}));
+    const anchor=NativePlugin.testCapture(plugin.pointer,plugin),peer={name:'DragPeer',hue:270,documentId:'20261030165150-doc0001'};plugin.clients.push(peer);plugin.remoteCursors=[{...peer,cursor:anchor}];plugin.renderCursors(false);assert(plugin.cursorMarkers.get(peer.name)?.dataset.state==='dragging','drag hand missing');
+    dispatch(input,'pointerup',{button:0,buttons:0});assert(!plugin.dragging&&!NativePlugin.testCapture(plugin.pointer,plugin).dragging,'pointerup retained hand');
+    dispatch(input,'dragstart');dispatch(input,'pointercancel');assert(plugin.dragging&&plugin.nativeDragging,'native drag pointercancel cleared hand');dispatch(input,'dragover',{clientX:x+15});assert(plugin.pointer.x===x+15,'dragover not tracked');dispatch(input,'drop');assert(!plugin.dragging,'drop retained hand');
+    dispatch(input,'pointerdown',{button:0,buttons:1});dispatch(input,'pointermove',{buttons:1,clientX:x+8});dispatch(input,'pointercancel');assert(!plugin.dragging,'pointercancel retained hand');
+    const frameNode=document.createElement('iframe');frameNode.style.cssText='position:fixed;left:30px;top:40px;width:400px;height:160px;border:0;z-index:100';const ready=new Promise(resolve=>frameNode.onload=resolve);frameNode.srcdoc='<html><body>frame drag</body></html>';document.body.append(frameNode);await ready;plugin.bindFrames();
+    const doc=frameNode.contentDocument;dispatch(doc.body,'pointerdown',{clientX:20,clientY:20,buttons:1});dispatch(doc.body,'pointermove',{clientX:35,clientY:30,buttons:1});const expected=frameToParent(frameNode,{x:35,y:30});assert(plugin.dragging&&near(plugin.pointer.x,expected.x)&&near(plugin.pointer.y,expected.y),'frame drag coordinate mismatch');
+    dispatch(doc.body,'dragstart',{clientX:35,clientY:30});dispatch(doc.body,'dragend',{clientX:35,clientY:30});assert(!plugin.dragging,'frame dragend retained hand');frameNode.remove();plugin.bindFrames();const before=JSON.stringify(plugin.pointer);dispatch(doc.body,'pointerdown',{clientX:70,clientY:70,buttons:1});assert(JSON.stringify(plugin.pointer)===before,'removed frame listener leaked');
+    plugin.remoteCursors=[];plugin.clients=presenceClients.slice();plugin.clearClicks();plugin.renderCursors(false);
+});
+
+await test('交互点击射线采用客户端颜色、精确可见锚点、独立清理且保留双击',async()=>{
+    plugin.clearClicks();await expose(block,10);const rect=rectAt(block,10),point={x:rect.left+2,y:rect.top+4},cursor=NativePlugin.testCapture(point,plugin);assert(cursor,'click anchor missing');
+    const peer={peerId:'click-peer',name:'ClickPeer',hue:270,documentId:'20261030165150-doc0001'};plugin.clients=[...presenceClients,peer];plugin.presenceReceivedAt=Date.now();
+    const value={...peer,cursor};plugin.showClick(value);assert(plugin.clickEffects.size===1,'visible click missing');const element=[...plugin.clickEffects.keys()][0];assert(element.querySelectorAll('path').length===8&&element.style.getPropertyValue('--collab-cursor-hue')==='270','click ray count or color wrong');assert(near(parseFloat(element.style.left),point.x)&&near(parseFloat(element.style.top),point.y),'click drifted');assert(getComputedStyle(element).pointerEvents==='none','click intercepts pointer');
+    block.style.visibility='hidden';plugin.renderCursors(false);assert(!plugin.clickEffects.size,'hidden click effect remained');plugin.showClick(value);assert(!plugin.clickEffects.size,'hidden target drew click');block.style.visibility='';
+    plugin.showClick({...value,cursor:{...cursor,blockId:'20261030165150-missing'}});plugin.showClick({...value,hue:10});plugin.showClick({...value,peerId:'unknown'});assert(!plugin.clickEffects.size,'missing or forged click drew');
+    plugin.showClick(value);plugin.showClick(value);assert(plugin.clickEffects.size===2,'second click replaced first');await new Promise(resolve=>setTimeout(resolve,460));assert(!plugin.clickEffects.size,'click timers leaked');
+    const call=plugin.kernel.rpc.call,send=[];plugin.kernel.rpc.call=new Proxy(call,{get(target,name){if(name==='pointerClick')return async(...args)=>send.push(args);return target[name];}});
+    try {for(let i=0;i<2;i++)input.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1,isPrimary:true,pointerType:'mouse',clientX:point.x,clientY:point.y}));assert(plugin.pendingClicks.length===2,'doubleclick coalesced '+JSON.stringify({pending:plugin.pendingClicks.length,point,cursor:NativePlugin.testCapture(point,plugin),hit:document.elementFromPoint(point.x,point.y)?.outerHTML.slice(0,140)}));await new Promise(resolve=>setTimeout(resolve,380));assert(send.length===2&&send[1][2]===send[0][2]+1,'click queue dropped burst');assert(send.every(args=>validCursor(args[3])),'unanchored click transmitted');}finally{plugin.kernel.rpc.call=call;plugin.endDrag();plugin.clearClicks();plugin.clients=presenceClients.slice();}
+});
+
+await test('交互名字颜色实时预览、取消不写入、原子保存和失败保留草稿',async()=>{
+    const old={name:plugin.clientName,hue:plugin.hue,peerId:plugin.peerId,call:plugin.kernel.rpc.call};let saves=0,fail=false,saved;
+    plugin.peerId='profile-self';
+    plugin.kernel.rpc.call=new Proxy(old.call,{get(target,key){if(key==='presenceRename')return async(id,name,generation,hue)=>{saves++;if(fail)throw Error('offline');saved={peerId:'profile-self',name,hue,documentId:'20261030165150-doc0001'};return {count:1,clients:[saved],self:saved};};if(key==='presenceHeartbeat')return async()=>{const self=saved||{peerId:'profile-self',name:old.name,hue:old.hue,documentId:'20261030165150-doc0001'};return {count:1,clients:[self],self};};return target[key];}});
+    try {
+        plugin.openRenameDialog();const form=plugin.renameDialog.element.querySelector('form'),name=form.querySelector('input'),slider=form.querySelector('[type=range]');name.value='Live <Name>';name.dispatchEvent(new Event('input',{bubbles:true}));form.querySelector('[data-hue="270"]').click();assert(form.querySelector('.collab-profile-preview span').textContent==='Live <Name>'&&!form.querySelector('.collab-profile-preview b'),'preview interpreted text');assert(form.querySelector('.collab-profile-preview').style.getPropertyValue('--collab-cursor-hue')==='270'&&slider.value==='270','color preview not live');
+        form.querySelector('[type=button].b3-button--cancel').click();await settleDialog();assert(saves===0&&plugin.clientName===old.name&&plugin.hue===old.hue,'cancel wrote profile');
+        const settings=plugin.createProfileForm();document.body.append(settings);const field=settings.querySelector('input');field.value='Profile Test';field.dispatchEvent(new Event('input'));settings.querySelector('[data-hue="220"]').click();settings.dispatchEvent(new Event('submit',{cancelable:true}));await new Promise(resolve=>setTimeout(resolve,0));assert(saves===1&&plugin.clientName==='Profile Test'&&plugin.hue===220,'profile was not saved together');assert(settings.querySelector('[role=status]').textContent===plugin.i18n.profileSaved,'save feedback missing');
+        fail=true;field.value='Keep draft';settings.dispatchEvent(new Event('submit',{cancelable:true}));await new Promise(resolve=>setTimeout(resolve,0));assert(field.value==='Keep draft'&&settings.querySelector('.ft__error')&&!settings.querySelector('[type=submit]').disabled,'error discarded draft or left disabled');settings.remove();
+        plugin.updatePresence({count:1,clients:[{peerId:'profile-self',name:'Broadcast Name',hue:320,documentId:null}]});assert(plugin.clientName==='Broadcast Name'&&plugin.hue===320,'own broadcast did not update color');
+    }finally{plugin.renameDialog?.destroy();await settleDialog();plugin.kernel.rpc.call=old.call;plugin.peerId=old.peerId;plugin.rememberName(old.name);plugin.hue=old.hue;plugin.clients=presenceClients.slice();plugin.clearClicks();}
+});
+
+await test('交互文档树与名单按文档计数，总名单紧凑排列且长名字不溢出',async()=>{
+    const refresh=plugin.refreshInBackground,old=presenceClients.slice(),rows=[...document.querySelectorAll('.sy__file li')],id=rows[0].dataset.nodeId,other=rows[1].dataset.nodeId;
+    plugin.refreshInBackground=()=>{};
+    const clients=[{peerId:'p1',name:'A',hue:120,documentId:id},{peerId:'p2',name:'这是一个足够长的参与者名称用来验证布局',hue:220,documentId:id,page:{kind:'document',id,title:'很长的页面标题用来验证不会挤出跟踪按钮'}},{peerId:'p3',name:'Other',hue:30,documentId:other},{peerId:'p4',name:'Workspace',hue:320,documentId:null}];
+    try{plugin.updatePresence({count:4,clients});plugin.renderTreePresence();assert(rows[0].querySelector('.collab-presence-users').textContent==='2'&&rows[1].querySelector('.collab-presence-users').textContent==='1','tree badge is global');const badge=rows[0].querySelector('.collab-presence-users');plugin.clients=clients.map(client=>({...client,page:{kind:'workspace',title:'页面变化'}}));plugin.renderTreePresence();assert(rows[0].querySelector('.collab-presence-users')===badge,'page reports replaced the viewer button during a click');badge.click();assert(plugin.peoplePanel.querySelector('.collab-people__header strong').textContent==='2 人正在查看此文档'&&plugin.peopleRows.size===2,'document header or list is global');
+        plugin.openPeople();assert(plugin.peoplePanel.querySelector('.collab-people__header strong').textContent==='4 人在线'&&plugin.peopleRows.size===4,'global count filtered');for(const row of plugin.peopleRows.values()){const r=row.getBoundingClientRect();assert(r.height<=48,'person row too tall: '+r.height);assert(row.scrollWidth<=row.clientWidth,'long name overflow');assert(row.querySelector('button').getBoundingClientRect().right<=r.right,'follow button overflow');}
+    }finally{plugin.closePeople();await settleDialog();plugin.refreshInBackground=refresh;plugin.updatePresence({count:old.length,clients:old});plugin.renderTreePresence();}
+});
+
+
 await test('原生日期32光标每帧只测量一次，主文档和嵌入静止不自激重绘且可见性实时更新',async()=>{
     const old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,pointer:plugin.pointer,refreshInBackground:plugin.refreshInBackground,queueActivity:plugin.queueActivity,renderCursors:plugin.renderCursors},rows=[];let renders=0,activities=0;
     plugin.refreshInBackground=()=>{};plugin.queueActivity=()=>activities++;plugin.renderCursors=function(...args){renders++;return old.renderCursors.apply(this,args);};plugin.pointer=null;

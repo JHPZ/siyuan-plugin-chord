@@ -192,6 +192,7 @@ function resolveDocumentCursor(cursor) {
 }
 
 function validCursor(cursor) {
+    if(cursor?.dragging!==undefined && typeof cursor.dragging!=='boolean')return false;
     if(cursor?.region!==undefined && !validRegion(cursor.region))return false;
     if(cursor?.state!==undefined && !['editing','typing'].includes(cursor.state))return false;
     if (cursor?.surface === 'ui') return cursor.documentId === null && cursor.blockId === null && validPage(cursor.page) && validUIAnchor(cursor.ui) &&

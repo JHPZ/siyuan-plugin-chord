@@ -186,7 +186,7 @@ function captureCursor(point, plugin) {
     const field=hit.closest('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]');
     const editable=['text','vertical-text'].includes(cursor) || (!cursor || cursor==='auto') && field && !field.matches(':disabled') && !hit.closest('[contenteditable="false"]');
     const state=editable ? (plugin?.typingTarget===active && active?.contains(hit) ? 'typing':'editing'):undefined;
-    const activity=state ? {state}:{};
+    const activity={...(state ? {state}:{}),...(plugin?.dragging ? {dragging:true}:{})};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     const scrollbar=componentScrollbar(hit,point,false),onScrollbar=scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom);

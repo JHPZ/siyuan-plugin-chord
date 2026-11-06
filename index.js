@@ -338,6 +338,7 @@ function resolveDocumentCursor(cursor) {
 }
 
 function validCursor(cursor) {
+    if(cursor?.dragging!==undefined && typeof cursor.dragging!=='boolean')return false;
     if(cursor?.region!==undefined && !validRegion(cursor.region))return false;
     if(cursor?.state!==undefined && !['editing','typing'].includes(cursor.state))return false;
     if (cursor?.surface === 'ui') return cursor.documentId === null && cursor.blockId === null && validPage(cursor.page) && validUIAnchor(cursor.ui) &&
@@ -2275,7 +2276,7 @@ function captureCursor(point, plugin) {
     const field=hit.closest('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]');
     const editable=['text','vertical-text'].includes(cursor) || (!cursor || cursor==='auto') && field && !field.matches(':disabled') && !hit.closest('[contenteditable="false"]');
     const state=editable ? (plugin?.typingTarget===active && active?.contains(hit) ? 'typing':'editing'):undefined;
-    const activity=state ? {state}:{};
+    const activity={...(state ? {state}:{}),...(plugin?.dragging ? {dragging:true}:{})};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
     const scrollbar=componentScrollbar(hit,point,false),onScrollbar=scrollbar?.areas.some(r=>point.x>=r.left&&point.x<r.right&&point.y>=r.top&&point.y<r.bottom);
@@ -2304,6 +2305,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.clientName = "";
         this.tick = 10;
         this.shortcutSequence = 0;
+        this.clickSequence = 0;
+        this.pendingClicks = [];
+        this.clickEffects = new Map();
+        this.handleClick = value => this.showClick(value);
         this.shortcutNotices = new Map();
         this.frameListeners = new Map();
         this.handleShortcut = (value) => this.showShortcut(value);
@@ -2330,6 +2335,8 @@ module.exports = class CollaborationPlugin extends Plugin {
             sessionStorage.setItem(`${this.name}:session-id`, this.sessionId);
             sessionStorage.setItem(`${this.name}:generation`, String(this.generation));
             this.clientName = sessionStorage.getItem(`${this.name}:display-name`) || "";
+            const hue = sessionStorage.getItem(`${this.name}:hue`);
+            if (hue !== null && Number.isInteger(Number(hue)) && Number(hue) >= 0 && Number(hue) < 360) this.hue = Number(hue);
             this.resumeDocument = sessionStorage.getItem(`${this.name}:document`);
         } catch {}
         this.handlePresence = (presence) => this.updatePresence(presence);
@@ -2347,6 +2354,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         await this.kernel.rpc.bind("presence-changed", this.handlePresence);
         await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
         await this.kernel.rpc.bind("shortcut-shown", this.handleShortcut);
+        await this.kernel.rpc.bind("pointer-clicked", this.handleClick);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.on("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) {
@@ -2437,9 +2445,14 @@ module.exports = class CollaborationPlugin extends Plugin {
             for(const notice of notices){clearTimeout(notice.timer);notice.element.remove();}this.shortcutNotices.delete(name);
         }
         this.presenceReceivedAt = Date.now();
-        if (presence.self && typeof presence.self.name === "string") {
-            this.peerId = presence.self.peerId;
-            this.rememberName(presence.self.name);
+        const self = presence.self || clients.find(client => this.peerId && client.peerId === this.peerId);
+        if (self && typeof self.name === "string") {
+            this.peerId = self.peerId;
+            this.rememberName(self.name);
+            if (Number.isInteger(self.hue) && self.hue >= 0 && self.hue < 360) {
+                this.hue = self.hue;
+                try { sessionStorage.setItem(`${this.name}:hue`, String(self.hue)); } catch {}
+            }
         }
         this.renderOnlineCount();
         this.scheduleTreeRender();
@@ -2462,7 +2475,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         }
         const documentId = this.currentDocument();
         try { sessionStorage.setItem(`${this.name}:document`, documentId || ""); } catch {}
-        const presence = await this.kernel.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation });
+        const presence = await this.kernel.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation, ...(this.hue === undefined ? {} : {hue:this.hue}) });
         this.updatePresence(presence);
         if(this.trackingStarted)this.queueActivity();
         return presence;
@@ -2479,6 +2492,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.remoteCursors = [];
                 this.remoteSelections = [];
                 this.remoteEditing = [];
+                this.clearClicks();
                 this.renderPeople();
                 this.scheduleCursorRender();
             }
@@ -2537,6 +2551,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     initSettings() {
         this.setting = new Setting({});
+        this.setting.addItem({title:this.i18n.renameSelf, description:this.i18n.profileTip, createActionElement:()=>this.createProfileForm()});
         this.setting.addItem({
             title: this.i18n.cursorTick,
             description: this.i18n.cursorTickTip,
@@ -2622,8 +2637,11 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.selectionStyle = document.createElement('style');
         this.cursorLayer.append(this.selectionStyle);
         this.handlePointer = (event) => {
+            if(!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))return;
             if (!event.pointerType || event.pointerType === "mouse" || event.pointerType === "pen") {
                 this.pointer = { x: event.clientX, y: event.clientY };
+                if (this.dragOrigin && (event.buttons & 1) && Math.hypot(event.clientX-this.dragOrigin.x,event.clientY-this.dragOrigin.y) >= 4) this.dragging = true;
+                if (event.buttons === 0 && !this.nativeDragging) this.endDrag();
                 if(event.target)this.surfaceTarget=event.target;
                 this.scheduleDocumentReport();
                 this.scheduleCursorRender();
@@ -2632,6 +2650,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             }
         };
         this.handlePointerLeave = () => {
+            this.endDrag();
             this.pointer = null;
             this.queueActivity();
             this.scheduleCursorRender();
@@ -2639,11 +2658,12 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.handlePointerOut = (event) => { if (!event.relatedTarget) this.handlePointerLeave(); };
         this.handleCursorLayout = () => { this.scheduleCursorRender(); this.queueActivity(); };
         this.handleVisibility = () => {
-            if (document.hidden) this.handlePointerLeave();
+            if (document.hidden) {this.handlePointerLeave();this.clearClicks();}
             else { this.refreshInBackground(); this.loadCursors(); }
             this.scheduleCursorRender();
         };
         document.addEventListener("pointermove", this.handlePointer, { passive: true });
+        this.stopInteractions = this.bindInteractions(document, event => event);
         document.addEventListener("pointerout", this.handlePointerOut, { passive: true });
         document.addEventListener("scroll", this.handleCursorLayout, { capture: true, passive: true });
         document.addEventListener("visibilitychange", this.handleVisibility);
@@ -2688,6 +2708,35 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.startCursorTimer();
     }
 
+    endDrag() {
+        if(!this.dragOrigin && !this.dragging && !this.nativeDragging)return;
+        this.dragOrigin = null;
+        this.dragging = this.nativeDragging = false;
+        this.queueActivity();
+    }
+
+    bindInteractions(doc, convert) {
+        const down = event => {
+            if (event.button !== 0 || event.isPrimary === false || event.pointerType === 'touch') return;
+            const point = convert(event); if (!point) return;
+            this.handlePointer(point);
+            this.dragOrigin = {x:point.clientX,y:point.clientY};
+            const cursor = captureCursor(this.pointer,this);
+            if (!cursor) return;
+            this.drawClick(this.pointer,this.hue ?? 0);
+            this.pendingClicks.push(cursor);
+            if(this.pendingClicks.length > 8)this.pendingClicks.shift();
+            this.queueActivity();
+        };
+        const start = event => {this.nativeDragging=this.dragging=true;const point=convert(event);if(point)this.handlePointer(point);this.queueActivity();};
+        const over = event => {const point=convert(event);if(point)this.handlePointer(point);};
+        const end = event => {this.endDrag();const point=convert(event);if(point)this.handlePointer(point);};
+        const cancel = () => {if(!this.nativeDragging)this.endDrag();};
+        const handlers = {pointerdown:down,pointerup:end,pointercancel:cancel,dragstart:start,dragover:over,dragend:end,drop:end};
+        for(const [type,handler] of Object.entries(handlers))doc.addEventListener(type,handler,{capture:true,passive:true});
+        return () => {for(const [type,handler] of Object.entries(handlers))doc.removeEventListener(type,handler,true);};
+    }
+
     bindFrames() {
         const frames=new Set();
         const visit=(doc,depth)=>{
@@ -2700,8 +2749,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         for(const [frame,binding] of this.frameListeners)if(!frames.has(frame)){binding.stop();this.frameListeners.delete(frame);}
         for(const frame of frames) {
             if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
-            let doc,observer;
-            const move=(event)=>{
+            let doc,observer,stopInteractions;
+            const convert=(event)=>{
                 if(!frame.isConnected)return;
                 let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=false;
                 for(let current=frame;current;){
@@ -2710,14 +2759,16 @@ module.exports = class CollaborationPlugin extends Plugin {
                     current=current.ownerDocument.defaultView?.frameElement;
                 }
                 if(!reachedRoot)return;
-                this.handlePointer({target,pointerType:event.pointerType,clientX:point.x,clientY:point.y});
+                return {target,pointerType:event.pointerType,buttons:event.buttons,clientX:point.x,clientY:point.y};
             };
-            const stopDocument=()=>{observer?.disconnect();observer=null;doc?.removeEventListener('click',rememberColorEditor,true);doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
+            const move=event=>{const point=convert(event);if(point)this.handlePointer(point);};
+            const stopDocument=()=>{stopInteractions?.();stopInteractions=null;observer?.disconnect();observer=null;doc?.removeEventListener('click',rememberColorEditor,true);doc?.removeEventListener('pointermove',move,true);doc?.removeEventListener('keydown',this.handleKey,true);doc?.removeEventListener('scroll',this.handleCursorLayout,true);doc?.removeEventListener('input',this.handleCursorLayout,true);doc?.removeEventListener('change',this.handleCursorLayout,true);doc?.defaultView?.removeEventListener('resize',this.handleCursorLayout);if(doc)clearComponentStyles(doc);doc=null;};
             const load=()=>{
                 let next;try{next=frame.contentDocument;}catch{}
                 if(next===doc)return;
                 stopDocument();
                 doc=next;if(!doc)return;
+                stopInteractions=this.bindInteractions(doc,convert);
                 doc.addEventListener('click',rememberColorEditor,{capture:true,passive:true});doc.addEventListener('pointermove',move,{capture:true,passive:true});doc.addEventListener('keydown',this.handleKey,{capture:true,passive:true});doc.addEventListener('scroll',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('input',this.handleCursorLayout,{capture:true,passive:true});doc.addEventListener('change',this.handleCursorLayout,{capture:true,passive:true});doc.defaultView?.addEventListener('resize',this.handleCursorLayout,{passive:true});
                 observer=new MutationObserver(records=>{
                     if(this.stopped)return;
@@ -2749,6 +2800,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.activityTimer=null;this.activitySentAt=Date.now();this.activityFlushing=true;
             const keys=this.pendingShortcut;this.pendingShortcut=null;
             if (keys && !this.stopped) this.kernel.rpc.call.shortcut(this.sessionId,this.generation,++this.shortcutSequence,keys).catch(()=>{});
+            for(const cursor of this.pendingClicks.splice(0))if(!this.stopped)this.kernel.rpc.call.pointerClick(this.sessionId,this.generation,++this.clickSequence,cursor).catch(()=>{});
             await Promise.allSettled([this.sendCursor(),this.sendSelection(),this.sendEditing()]);
             this.activityFlushing=false;
             if(this.activityQueued){this.activityQueued=false;this.queueActivity();}
@@ -2871,10 +2923,10 @@ module.exports = class CollaborationPlugin extends Plugin {
                     }
                     const label=marker.querySelector('span');
                     if(label.textContent!==client.name)label.textContent=client.name;
-                    const state=client.cursor.state || 'pointer';
+                    const state=client.cursor.dragging ? 'dragging' : client.cursor.state || 'pointer';
                     if(marker.dataset.state!==state){
                         marker.dataset.state=state;
-                        marker.querySelector('path').setAttribute('d',state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
+                        marker.querySelector('path').setAttribute('d',state==='dragging' ? 'M5 10V7Q5 5 7 5Q8 5 8 7V5Q8 3 10 3Q12 3 12 5V6Q12 4 14 4Q16 4 16 6V8Q16 6 18 7Q19 7 19 9V14Q19 20 13 20H10Q8 20 7 18L3 13Q2 11 4 10L7 13V9Z' : state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
                     }
                     for(const notice of this.shortcutNotices.get(client.name)||[]){
                         if(notice.element.parentElement===this.cursorLayer)continue;
@@ -2905,6 +2957,12 @@ module.exports = class CollaborationPlugin extends Plugin {
             }
             this.renderSelections();
             this.renderEditing();
+            for(const [element,effect] of this.clickEffects)if(effect.cursor){
+                const point=resolveCursor(effect.cursor,this);
+                if(!point || document.hidden || Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT || !this.clients.some(client=>client.peerId===effect.peerId)){
+                    clearTimeout(effect.timer);element.remove();this.clickEffects.delete(element);
+                }else{element.style.left=`${point.x}px`;element.style.top=`${point.y}px`;}
+            }
         }finally{for(const probes of componentMeasurements.visualHits.values())for(const {probe}of probes)probe.remove();componentMeasurements=previousMeasurements;}
     }
 
@@ -3005,7 +3063,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (row.classList.contains("collab-presence")) this.clearRow(row);
                 continue;
             }
-            const signature = JSON.stringify(viewers);
+            const signature = JSON.stringify(viewers.map(({name,hue})=>[name,hue]));
             if (row.getAttribute("data-collab-presence") === signature) continue;
             this.clearRow(row);
             const group = document.createElement("button");
@@ -3042,57 +3100,52 @@ module.exports = class CollaborationPlugin extends Plugin {
         menu.open({ x: rect.right, y: rect.bottom, isLeft: true });
     }
 
-    openRenameDialog() {
-        if (this.renameDialog) return;
-        const dialog = new Dialog({ title: this.i18n.renameSelf, content: '<div class="b3-dialog__content"></div>', width: "360px", destroyCallback: () => { this.renameDialog = null; } });
-        this.renameDialog = dialog;
-        const form = document.createElement("form");
-        form.className = "collab-name-form";
-        const label = document.createElement("label");
-        label.textContent = this.i18n.nameLabel;
-        const input = document.createElement("input");
-        input.className = "b3-text-field fn__block";
-        input.value = this.clientName;
-        input.maxLength = 24;
-        input.required = true;
-        input.autocomplete = "off";
-        label.append(input);
-        const error = document.createElement("div");
-        error.className = "ft__error";
-        error.setAttribute("role", "alert");
-        const actions = document.createElement("div");
-        actions.className = "collab-name-actions";
-        const cancel = document.createElement("button");
-        cancel.type = "button";
-        cancel.className = "b3-button b3-button--cancel";
-        cancel.textContent = this.i18n.cancel;
-        cancel.addEventListener("click", () => dialog.destroy());
-        const save = document.createElement("button");
-        save.type = "submit";
-        save.className = "b3-button";
-        save.textContent = this.i18n.save;
-        actions.append(cancel, save);
-        form.append(label, error, actions);
-        form.addEventListener("submit", async (event) => {
-            event.preventDefault();
-            save.disabled = true;
-            error.textContent = "";
+    createProfileForm(onSaved, onCancel) {
+        const form=document.createElement('form');form.className='collab-name-form';
+        const label=document.createElement('label');label.textContent=this.i18n.nameLabel;
+        const input=document.createElement('input');input.className='b3-text-field fn__block';input.value=this.clientName;
+        input.maxLength=48;input.required=true;input.autocomplete='off';label.append(input);
+        const colorLabel=document.createElement('label');colorLabel.textContent=this.i18n.colorLabel;
+        const slider=document.createElement('input');slider.type='range';slider.min='0';slider.max='359';slider.step='1';slider.value=String(this.hue ?? 0);slider.className='collab-hue';colorLabel.append(slider);
+        const swatches=document.createElement('div');swatches.className='collab-swatches';swatches.setAttribute('role','group');swatches.setAttribute('aria-label',this.i18n.colorLabel);
+        for(const hue of [0,30,55,120,180,220,270,320]) {
+            const button=document.createElement('button');button.type='button';button.dataset.hue=String(hue);
+            button.style.setProperty('--collab-cursor-hue',String(hue));button.setAttribute('aria-label',this.i18n.colorHue.replace('${hue}',String(hue)));
+            button.addEventListener('click',()=>{slider.value=String(hue);preview();});swatches.append(button);
+        }
+        const sample=document.createElement('div');sample.className='collab-profile-preview';sample.setAttribute('aria-label',this.i18n.profilePreview);
+        const marker=document.createElement('div');marker.className='collab-cursor';
+        const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 22 22');
+        const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M2 2L19 8.5L12 12L8.5 19Z');svg.append(path);
+        const name=document.createElement('span');marker.append(svg,name);sample.append(marker);
+        const preview=()=>{name.textContent=input.value.trim() || this.i18n.self;sample.style.setProperty('--collab-cursor-hue',slider.value);for(const button of swatches.children)button.setAttribute('aria-pressed',String(button.dataset.hue===slider.value));};
+        input.addEventListener('input',preview);slider.addEventListener('input',preview);preview();
+        const status=document.createElement('div');status.className='collab-profile-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');
+        const actions=document.createElement('div');actions.className='collab-name-actions';
+        if(onCancel){const cancel=document.createElement('button');cancel.type='button';cancel.className='b3-button b3-button--cancel';cancel.textContent=this.i18n.cancel;cancel.addEventListener('click',onCancel);actions.append(cancel);}
+        const save=document.createElement('button');save.type='submit';save.className='b3-button';save.textContent=this.i18n.save;actions.append(save);
+        form.append(label,colorLabel,swatches,sample,status,actions);
+        form.addEventListener('submit',async event=>{
+            event.preventDefault();if(save.disabled)return;save.disabled=true;status.textContent='';status.classList.remove('ft__error');
             try {
-                await this.refreshOnline();
-                if (this.stopped) return;
-                const presence = await this.kernel.rpc.call.presenceRename(this.sessionId, input.value, this.generation);
-                this.updatePresence(presence);
-                dialog.destroy();
-            } catch {
-                error.textContent = this.i18n.renameFailed;
-                save.disabled = false;
-                input.focus();
-            }
+                await this.refreshOnline();if(this.stopped)return;
+                this.updatePresence(await this.kernel.rpc.call.presenceRename(this.sessionId,input.value,this.generation,Number(slider.value)));
+                status.textContent=this.i18n.profileSaved;onSaved?.();
+            } catch {status.classList.add('ft__error');status.textContent=this.i18n.renameFailed;}
+            finally {save.disabled=false;}
         });
-        dialog.element.querySelector(".b3-dialog__content").append(form);
-        input.focus();
-        input.select();
+        return form;
     }
+
+    openRenameDialog() {
+        if(this.renameDialog)return;
+        const dialog=new Dialog({title:this.i18n.renameSelf,content:'<div class="b3-dialog__content"></div>',width:'min(380px, calc(100vw - 32px))',destroyCallback:()=>{this.renameDialog=null;}});
+        this.renameDialog=dialog;
+        const form=this.createProfileForm(()=>dialog.destroy(),()=>dialog.destroy());
+        dialog.element.querySelector('.b3-dialog__content').append(form);
+        form.querySelector('input').focus();form.querySelector('input').select();
+    }
+
 
     async checkOnline() {
         try {
@@ -3143,10 +3196,10 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderPeople() {
         if (!this.peoplePanel) return;
-        this.peoplePanel.querySelector('strong').textContent=this.i18n.onlineBadge.replace('${count}',String(this.onlineCount ?? '—'));
+        const clients=this.clients.filter(client=>!this.peopleDocument || client.documentId===this.peopleDocument);
+        this.peoplePanel.querySelector('strong').textContent=(this.peopleDocument ? this.i18n.documentViewers : this.i18n.onlineBadge).replace('${count}',String(this.onlineCount===null ? '—' : this.peopleDocument ? clients.length : this.onlineCount));
         const list=this.peoplePanel.querySelector('.collab-people__list'), visible=new Set();
-        for(const client of this.clients) {
-            if(this.peopleDocument && client.documentId!==this.peopleDocument)continue;
+        for(const client of clients) {
             const key=client.peerId || client.name;visible.add(key);
             let row=this.peopleRows.get(key);
             if(!row) {
@@ -3169,7 +3222,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             row.style.setProperty('--collab-person-hue',String(client.hue));
             row.setAttribute('data-name',client.name);
             const own=client.name===this.clientName;
-            row.querySelector('.collab-person-name').textContent=client.name;
+            row.querySelector('.collab-person-name').textContent=client.name;row.querySelector('strong').title=client.name;
             const self=row.querySelector('.collab-person-self');self.textContent=own ? ' · '+this.i18n.self:'';self.hidden=!own;
             const page=row.querySelector('.collab-person__page');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
             row.querySelector('button').disabled=own || (!client.page && !client.documentId);
@@ -3192,6 +3245,31 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.scheduleCursorRender();
     }
 
+    showClick(value) {
+        if(this.stopped || document.hidden || Date.now()-this.presenceReceivedAt>=PRESENCE_TIMEOUT || !value || value.peerId===this.peerId ||
+            !this.clients.some(client=>client.peerId===value.peerId && client.name===value.name && client.hue===value.hue) || !validCursor(value.cursor) || !value.cursor)return;
+        const point=resolveCursor(value.cursor,this);
+        if(point)this.drawClick(point,value.hue,value);
+    }
+
+    drawClick(point,hue,value) {
+        if(!this.cursorLayer || document.hidden)return;
+        if(this.clickEffects.size>=32){const [element,effect]=this.clickEffects.entries().next().value;clearTimeout(effect.timer);element.remove();this.clickEffects.delete(element);}
+        const element=document.createElement('div');element.className='collab-click';element.setAttribute('aria-hidden','true');
+        element.style.left=`${point.x}px`;element.style.top=`${point.y}px`;element.style.setProperty('--collab-cursor-hue',String(hue));
+        const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','-20 -20 40 40');
+        for(let i=0;i<8;i++){
+            const ray=document.createElementNS('http://www.w3.org/2000/svg','path');ray.setAttribute('d','M0 -9V-15');ray.setAttribute('transform',`rotate(${i*45})`);svg.append(ray);
+        }
+        element.append(svg);this.cursorLayer.append(element);
+        const timer=setTimeout(()=>{element.remove();this.clickEffects.delete(element);},440);
+        this.clickEffects.set(element,{timer,cursor:value?.cursor,peerId:value?.peerId});
+    }
+
+    clearClicks() {
+        for(const [element,effect] of this.clickEffects){clearTimeout(effect.timer);element.remove();}this.clickEffects.clear();this.pendingClicks.length=0;
+    }
+
     async onunload() {
         this.stopped = true;
         clearComponentStyles();
@@ -3203,6 +3281,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         cancelAnimationFrame(this.cursorFrame);
         clearTimeout(this.activityTimer);
         clearTimeout(this.typingTimer);
+        this.stopInteractions?.();
+        this.clearClicks();
         for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
         this.closePeople();
         for(const notices of this.shortcutNotices.values())for(const notice of notices)clearTimeout(notice.timer);
@@ -3235,7 +3315,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.off("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
-        await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut)]);
+        await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut),this.kernel.rpc.unbind("pointer-clicked",this.handleClick)]);
         await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
     }
 };
