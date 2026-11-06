@@ -2856,10 +2856,12 @@ module.exports = class CollaborationPlugin extends Plugin {
                         marker.querySelector('path').setAttribute('d',state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
                     }
                     for(const notice of this.shortcutNotices.get(client.name)||[]){
-                        if(notice.element.parentElement!==marker)marker.append(notice.element);
-                        const side=point.x>window.innerWidth/2?'left':'right',below=point.y<80?'true':'false';
-                        if(notice.element.dataset.side!==side)notice.element.dataset.side=side;
-                        if(notice.element.dataset.below!==below)notice.element.dataset.below=below;
+                        if(notice.element.parentElement===this.cursorLayer)continue;
+                        notice.element.style.setProperty('--collab-shortcut-x',`${point.x}px`);
+                        notice.element.style.setProperty('--collab-shortcut-y',`${point.y}px`);
+                        notice.element.dataset.side=point.x>window.innerWidth/2?'left':'right';
+                        notice.element.dataset.below=point.y<80?'true':'false';
+                        this.cursorLayer.append(notice.element);
                     }
                     marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                     const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
@@ -2879,7 +2881,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     marker.remove();
                     this.cursorMarkers.delete(name);
                     const notices=this.shortcutNotices.get(name);
-                    if(notices){for(const notice of notices)clearTimeout(notice.timer);this.shortcutNotices.delete(name);}
+                    if(notices){for(const notice of notices){clearTimeout(notice.timer);notice.element.remove();}this.shortcutNotices.delete(name);}
                 }
             }
             this.renderSelections();
@@ -3151,6 +3153,9 @@ module.exports = class CollaborationPlugin extends Plugin {
         let notices=this.shortcutNotices.get(value.name);
         if(!notices){notices=new Set();this.shortcutNotices.set(value.name,notices);}
         const element=document.createElement('div');element.className='collab-shortcut';element.textContent=value.keys;
+        element.style.setProperty('--collab-throw-distance',String(.75+Math.random()*.5));
+        element.style.setProperty('--collab-throw-height',String(.8+Math.random()*.3));
+        element.style.setProperty('--collab-throw-spin',String(.8+Math.random()*.4));
         const notice={element};notices.add(notice);
         notice.timer=setTimeout(()=>{element.remove();notices.delete(notice);if(!notices.size)this.shortcutNotices.delete(value.name);},850);
         this.scheduleCursorRender();

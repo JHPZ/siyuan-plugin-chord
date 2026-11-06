@@ -194,8 +194,8 @@
 .collab-people__empty { margin:16px; color:var(--b3-theme-on-surface); }
 .collab-shortcut {
     position: absolute;
-    left: 0;
-    top: -28px;
+    left: var(--collab-shortcut-x, 0px);
+    top: calc(var(--collab-shortcut-y, 0px) - 28px);
     width: max-content;
     max-width: min(260px, calc(42vw - 8px));
     box-sizing: border-box;
@@ -211,24 +211,24 @@
     overflow: hidden;
     text-overflow: ellipsis;
     pointer-events: none;
-    --collab-throw-x: min(96px, 8vw);
-    --collab-throw-direction: 1;
+    --collab-throw-x: calc(min(96px, 8vw) * var(--collab-throw-distance, 1));
+    --collab-throw-direction: var(--collab-throw-spin, 1);
     animation: collab-shortcut-throw 760ms linear both;
 }
-.collab-shortcut[data-side="left"] { left: auto; right: 22px; --collab-throw-x: max(-96px, -8vw); --collab-throw-direction: -1; }
-.collab-shortcut[data-below="true"] { top: 42px; }
+.collab-shortcut[data-side="left"] { left: auto; right: calc(100% - var(--collab-shortcut-x, 0px) + 22px); --collab-throw-x: calc(max(-96px, -8vw) * var(--collab-throw-distance, 1)); --collab-throw-direction: calc(-1 * var(--collab-throw-spin, 1)); }
+.collab-shortcut[data-below="true"] { top: calc(var(--collab-shortcut-y, 0px) + 42px); }
 @keyframes collab-shortcut-throw {
-    0% { opacity: 1; transform: translate(0, 8px) rotate(calc(var(--collab-throw-direction) * -8deg)); }
-    10% { transform: translate(calc(var(--collab-throw-x) * .1), -12.8px) rotate(calc(var(--collab-throw-direction) * -5.4deg)); }
-    20% { transform: translate(calc(var(--collab-throw-x) * .2), -27.2px) rotate(calc(var(--collab-throw-direction) * -2.8deg)); }
-    30% { transform: translate(calc(var(--collab-throw-x) * .3), -35.2px) rotate(calc(var(--collab-throw-direction) * -.2deg)); }
-    40% { transform: translate(calc(var(--collab-throw-x) * .4), -36.8px) rotate(calc(var(--collab-throw-direction) * 2.4deg)); }
-    50% { transform: translate(calc(var(--collab-throw-x) * .5), -32px) rotate(calc(var(--collab-throw-direction) * 5deg)); }
-    60% { opacity: 1; transform: translate(calc(var(--collab-throw-x) * .6), -20.8px) rotate(calc(var(--collab-throw-direction) * 7.6deg)); }
-    70% { transform: translate(calc(var(--collab-throw-x) * .7), -3.2px) rotate(calc(var(--collab-throw-direction) * 10.2deg)); }
-    80% { transform: translate(calc(var(--collab-throw-x) * .8), 20.8px) rotate(calc(var(--collab-throw-direction) * 12.8deg)); }
-    90% { transform: translate(calc(var(--collab-throw-x) * .9), 51.2px) rotate(calc(var(--collab-throw-direction) * 15.4deg)); }
-    100% { opacity: 0; transform: translate(var(--collab-throw-x), 88px) rotate(calc(var(--collab-throw-direction) * 18deg)); }
+    0% { opacity: 1; transform: translate(0, calc(8px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * -8deg)); }
+    10% { transform: translate(calc(var(--collab-throw-x) * .1), calc(-12.8px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * -5.4deg)); }
+    20% { transform: translate(calc(var(--collab-throw-x) * .2), calc(-27.2px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * -2.8deg)); }
+    30% { transform: translate(calc(var(--collab-throw-x) * .3), calc(-35.2px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * -.2deg)); }
+    40% { transform: translate(calc(var(--collab-throw-x) * .4), calc(-36.8px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 2.4deg)); }
+    50% { transform: translate(calc(var(--collab-throw-x) * .5), calc(-32px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 5deg)); }
+    60% { opacity: 1; transform: translate(calc(var(--collab-throw-x) * .6), calc(-20.8px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 7.6deg)); }
+    70% { transform: translate(calc(var(--collab-throw-x) * .7), calc(-3.2px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 10.2deg)); }
+    80% { transform: translate(calc(var(--collab-throw-x) * .8), calc(20.8px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 12.8deg)); }
+    90% { transform: translate(calc(var(--collab-throw-x) * .9), calc(51.2px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 15.4deg)); }
+    100% { opacity: 0; transform: translate(var(--collab-throw-x), calc(88px * var(--collab-throw-height, 1))) rotate(calc(var(--collab-throw-direction) * 18deg)); }
 }
 @keyframes collab-shortcut-fade {
     0%, 100% { opacity: 0; }
