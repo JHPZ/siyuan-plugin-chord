@@ -325,11 +325,35 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
     }finally{style.textContent=base;}
 }
 
-function measureComponentDateField(element) {
+function measureComponentDatePlane(element) {
+    const doc=element.ownerDocument,view=doc.defaultView,plane=frameBox(element),css=view.getComputedStyle(element);
+    // shortcut: native transform transitions/animations need calibration that does not override their transforms.
+    const durations=css.transitionDuration.split(','),delays=css.transitionDelay.split(','),transform=name=>['all','transform','transform-origin','rotate','scale','translate'].includes(name.trim());
+    if(!plane || !element.showPopover || css.transitionProperty.split(',').some((name,i)=>transform(name)&&(parseFloat(durations[i%durations.length])!==0||parseFloat(delays[i%delays.length])>0)) || element.getAnimations().some(animation=>animation.effect.getKeyframes().some(frame=>Object.keys(frame).some(name=>/^(transform(?:Origin)?|rotate|scale|translate)$/.test(name)))))return null;
+    const before=element.getBoundingClientRect(),active=doc.activeElement,value=element.value,scroll=[];for(let node=element;node;node=node.parentElement)scroll.push({node,x:node.scrollLeft,y:node.scrollTop});
+    const path=[];for(let node=element;node&&node!==doc.documentElement;node=node.parentElement)path.unshift(node.localName+':nth-child('+([...node.parentElement.children].indexOf(node)+1)+')');
+    const selector=':root > '+path.join(' > '),style=doc.createElement('style');style.className='collab-text-measure collab-date-measure';
+    const rule=transform=>selector+'{transform:'+transform+'!important;transform-origin:0 0!important;rotate:none!important;scale:none!important;translate:none!important}';let result;
+    try{
+        // Transform-only calibration leaves layout and the native partial edit buffer intact within this task.
+        style.textContent=rule('none');doc.head.append(style);const parent=frameBox(element);if(!parent)return null;
+        const det=parent.a*parent.d-parent.b*parent.c;style.textContent=rule('matrix('+[parent.d/det,-parent.b/det,-parent.c/det,parent.a/det,0,0].join(',')+')');
+        const neutral=frameBox(element),origin=element.getBoundingClientRect();if(!neutral || Math.max(Math.abs(neutral.a-1),Math.abs(neutral.b),Math.abs(neutral.c),Math.abs(neutral.d-1))>1e-5)return null;
+        result=measureComponentDateField(element,true);if(!result)return null;
+        const port=result.content.viewport;result.content.viewport={left:port.left,right:port.right,top:port.top,bottom:port.bottom,width:port.width,height:port.height};
+        for(const rect of [result.content,result.content.viewport,result.image,...result.glyphs.map(glyph=>glyph.rect)].filter(Boolean)){rect.left-=origin.left;rect.right-=origin.left;rect.top-=origin.top;rect.bottom-=origin.top;}
+        plane.rect=target=>target===element?{...plane.bounds,width:plane.bounds.right,height:plane.bounds.bottom}:null;result.plane=plane;
+    }finally{
+        style.remove();const after=element.getBoundingClientRect();if(element.value!==value || doc.activeElement!==active || scroll.some(p=>p.node.scrollLeft!==p.x||p.node.scrollTop!==p.y) || ['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001))result=null;
+    }
+    return result;
+}
+
+function measureComponentDateField(element,plane=false) {
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),before=element.getBoundingClientRect();
-    // shortcut: twelve-hour fields and transformed native text need independent state/plane calibration.
+    // shortcut: twelve-hour fields need independent native state calibration.
     if(!doc.head||!view.CSS.supports('anchor-name','--collab-date')||css.writingMode!=='horizontal-tb')return null;
-    for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),m=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(!m.is2D||m.a!==1||m.b!==0||m.c!==0||m.d!==1||s.scale!=='none'||s.rotate!=='none'||s.zoom!=='1')return null;}
+    if(!plane){let transformed=false;for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),m=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(s.zoom!=='1')return null;transformed ||= !m.is2D||m.a!==1||m.b!==0||m.c!==0||m.d!==1||s.scale!=='none'||s.rotate!=='none'||s.perspective!=='none';}if(transformed)return measureComponentDatePlane(element);}
     const ownBefore=view.getComputedStyle(element,'::before');if(!['none','normal'].includes(ownBefore.content))return null;
     const sources=componentDateSheets(doc);if(!sources)return null;
     const path=[];for(let node=element;node&&node!==doc.documentElement;node=node.parentElement)path.unshift(node.localName+':nth-child('+([...node.parentElement.children].indexOf(node)+1)+')');
@@ -356,6 +380,7 @@ function measureComponentDateField(element) {
         }
         style.textContent=parts.map((part,i)=>selector+'::-webkit-'+part+'{anchor-name:'+(styles[i].get('anchor-name')==='none'?'':styles[i].get('anchor-name')+',')+'--collab-date-'+i+'!important}').join('\n');
         const probes=parts.map((_,i)=>{const probe=doc.createElement('i');probe.style.cssText='all:initial;position:fixed;position-anchor:--collab-date-'+i+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(probe);return probe;});element.parentElement.append(host);
+        if(plane){host.setAttribute('popover','manual');host.showPopover();if(!host.matches(':popover-open'))return null;}
         probes.forEach(probe=>rects.push(probe.getBoundingClientRect()));
         const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[0].width||!rects[1].width)return null;
         const visible=i=>{for(const index of [0,1,i]){const s=styles[index];if(s.get('display')==='none'||s.get('visibility')!=='visible'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
@@ -1260,12 +1285,14 @@ function measureComponentScrollbar(element,point,parts) {
 function componentGeometry(element,point,scrollbar=componentScrollbar(element,point),fieldText) {
     if(element.matches(COMPONENT_DATE_FIELD)){
         const date=componentDateField(element);if(!date)return null;
-        const viewport=date.content.viewport,bounds=element.getBoundingClientRect(),image=date.image;
+        const viewport=date.content.viewport,bounds=date.plane?{...date.plane.bounds,width:date.plane.bounds.right,height:date.plane.bounds.bottom}:element.getBoundingClientRect(),image=date.image;
+        if(date.plane)point=date.plane.toLocal(point);
         if(!(image&&point.x>=image.left&&point.x<image.right&&point.y>=image.top&&point.y<image.bottom)&&(point.y<viewport.top||point.y>=viewport.bottom)){
             const above=point.y<viewport.top,start=above?bounds.top:viewport.bottom,end=above?viewport.top:bounds.bottom;
             if(point.x<bounds.left||point.x>=bounds.right||point.y<start||point.y>=end)return null;
             return {edges:{x:[{kind:'self',side:'start'},{kind:'self',side:'end'}],y:above?[{kind:'self',side:'start'},{kind:'field-viewport',side:'start'}]:[{kind:'field-viewport',side:'end'},{kind:'self',side:'end'}]},x:(point.x-bounds.left)/bounds.width,y:(point.y-start)/(end-start)};
         }
+        if(date.plane)point=date.plane.toParent(point);
     }
     if(element.matches('input,textarea') && ['text','search','number','email','url','tel','password','textarea'].includes(element.type) && !componentTextField(element))return null;
     const contains=rect=>point.x>=rect.left&&point.x<rect.right&&point.y>=rect.top&&point.y<rect.bottom;
@@ -1274,7 +1301,7 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
         const [kind,rect]=part;return {edges:{x:[{kind,side:'start'},{kind,side:'end'}],y:[{kind,side:'start'},{kind,side:'end'}]},x:(point.x-rect.left)/(rect.right-rect.left),y:(point.y-rect.top)/(rect.bottom-rect.top)};
     }
     const picker=element.matches('select:open') ? componentPicker(element):null,inside=rect=>rect && point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom;
-    const parentPoint=point,textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
+    const parentPoint=point,textPlane=element.matches(COMPONENT_DATE_FIELD)?componentDateField(element)?.plane:componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     if(picker?.toLocal)point=picker.toLocal(point);
     const onPicker=inside(picker?.bounds),select=(element.matches('select') || componentSelectField(element)) && !onPicker;if(select && !componentTextField(element))return null;
     if(!onPicker)point=parentPoint;
@@ -1425,7 +1452,7 @@ function resolveMeasuredComponent(cursor,plugin) {
     // A grid crossing can be bounded entirely by option edges.
     const pickerAnchor=Object.values(anchor.edges).flat().some(edge=>edge.kind.startsWith('picker-') || edge.kind==='child' && element.matches('select')),picker=pickerAnchor && componentPicker(element);
     if(pickerAnchor && !picker)return null;
-    const textPlane=componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
+    const textPlane=element.matches(COMPONENT_DATE_FIELD)?componentDateField(element)?.plane:componentPickerElementPlane(element);if(textPlane===null || textPlane && element.textContent && typeof Intl.Segmenter!=='function')return null;
     const select=(element.matches('select') || componentSelectField(element)) && !picker;
     if(select && !componentTextField(element))return null;
     if(!picker && componentTextField(element) && !Object.values(anchor.edges).flat().some(edge=>edge.kind==='text' || edge.kind==='field' || edge.kind==='field-viewport' || (select || element.matches(COMPONENT_DATE_FIELD)) && edge.kind==='image'))return null;
@@ -1463,7 +1490,8 @@ function resolveMeasuredComponent(cursor,plugin) {
     if(!haloAnchor && (precise || gaps.length)){
         // Textarea text can scroll into padding, but remains clipped at the native viewport.
         const clip=element.matches('textarea') ? field?.viewport:field;
-        if(fieldRects && clip && !element.matches('select') && (point.x<clip.left || point.x>=clip.right || point.y<clip.top || point.y>=clip.bottom))return null;
+        const clipPoint=element.matches(COMPONENT_DATE_FIELD)&&box?box.toLocal(point):point;
+        if(fieldRects && clip && !element.matches('select') && (clipPoint.x<clip.left || clipPoint.x>=clip.right || clipPoint.y<clip.top || clipPoint.y>=clip.bottom))return null;
         const glyph=fieldRects && Object.values(anchor.edges).flat().every(edge=>edge.kind==='text' && edge.offset===offsets[0]) && {offset:offsets[0],rect:fieldRects.get(offsets[0])};
         const local=componentGeometry(element,point,scrollbarAnchor?scrollbar:undefined,glyph?.rect ? [glyph]:undefined);
         if(!local)return null;
