@@ -285,7 +285,7 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
     // Verify the last decoded state against native attributes each time; unchanged fields need no bit probes.
     if(previous&&previous.length===indices.length&&previous.every((state,i)=>state.index===indices[i])){
         const checks=previous.map(state=>{const name='--collab-date-state-'+state.index+'-same',condition=state.missing?'style(--collab-date-value < 0) and style(--collab-date-placeholder:'+JSON.stringify(state.value)+')':'style(--collab-date-value >= '+Number(state.value)+') and style(--collab-date-value <= '+Number(state.value)+')',anchors=[styles[state.index+2].get('anchor-name'),'--collab-date-'+(state.index+2),'if('+condition+':'+name+';else:'+name+'-changed)'].filter(value=>value!=='none');return {state,node:probe(name),rule:selector+'::-webkit-datetime-edit-'+['year','month','day','hour','minute','second','millisecond'][state.index]+'-field{--collab-date-value:attr(aria-valuenow type(<number>),-1);--collab-date-placeholder:attr(aria-placeholder,"__missing__");anchor-name:'+anchors.join(',')+'!important}'};});
-        style.textContent=base+'\n'+checks.map(check=>check.rule).join('\n');
+        style.textContent=base.slice(0,-1)+'\n'+checks.map(check=>check.rule).join('\n')+'}';
         if(checks.every(check=>resolved(check.node)))for(const {state}of checks){values[state.index]=state.value;states.push({...state});}
     }
     if(!states.length){
@@ -296,7 +296,7 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
         anchors.push('if('+labels[index].map((text,i)=>{const name=prefix+'-placeholder-'+i;placeholders.push({text,node:probe(name)});return 'style(--collab-date-placeholder:'+JSON.stringify(text)+'):'+name;}).join(';')+';else:'+prefix+'-unknown)');
         rules.push(selector+'::-webkit-datetime-edit-'+['year','month','day','hour','minute','second','millisecond'][index]+'-field{'+declarations.join(';')+';anchor-name:'+anchors.join(',')+'!important}');states.push({index,has,empty,digits,placeholders});
     }
-        style.textContent=base+'\n'+rules.join('\n');
+        style.textContent=base.slice(0,-1)+'\n'+rules.join('\n')+'}';
         for(const state of states){
             const present=resolved(state.has);if(present===resolved(state.empty))return null;
             if(present){const value=state.digits.reduce((sum,node,bit)=>sum+(resolved(node)?2**bit:0),0);values[state.index]=String(value).padStart(state.index===0?4:state.index===6?3:2,'0');}
@@ -314,7 +314,7 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
             const candidates=missing.map(state=>({...state,options:[values[state.index],'0'.repeat(state.index===0?4:state.index===6?3:2)].map(text=>{const span=doc.createElement('span');span.style.cssText=textStyle;for(const name of inherited)span.style.setProperty(name,styles[state.index+2].get(name));span.textContent=text;host.append(span);return {text,span};})}));
             const match=state=>{const width=probes[state.index+2].getBoundingClientRect().width,s=styles[state.index+2],inset=['padding-left','padding-right','border-left-width','border-right-width'].reduce((sum,key)=>sum+parseFloat(s.get(key)),0),matches=state.options.filter(option=>{const range=doc.createRange();range.selectNodeContents(option.span);return Math.abs(range.getBoundingClientRect().width+inset-width)<.1;});if(matches.length!==1)return false;values[state.index]=matches[0].text;return true;},ambiguous=candidates.filter(state=>!match(state));
             if(ambiguous.length){
-                style.textContent+='\n'+selector+'{font-family:serif!important;letter-spacing:1px!important}';
+                style.textContent=style.textContent.slice(0,-1)+'\n'+selector+'{font-family:serif!important;letter-spacing:1px!important}}';
                 const family=view.getComputedStyle(element).fontFamily;for(const state of ambiguous)for(const {span}of state.options){span.style.fontFamily=family;span.style.letterSpacing='1px';}
                 if(!ambiguous.every(match))return null;
                 style.textContent=base;
@@ -359,7 +359,7 @@ function measureComponentDateField(element,plane=false) {
     const selector=':root > '+path.join(' > '),fields=['year','month','day','hour','minute','second','millisecond','ampm'],parts=['datetime-edit','datetime-edit-fields-wrapper',...fields.map(key=>'datetime-edit-'+key+'-field'),'datetime-edit-text','calendar-picker-indicator'];
     const inherited=['font-family','font-size','font-style','font-weight','font-stretch','font-variant','font-feature-settings','font-variation-settings','font-kerning','line-height','letter-spacing','word-spacing','text-transform','direction','color','visibility'];
     const properties=[...inherited,'display','opacity','anchor-name','padding-left','padding-right','padding-top','padding-bottom','border-left-width','border-right-width','border-top-width','border-bottom-width','filter','clip-path','transform','rotate','scale','translate','background-origin','background-size','background-position','background-repeat'];
-    let style=componentDateStyles.get(doc);if(!style){style=doc.createElement('style');style.className='collab-text-measure collab-date-measure';componentDateStyles.set(doc,style);}if(!style.isConnected)doc.head.append(style);
+    let style=componentDateStyles.get(doc);if(!style){style=doc.createElement('style');style.className='collab-text-measure collab-date-measure';componentDateStyles.set(doc,style);}doc.head.append(style);
     const host=doc.createElement('div');host.className='collab-text-measure';host.setAttribute('aria-hidden','true');host.style.cssText='all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;visibility:hidden!important;pointer-events:none!important';
     const styles=[],rects=[],glyphs=[];let result;
     try{
@@ -377,7 +377,8 @@ function measureComponentDateField(element,plane=false) {
             style.textContent=':where('+selector+')::before{'+inherit+';'+defaults+'}\n'+rules.join('\n').replaceAll('::before',':where('+selector+')::before')+'\n:where('+selector+')::before{content:none!important}';
             const current=view.getComputedStyle(element,'::before'),values=new Map(properties.map(name=>[name,current.getPropertyValue(name)]));values.getPropertyValue=name=>values.get(name)||'';styles.push(values);
         }
-        style.textContent=parts.map((part,i)=>selector+'::-webkit-'+part+'{anchor-name:'+(styles[i].get('anchor-name')==='none'?'':styles[i].get('anchor-name')+',')+'--collab-date-'+i+'!important}').join('\n');
+        // Mirror author styles last, then put all temporary anchors in the first important layer.
+        style.textContent='@layer{'+parts.map((part,i)=>selector+'::-webkit-'+part+'{anchor-name:'+(styles[i].get('anchor-name')==='none'?'':styles[i].get('anchor-name')+',')+'--collab-date-'+i+'!important}').join('\n')+'}';doc.head.prepend(style);
         const probes=parts.map((_,i)=>{const probe=doc.createElement('i');probe.style.cssText='all:initial;position:fixed;position-anchor:--collab-date-'+i+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(probe);return probe;});element.parentElement.append(host);
         if(plane){host.setAttribute('popover','manual');host.showPopover();if(!host.matches(':popover-open'))return null;}
         probes.forEach(probe=>rects.push(probe.getBoundingClientRect()));
