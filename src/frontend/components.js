@@ -381,7 +381,7 @@ function measureComponentDateField(element,plane=false) {
         const probes=parts.map((_,i)=>{const probe=doc.createElement('i');probe.style.cssText='all:initial;position:fixed;position-anchor:--collab-date-'+i+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(probe);return probe;});element.parentElement.append(host);
         if(plane){host.setAttribute('popover','manual');host.showPopover();if(!host.matches(':popover-open'))return null;}
         probes.forEach(probe=>rects.push(probe.getBoundingClientRect()));
-        const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[0].width||!rects[1].width)return null;
+        const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[1].width)return null;
         const visible=i=>{for(const index of [0,1,i]){const s=styles[index];if(s.get('display')==='none'||s.get('visibility')!=='visible'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
         const paint=i=>{const color=styles[i].get('color');return visible(i)&&!(color.startsWith('rgba(')&&/,\s*0\)$/.test(color)||/\/\s*0%?\)$/.test(color));};
         let zoom=1;for(let parent=element;parent;parent=parent.parentElement)zoom*=Number(view.getComputedStyle(parent).zoom)||1;
@@ -1330,13 +1330,13 @@ function componentGeometry(element,point,scrollbar=componentScrollbar(element,po
     const paint=!box && (point.x<bounds.left || point.x>bounds.right || point.y<bounds.top || point.y>bounds.bottom);
     if(paint)bounds=componentPaintRect(element);
     if(onPicker)bounds=picker.bounds;
-    const field=onPicker ? null:componentFieldContent(element),empty=field && !element.matches(COMPONENT_DATE_FIELD) && !componentFieldText(element),padding=field && (point.x<field.left || point.x>=field.right || point.y<field.top || point.y>=field.bottom);
+    const field=onPicker ? null:componentFieldContent(element),empty=field && !element.matches(COMPONENT_DATE_FIELD) && !componentFieldText(element),padding=field && (!inside(field) || element.matches(COMPONENT_DATE_FIELD) && !inside(field.viewport));
     const children=onPicker ? picker.children:box&&!textPlane || select ? []:componentChildren(element),image=onPicker ? null:componentImageRect(element,textPlane),frame=range?.content || (!checkbox&&!color&&!textPlane&&!onPicker&&box?.content),list=componentListRect(element),tree=element.matches('.backlinkList__item,.sy__backlink--bottom') && componentBacklinkContext(element) || element.matches('ul') && element.closest('.sy__tag,.sy__bookmark,.sy__outline');
     // Person-local badges must not change shared row gaps or their text offsets.
     let text=empty || onPicker || box&&!textPlane || padding && !element.matches('select,textarea') || element.matches('.collab-person,.collab-person__details,.collab-person__details > strong') ? []:fieldText || componentNearText(element,parentPoint,textPlane) || [];
     const glyph=text.find(({rect})=>point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom),imagePoint=image && !(select && glyph) && point.x>=image.left && point.x<=image.right && point.y>=image.top && point.y<=image.bottom ? {x:(point.x-image.left)/image.width,y:(point.y-image.top)/image.height}:null;
     if(glyph){const {rect,offset}=glyph;return {edges:{x:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}],y:[{kind:'text',side:'start',offset},{kind:'text',side:'end',offset}]},x:(point.x-rect.left)/rect.width,y:(point.y-rect.top)/rect.height,textHash:componentTextHash(element)};}
-    if(select && imagePoint)return {edges:{x:[{kind:'image',side:'start'},{kind:'image',side:'end'}],y:[{kind:'image',side:'start'},{kind:'image',side:'end'}]},x:imagePoint.x,y:imagePoint.y,imagePoint};
+    if((select || element.matches(COMPONENT_DATE_FIELD)) && imagePoint)return {edges:{x:[{kind:'image',side:'start'},{kind:'image',side:'end'}],y:[{kind:'image',side:'start'},{kind:'image',side:'end'}]},x:imagePoint.x,y:imagePoint.y,imagePoint};
     if(padding && !glyph)text=[];
     if(select && !glyph && !image && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage!=='none')return null;
     if(!onPicker && componentTextField(element) && !text.length && !padding && !imagePoint && !empty)return null;
