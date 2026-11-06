@@ -61,6 +61,8 @@
     position: absolute;
     top: 0;
     left: 0;
+    width: 22px;
+    height: 22px;
     color: hsl(var(--collab-cursor-hue) 78% 42%);
     transition: transform 100ms ease-out, opacity 100ms ease-out;
     pointer-events: none;
@@ -94,7 +96,10 @@
     filter: drop-shadow(0 0 5px hsl(var(--collab-cursor-hue) 90% 55% / 0.7));
 }
 
-.collab-cursor span {
+.collab-cursor[data-state="editing"] svg,
+.collab-cursor[data-state="typing"] svg { transform: translate(-11px, -11px); }
+
+.collab-cursor > span {
     display: block;
     width: max-content;
     max-width: 180px;
@@ -187,4 +192,38 @@
 .collab-person button { flex:0 0 auto; }
 .collab-people button:focus-visible, .collab-tick-form select:focus-visible { outline:2px solid var(--b3-theme-primary); outline-offset:2px; }
 .collab-people__empty { margin:16px; color:var(--b3-theme-on-surface); }
-.collab-shortcut { position:absolute; right:24px; padding:6px 12px; border:1px solid var(--b3-border-color); border-radius:var(--b3-border-radius); color:var(--b3-theme-on-background); background:var(--b3-theme-background); box-shadow:0 2px 8px rgb(0 0 0 / .12); font-size:13px; pointer-events:none; }
+.collab-shortcut {
+    position: absolute;
+    left: 0;
+    top: -38px;
+    width: max-content;
+    max-width: min(260px, calc(50vw - 8px));
+    box-sizing: border-box;
+    padding: 4px 8px;
+    border: 1px solid currentColor;
+    border-radius: var(--b3-border-radius);
+    color: var(--b3-theme-on-background);
+    background: var(--b3-theme-background);
+    box-shadow: 0 2px 6px rgb(0 0 0 / .12);
+    font-size: 12px;
+    line-height: 18px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+    animation: collab-shortcut-fall 1400ms both;
+}
+.collab-shortcut[data-side="left"] { left: auto; right: 22px; }
+.collab-shortcut[data-below="true"] { top: 42px; }
+@keyframes collab-shortcut-fall {
+    0% { opacity: 0; transform: translateY(8px); animation-timing-function: ease-out; }
+    15%, 65% { opacity: 1; transform: translateY(0); animation-timing-function: ease-in; }
+    100% { opacity: 0; transform: translateY(36px); }
+}
+@keyframes collab-shortcut-fade {
+    0%, 100% { opacity: 0; }
+    15%, 65% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .collab-shortcut { animation-name: collab-shortcut-fade; }
+}

@@ -182,9 +182,10 @@ function captureCursor(point, plugin) {
     if (!point || document.hidden) return null;
     const hit=componentHit(document,point);
     if (!visibleElement(hit) || hit.closest('[data-private]')) return null;
-    const active=document.activeElement;
-    const editable=document.hasFocus?.() && active?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') && !active.closest('[data-private]');
-    const state=editable ? (plugin?.typingTarget===active ? 'typing':'editing'):undefined;
+    const active=hit.ownerDocument.activeElement,cursor=hit.ownerDocument.defaultView.getComputedStyle(hit).cursor;
+    const field=hit.closest('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]');
+    const editable=['text','vertical-text'].includes(cursor) || (!cursor || cursor==='auto') && field && !field.matches(':disabled') && !hit.closest('[contenteditable="false"]');
+    const state=editable ? (plugin?.typingTarget===active && active?.contains(hit) ? 'typing':'editing'):undefined;
     const activity=state ? {state}:{};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};

@@ -75,7 +75,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         const classes = new Set();
         const properties = new Map();
         const node = {
-            tagName: tag.toUpperCase(), children: [], textContent: "", parentElement: null,
+            tagName: tag.toUpperCase(), children: [], textContent: "", parentElement: null, dataset: {},
             style: { setProperty: (name, value) => properties.set(name, value), removeProperty: (name) => properties.delete(name) },
             classList: { [Symbol.iterator]: () => classes.values(), add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name) },
             setAttribute: (name, value) => attributes.set(name, value),
@@ -101,6 +101,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         return node;
     }
     const document = {
+        defaultView: { getComputedStyle: () => ({ cursor: 'auto' }) },
         body: element("body"), activeDocument: options.documentId || null,
         addEventListener: (name, callback) => listen(listeners, name, callback),
         removeEventListener: (name, callback) => unlisten(listeners, name, callback),

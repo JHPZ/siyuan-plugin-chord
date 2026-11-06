@@ -575,8 +575,19 @@ module.exports = class CollaborationPlugin extends Plugin {
                         this.cursorMarkers.set(client.name, marker);
                     }
                     const label=marker.querySelector('span');
-                    const text=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
-                    if(label.textContent!==text)label.textContent=text;
+                    if(label.textContent!==client.name)label.textContent=client.name;
+                    const state=client.cursor.state || 'pointer';
+                    if(marker.dataset.state!==state){
+                        marker.dataset.state=state;
+                        marker.querySelector('path').setAttribute('d',state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
+                    }
+                    const notice=this.shortcutNotices.get(client.name);
+                    if(notice){
+                        if(notice.element.parentElement!==marker)marker.append(notice.element);
+                        const side=point.x>window.innerWidth/2?'left':'right',below=point.y<44?'true':'false';
+                        if(notice.element.dataset.side!==side)notice.element.dataset.side=side;
+                        if(notice.element.dataset.below!==below)notice.element.dataset.below=below;
+                    }
                     marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                     const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
                     if(marker.cursorTransform!==transform){
@@ -594,6 +605,8 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (!visible.has(name)) {
                     marker.remove();
                     this.cursorMarkers.delete(name);
+                    const notice=this.shortcutNotices.get(name);
+                    if(notice){clearTimeout(notice.timer);this.shortcutNotices.delete(name);}
                 }
             }
             this.renderSelections();
@@ -861,12 +874,12 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     showShortcut(value) {
-        if(this.stopped || !this.cursorLayer || !value || !validShortcut(value.keys) || typeof value.name!=='string' || value.name.length>48 || value.name===this.clientName || !this.clients.some((client)=>client.name===value.name))return;
-        let notice=this.shortcutNotices.get(value.name);
-        if(!notice){const element=document.createElement('div');element.className='collab-shortcut';this.cursorLayer.append(element);notice={element};this.shortcutNotices.set(value.name,notice);}
-        notice.element.textContent=value.name+'  '+value.keys;
-        notice.element.style.bottom=(24+[...this.shortcutNotices.keys()].indexOf(value.name)*40)+'px';
-        clearTimeout(notice.timer);notice.timer=setTimeout(()=>{notice.element.remove();this.shortcutNotices.delete(value.name);},1800);
+        if(this.stopped || document.hidden || !this.cursorLayer || !value || !validShortcut(value.keys) || typeof value.name!=='string' || value.name.length>48 || value.name===this.clientName || !this.clients.some((client)=>client.name===value.name))return;
+        const previous=this.shortcutNotices.get(value.name);if(previous){clearTimeout(previous.timer);previous.element.remove();}
+        const element=document.createElement('div');element.className='collab-shortcut';element.textContent=value.keys;
+        const notice={element};this.shortcutNotices.set(value.name,notice);
+        notice.timer=setTimeout(()=>{element.remove();this.shortcutNotices.delete(value.name);},1500);
+        this.scheduleCursorRender();
     }
 
     async onunload() {

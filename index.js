@@ -2250,9 +2250,10 @@ function captureCursor(point, plugin) {
     if (!point || document.hidden) return null;
     const hit=componentHit(document,point);
     if (!visibleElement(hit) || hit.closest('[data-private]')) return null;
-    const active=document.activeElement;
-    const editable=document.hasFocus?.() && active?.matches('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]') && !active.closest('[data-private]');
-    const state=editable ? (plugin?.typingTarget===active ? 'typing':'editing'):undefined;
+    const active=hit.ownerDocument.activeElement,cursor=hit.ownerDocument.defaultView.getComputedStyle(hit).cursor;
+    const field=hit.closest('input:not([type]),input[type="text"],input[type="search"],textarea,[contenteditable="true"]');
+    const editable=['text','vertical-text'].includes(cursor) || (!cursor || cursor==='auto') && field && !field.matches(':disabled') && !hit.closest('[contenteditable="false"]');
+    const state=editable ? (plugin?.typingTarget===active && active?.contains(hit) ? 'typing':'editing'):undefined;
     const activity=state ? {state}:{};
     const screen={x:Math.max(0,Math.min(1,point.x/window.innerWidth)),y:Math.max(0,Math.min(1,point.y/window.innerHeight))};
     const page=plugin ? currentPage(plugin) : {kind:'workspace',title:''};
@@ -2848,8 +2849,19 @@ module.exports = class CollaborationPlugin extends Plugin {
                         this.cursorMarkers.set(client.name, marker);
                     }
                     const label=marker.querySelector('span');
-                    const text=client.name + (client.cursor.state ? ' · '+this.i18n[client.cursor.state==='typing' ? 'cursorTyping':'cursorEditing']:'');
-                    if(label.textContent!==text)label.textContent=text;
+                    if(label.textContent!==client.name)label.textContent=client.name;
+                    const state=client.cursor.state || 'pointer';
+                    if(marker.dataset.state!==state){
+                        marker.dataset.state=state;
+                        marker.querySelector('path').setAttribute('d',state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
+                    }
+                    const notice=this.shortcutNotices.get(client.name);
+                    if(notice){
+                        if(notice.element.parentElement!==marker)marker.append(notice.element);
+                        const side=point.x>window.innerWidth/2?'left':'right',below=point.y<44?'true':'false';
+                        if(notice.element.dataset.side!==side)notice.element.dataset.side=side;
+                        if(notice.element.dataset.below!==below)notice.element.dataset.below=below;
+                    }
                     marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                     const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
                     if(marker.cursorTransform!==transform){
@@ -2867,6 +2879,8 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (!visible.has(name)) {
                     marker.remove();
                     this.cursorMarkers.delete(name);
+                    const notice=this.shortcutNotices.get(name);
+                    if(notice){clearTimeout(notice.timer);this.shortcutNotices.delete(name);}
                 }
             }
             this.renderSelections();
@@ -3134,12 +3148,12 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     showShortcut(value) {
-        if(this.stopped || !this.cursorLayer || !value || !validShortcut(value.keys) || typeof value.name!=='string' || value.name.length>48 || value.name===this.clientName || !this.clients.some((client)=>client.name===value.name))return;
-        let notice=this.shortcutNotices.get(value.name);
-        if(!notice){const element=document.createElement('div');element.className='collab-shortcut';this.cursorLayer.append(element);notice={element};this.shortcutNotices.set(value.name,notice);}
-        notice.element.textContent=value.name+'  '+value.keys;
-        notice.element.style.bottom=(24+[...this.shortcutNotices.keys()].indexOf(value.name)*40)+'px';
-        clearTimeout(notice.timer);notice.timer=setTimeout(()=>{notice.element.remove();this.shortcutNotices.delete(value.name);},1800);
+        if(this.stopped || document.hidden || !this.cursorLayer || !value || !validShortcut(value.keys) || typeof value.name!=='string' || value.name.length>48 || value.name===this.clientName || !this.clients.some((client)=>client.name===value.name))return;
+        const previous=this.shortcutNotices.get(value.name);if(previous){clearTimeout(previous.timer);previous.element.remove();}
+        const element=document.createElement('div');element.className='collab-shortcut';element.textContent=value.keys;
+        const notice={element};this.shortcutNotices.set(value.name,notice);
+        notice.timer=setTimeout(()=>{element.remove();this.shortcutNotices.delete(value.name);},1500);
+        this.scheduleCursorRender();
     }
 
     async onunload() {
