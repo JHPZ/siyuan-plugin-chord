@@ -276,7 +276,7 @@ function componentDateSheets(doc) {
     cache?.set(doc,sources);return sources;
 }
 
-function componentPartialDate(element,selector,style,host,styles,rects,probes,inherited) {
+function componentPartialDate(element,selector,style,host,styles,rects,probes,inherited,textStyle) {
     const doc=element.ownerDocument,view=doc.defaultView,base=style.textContent,values=[],states=[],rules=[],bits=[19,4,5,5,6,6,10],labels=[[' 年 ','yyyy','----'],['月','mm'],['日','dd'],['--','hh'],['--','mm'],['--','ss'],['---','fff']];
     const probe=name=>{const node=doc.createElement('i');node.style.cssText='all:initial;position:fixed;position-anchor:'+name+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(node);return node;};
     const resolved=node=>{const r=node.getBoundingClientRect();return r.left>-99999&&r.width>0&&r.height>0;};
@@ -311,7 +311,7 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
         if(missing.length&&doc.activeElement===element){
             const value=element.value,active=doc.activeElement,scroll=[];for(let node=element;node;node=node.parentElement)scroll.push({node,x:node.scrollLeft,y:node.scrollTop});
             // A native zero buffer has no ARIA value; only equal-width candidates need temporary typography.
-            const candidates=missing.map(state=>({...state,options:[values[state.index],'0'.repeat(state.index===0?4:state.index===6?3:2)].map(text=>{const span=doc.createElement('span');span.style.cssText='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none';for(const name of inherited)span.style.setProperty(name,styles[state.index+2].get(name));span.textContent=text;host.append(span);return {text,span};})}));
+            const candidates=missing.map(state=>({...state,options:[values[state.index],'0'.repeat(state.index===0?4:state.index===6?3:2)].map(text=>{const span=doc.createElement('span');span.style.cssText=textStyle;for(const name of inherited)span.style.setProperty(name,styles[state.index+2].get(name));span.textContent=text;host.append(span);return {text,span};})}));
             const match=state=>{const width=probes[state.index+2].getBoundingClientRect().width,s=styles[state.index+2],inset=['padding-left','padding-right','border-left-width','border-right-width'].reduce((sum,key)=>sum+parseFloat(s.get(key)),0),matches=state.options.filter(option=>{const range=doc.createRange();range.selectNodeContents(option.span);return Math.abs(range.getBoundingClientRect().width+inset-width)<.1;});if(matches.length!==1)return false;values[state.index]=matches[0].text;return true;},ambiguous=candidates.filter(state=>!match(state));
             if(ambiguous.length){
                 style.textContent+='\n'+selector+'{font-family:serif!important;letter-spacing:1px!important}';
@@ -352,7 +352,7 @@ function measureComponentDateField(element,plane=false) {
     const doc=element.ownerDocument,view=doc.defaultView,css=view.getComputedStyle(element),before=element.getBoundingClientRect();
     // shortcut: twelve-hour fields need independent native state calibration.
     if(!doc.head||!view.CSS.supports('anchor-name','--collab-date')||css.writingMode!=='horizontal-tb')return null;
-    if(!plane){let transformed=false;for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),m=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);if(s.zoom!=='1')return null;transformed ||= !m.is2D||m.a!==1||m.b!==0||m.c!==0||m.d!==1||s.scale!=='none'||s.rotate!=='none'||s.perspective!=='none';}if(transformed)return measureComponentDatePlane(element);}
+    if(!plane){let transformed=false;for(let parent=element;parent;parent=parent.parentElement){const s=view.getComputedStyle(parent),m=new view.DOMMatrix(s.transform==='none'?undefined:s.transform);transformed ||= s.zoom!=='1'||!m.is2D||m.a!==1||m.b!==0||m.c!==0||m.d!==1||s.scale!=='none'||s.rotate!=='none'||s.perspective!=='none';}if(transformed)return measureComponentDatePlane(element);}
     const ownBefore=view.getComputedStyle(element,'::before');if(!['none','normal'].includes(ownBefore.content))return null;
     const sources=componentDateSheets(doc);if(!sources)return null;
     const path=[];for(let node=element;node&&node!==doc.documentElement;node=node.parentElement)path.unshift(node.localName+':nth-child('+([...node.parentElement.children].indexOf(node)+1)+')');
@@ -384,9 +384,12 @@ function measureComponentDateField(element,plane=false) {
         const after=element.getBoundingClientRect();if(['left','top','width','height'].some(key=>Math.abs(before[key]-after[key])>.001)||rects[9].width||!rects[0].width||!rects[1].width)return null;
         const visible=i=>{for(const index of [0,1,i]){const s=styles[index];if(s.get('display')==='none'||s.get('visibility')!=='visible'||Number(s.get('opacity'))<=.01||s.get('filter')!=='none'||s.get('clip-path')!=='none')return false;}return true;};
         const paint=i=>{const color=styles[i].get('color');return visible(i)&&!(color.startsWith('rgba(')&&/,\s*0\)$/.test(color)||/\/\s*0%?\)$/.test(color));};
+        let zoom=1;for(let parent=element;parent;parent=parent.parentElement)zoom*=Number(view.getComputedStyle(parent).zoom)||1;
+        // Preserve native font quantization at its effective zoom, then measure in the neutral plane.
+        const textStyle='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none;zoom:'+css.zoom+';transform:scale('+1/zoom+');transform-origin:0 0';
         const tokens=[...element.value.matchAll(/\d+/g)],raw=element.type==='time'?[null,null,null,...tokens.map(token=>token[0])]:tokens.map(token=>token[0]);
         // Optional empty seconds/milliseconds can serialize as valid zero values while still displaying placeholders.
-        const partial=!element.value||element.validity.badInput||rects[7].width&&Number(raw[5]||0)===0||rects[8].width&&Number(raw[6]||0)===0,values=partial?componentPartialDate(element,selector,style,host,styles,rects,probes,inherited):raw;
+        const partial=!element.value||element.validity.badInput||rects[7].width&&Number(raw[5]||0)===0||rects[8].width&&Number(raw[6]||0)===0,values=partial?componentPartialDate(element,selector,style,host,styles,rects,probes,inherited,textStyle):raw;
         if(!values)return null;
         if(element.type==='date')values.length=3;
         if(values[6]&&/^\d+$/.test(values[6]))values[6]=values[6].padEnd(3,'0');
@@ -395,7 +398,7 @@ function measureComponentDateField(element,plane=false) {
             const r=rects[index+2],s=styles[index+2];if(!r.width||!r.height)continue;
             const value=values[index]??(index>=5?'0'.repeat(index===6?3:2):null);if(value===null)return null;
             const text=partial&&!/^\d+$/.test(value)?value:number.format(Number(value)).padStart(value.length,'0');if((!partial&&!/^\d+$/.test(text))||text.length!==value.length||s.get('display')!=='inline')return null;
-            const span=doc.createElement('span');span.style.cssText='all:initial;position:fixed;left:0;top:0;display:inline-block;white-space:pre;visibility:hidden;pointer-events:none';for(const name of inherited)span.style.setProperty(name,s.get(name));span.textContent=text;host.append(span);numerics.push({index,r,s,text,span});
+            const span=doc.createElement('span');span.style.cssText=textStyle;for(const name of inherited)span.style.setProperty(name,s.get(name));span.textContent=text;host.append(span);numerics.push({index,r,s,text,span});
         }
         for(const {index,r,s,text,span}of numerics){
             const range=doc.createRange();range.selectNodeContents(span);const total=range.getBoundingClientRect(),inset=side=>parseFloat(s.get('padding-'+side))+parseFloat(s.get('border-'+side+'-width')),left=inset('left'),right=inset('right'),top=inset('top'),bottom=inset('bottom');
@@ -407,7 +410,8 @@ function measureComponentDateField(element,plane=false) {
         if(paint(10)&&literal.width&&literal.height)for(let i=1;i<numericRects.length;i++){const a=numericRects[i-1],b=numericRects[i];if(b.rect.left>a.rect.right)glyphs.push({offset:1024+a.index*16+b.index,rect:{left:a.rect.right,right:b.rect.left,top:literal.top,bottom:literal.bottom,width:b.rect.left-a.rect.right,height:literal.height}});}
         const button=rects[11],buttonStyle=styles[11],image=button.width&&button.height&&visible(11)&&!element.disabled&&!element.readOnly?{left:button.left+parseFloat(buttonStyle.get('padding-left')),right:button.right-parseFloat(buttonStyle.get('padding-right')),top:button.top+parseFloat(buttonStyle.get('padding-top')),bottom:button.bottom-parseFloat(buttonStyle.get('padding-bottom'))}:null;
         if(image){image.width=image.right-image.left;image.height=image.bottom-image.top;}
-        result={content:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.left>=rects[0].left-.001&&r.right<=rects[0].right+.001&&r.top>=rects[0].top-.001&&r.bottom<=rects[0].bottom+.001),image,text:partial?values:null};
+        // Keep the full glyph ratio when only part is visible; resolve clips the final point to the viewport.
+        result={content:{left:rects[1].left,right:rects[1].right,top:rects[1].top,bottom:rects[1].bottom,viewport:rects[0]},glyphs:glyphs.filter(({rect:r})=>r.right>rects[0].left&&r.left<rects[0].right&&r.bottom>rects[0].top&&r.top<rects[0].bottom),image,text:partial?values:null};
     }finally{host.remove();style.textContent='';}
     return result;
 }
@@ -1487,8 +1491,8 @@ function resolveMeasuredComponent(cursor,plugin) {
     const precise=element.matches('input,textarea') || scrollbarAnchor || picker || textPlane || select || range || fieldRects || Object.values(anchor.edges).flat().some(edge=>edge.kind==='field' || edge.kind==='field-viewport');
     const gaps=['x','y'].filter(axis=>{const [a,b]=anchor.edges[axis];return a.kind==='child' && b.kind==='child' && componentChild(element,a.step)!==componentChild(element,b.step);});
     if(!haloAnchor && (precise || gaps.length)){
-        // Textarea text can scroll into padding, but remains clipped at the native viewport.
-        const clip=element.matches('textarea') ? field?.viewport:field;
+        // Native text can extend into padding, but remains clipped at its edit viewport.
+        const clip=element.matches('textarea,'+COMPONENT_DATE_FIELD) ? field?.viewport:field;
         const clipPoint=element.matches(COMPONENT_DATE_FIELD)&&box?box.toLocal(point):point;
         if(fieldRects && clip && !element.matches('select') && (clipPoint.x<clip.left || clipPoint.x>=clip.right || clipPoint.y<clip.top || clipPoint.y>=clip.bottom))return null;
         const glyph=fieldRects && Object.values(anchor.edges).flat().every(edge=>edge.kind==='text' && edge.offset===offsets[0]) && {offset:offsets[0],rect:fieldRects.get(offsets[0])};
