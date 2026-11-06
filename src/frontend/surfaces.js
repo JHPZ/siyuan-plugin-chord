@@ -1,5 +1,11 @@
 const textLabel = (element) => (element?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
 function visibleElement(element) {
+    if(!element)return false;
+    const cache=componentMeasurements && (componentMeasurements.visibility ||= new WeakMap());if(cache?.has(element))return cache.get(element);
+    const visible=measureVisibleElement(element);cache?.set(element,visible);return visible;
+}
+
+function measureVisibleElement(element) {
     if(!element || element.closest('.fn__none') || element.getBoundingClientRect().width<=0 || element.getBoundingClientRect().height<=0 || element.checkVisibility?.({checkOpacity:true,checkVisibilityCSS:true})===false)return false;
     const view=element.ownerDocument?.defaultView;
     if(view?.getComputedStyle){

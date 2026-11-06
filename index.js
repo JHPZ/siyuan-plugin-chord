@@ -803,7 +803,7 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
     const probe=name=>{const node=doc.createElement('i');node.style.cssText='all:initial;position:fixed;position-anchor:'+name+';left:anchor(left,-100000px);top:anchor(top,-100000px);width:anchor-size(width,0px);height:anchor-size(height,0px);visibility:hidden;pointer-events:none';host.append(node);return node;};
     const resolved=node=>{const r=node.getBoundingClientRect();return r.left>-99999&&r.width>0&&r.height>0;};
     const previous=componentDateValues.get(element),indices=Array.from({length:7},(_,index)=>index).filter(index=>rects[index+2].width&&rects[index+2].height);
-    try{
+    // The caller clears state anchors after glyph measurement; they do not change field geometry.
     // Verify the last decoded state against native attributes each time; unchanged fields need no bit probes.
     if(previous&&previous.length===indices.length&&previous.every((state,i)=>state.index===indices[i])){
         const checks=previous.map(state=>{const name='--collab-date-state-'+state.index+'-same',condition=state.missing?'style(--collab-date-value < 0) and style(--collab-date-placeholder:'+JSON.stringify(state.value)+')':'style(--collab-date-value >= '+Number(state.value)+') and style(--collab-date-value <= '+Number(state.value)+')',anchors=[styles[state.index+2].get('anchor-name'),'--collab-date-'+(state.index+2),'if('+condition+':'+name+';else:'+name+'-changed)'].filter(value=>value!=='none');return {state,node:probe(name),rule:selector+'::-webkit-datetime-edit-'+['year','month','day','hour','minute','second','millisecond'][state.index]+'-field{--collab-date-value:attr(aria-valuenow type(<number>),-1);--collab-date-placeholder:attr(aria-placeholder,"__missing__");anchor-name:'+anchors.join(',')+'!important}'};});
@@ -844,7 +844,6 @@ function componentPartialDate(element,selector,style,host,styles,rects,probes,in
             }
         }
         return values;
-    }finally{style.textContent=base;}
 }
 
 function measureComponentDatePlane(element) {
@@ -2045,6 +2044,12 @@ function resolveMeasuredComponent(cursor,plugin) {
 
 const textLabel = (element) => (element?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 160);
 function visibleElement(element) {
+    if(!element)return false;
+    const cache=componentMeasurements && (componentMeasurements.visibility ||= new WeakMap());if(cache?.has(element))return cache.get(element);
+    const visible=measureVisibleElement(element);cache?.set(element,visible);return visible;
+}
+
+function measureVisibleElement(element) {
     if(!element || element.closest('.fn__none') || element.getBoundingClientRect().width<=0 || element.getBoundingClientRect().height<=0 || element.checkVisibility?.({checkOpacity:true,checkVisibilityCSS:true})===false)return false;
     const view=element.ownerDocument?.defaultView;
     if(view?.getComputedStyle){
