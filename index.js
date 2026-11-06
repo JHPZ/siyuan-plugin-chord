@@ -2412,8 +2412,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.onlineCount = presence.count;
         if(Number.isSafeInteger(presence.revision))this.presenceRevision=presence.revision;
         this.clients = clients;
-        for(const [name,notice] of this.shortcutNotices)if(!clients.some(client=>client.name===name)){
-            clearTimeout(notice.timer);notice.element.remove();this.shortcutNotices.delete(name);
+        for(const [name,notices] of this.shortcutNotices)if(!clients.some(client=>client.name===name)){
+            for(const notice of notices){clearTimeout(notice.timer);notice.element.remove();}this.shortcutNotices.delete(name);
         }
         this.presenceReceivedAt = Date.now();
         if (presence.self && typeof presence.self.name === "string") {
@@ -2855,8 +2855,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                         marker.dataset.state=state;
                         marker.querySelector('path').setAttribute('d',state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
                     }
-                    const notice=this.shortcutNotices.get(client.name);
-                    if(notice){
+                    for(const notice of this.shortcutNotices.get(client.name)||[]){
                         if(notice.element.parentElement!==marker)marker.append(notice.element);
                         const side=point.x>window.innerWidth/2?'left':'right',below=point.y<80?'true':'false';
                         if(notice.element.dataset.side!==side)notice.element.dataset.side=side;
@@ -2879,8 +2878,8 @@ module.exports = class CollaborationPlugin extends Plugin {
                 if (!visible.has(name)) {
                     marker.remove();
                     this.cursorMarkers.delete(name);
-                    const notice=this.shortcutNotices.get(name);
-                    if(notice){clearTimeout(notice.timer);this.shortcutNotices.delete(name);}
+                    const notices=this.shortcutNotices.get(name);
+                    if(notices){for(const notice of notices)clearTimeout(notice.timer);this.shortcutNotices.delete(name);}
                 }
             }
             this.renderSelections();
@@ -3149,10 +3148,11 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     showShortcut(value) {
         if(this.stopped || document.hidden || !this.cursorLayer || !value || !validShortcut(value.keys) || typeof value.name!=='string' || value.name.length>48 || value.name===this.clientName || !this.clients.some((client)=>client.name===value.name))return;
-        const previous=this.shortcutNotices.get(value.name);if(previous){clearTimeout(previous.timer);previous.element.remove();}
+        let notices=this.shortcutNotices.get(value.name);
+        if(!notices){notices=new Set();this.shortcutNotices.set(value.name,notices);}
         const element=document.createElement('div');element.className='collab-shortcut';element.textContent=value.keys;
-        const notice={element};this.shortcutNotices.set(value.name,notice);
-        notice.timer=setTimeout(()=>{element.remove();this.shortcutNotices.delete(value.name);},1500);
+        const notice={element};notices.add(notice);
+        notice.timer=setTimeout(()=>{element.remove();notices.delete(notice);if(!notices.size)this.shortcutNotices.delete(value.name);},850);
         this.scheduleCursorRender();
     }
 
@@ -3169,7 +3169,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         clearTimeout(this.typingTimer);
         for(const binding of this.frameListeners.values())binding.stop();this.frameListeners.clear();
         this.closePeople();
-        for(const notice of this.shortcutNotices.values())clearTimeout(notice.timer);
+        for(const notices of this.shortcutNotices.values())for(const notice of notices)clearTimeout(notice.timer);
         this.shortcutNotices.clear();
         this.cursorLayer?.remove();
         this.cursorMarkers.clear();

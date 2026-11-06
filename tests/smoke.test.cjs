@@ -716,6 +716,24 @@ test('shortcut notices are validated, ordered, throttled and never execute a com
     assert.equal(await send('shortcut-user',2,1,'Ctrl+C'),true);
 });
 
+test('concurrent shortcut notices expire independently and clear all timers on leave and unload',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin,self=plugin.clients.find(p=>p.name===plugin.clientName),peer={name:'shortcut-peer',hue:210};
+    plugin.clients=[self,peer];
+    for(const keys of ['Ctrl+C','Ctrl+V','Ctrl+Z'])plugin.showShortcut({...peer,keys});
+    const notices=plugin.shortcutNotices.get(peer.name),[first,second,third]=notices,host=frontend.document.createElement('div');
+    for(const notice of notices)host.append(notice.element);
+    assert.equal(notices.size,3);assert.deepEqual([...notices].map(n=>n.element.textContent),['Ctrl+C','Ctrl+V','Ctrl+Z']);
+    assert.equal(new Set([...notices].map(n=>n.timer)).size,3);
+    const expiry=frontend.timers.get(first.timer);assert.equal(expiry.delay,850);frontend.timers.delete(first.timer);expiry.callback();
+    assert.equal(plugin.shortcutNotices.get(peer.name),notices);assert.equal(notices.size,2);assert.deepEqual(host.children,[second.element,third.element]);
+    plugin.showShortcut({...peer,keys:'Ctrl+A'});assert.equal(notices.size,3);
+    const pending=[...notices].map(n=>n.timer);plugin.updatePresence({count:1,clients:[self]});
+    assert.equal(plugin.shortcutNotices.size,0);assert.equal(host.children.length,0);assert(pending.every(timer=>!frontend.timers.has(timer)));
+    plugin.clients=[self,peer];plugin.showShortcut({...peer,keys:'Ctrl+C'});plugin.showShortcut({...peer,keys:'Ctrl+V'});
+    const unloading=[...plugin.shortcutNotices.get(peer.name)].map(n=>n.timer);await plugin.onunload();
+    assert.equal(plugin.shortcutNotices.size,0);assert(unloading.every(timer=>!frontend.timers.has(timer)));
+});
+
 test('pointer bursts coalesce and idle timers send zero position updates',async()=>{
     let now=10000;
     const kernel=await createKernel(),frontend=await createFrontend(kernel,'zh-CN',{now:()=>now});
