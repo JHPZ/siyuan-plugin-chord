@@ -584,7 +584,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     const notice=this.shortcutNotices.get(client.name);
                     if(notice){
                         if(notice.element.parentElement!==marker)marker.append(notice.element);
-                        const side=point.x>window.innerWidth/2?'left':'right',below=point.y<44?'true':'false';
+                        const side=point.x>window.innerWidth/2?'left':'right',below=point.y<80?'true':'false';
                         if(notice.element.dataset.side!==side)notice.element.dataset.side=side;
                         if(notice.element.dataset.below!==below)notice.element.dataset.below=below;
                     }

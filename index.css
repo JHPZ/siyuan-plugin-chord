@@ -195,9 +195,9 @@
 .collab-shortcut {
     position: absolute;
     left: 0;
-    top: -38px;
+    top: -28px;
     width: max-content;
-    max-width: min(260px, calc(50vw - 8px));
+    max-width: min(260px, calc(42vw - 8px));
     box-sizing: border-box;
     padding: 4px 8px;
     border: 1px solid currentColor;
@@ -211,14 +211,24 @@
     overflow: hidden;
     text-overflow: ellipsis;
     pointer-events: none;
-    animation: collab-shortcut-fall 1400ms both;
+    --collab-throw-x: min(96px, 8vw);
+    --collab-throw-direction: 1;
+    animation: collab-shortcut-throw 1400ms linear both;
 }
-.collab-shortcut[data-side="left"] { left: auto; right: 22px; }
+.collab-shortcut[data-side="left"] { left: auto; right: 22px; --collab-throw-x: max(-96px, -8vw); --collab-throw-direction: -1; }
 .collab-shortcut[data-below="true"] { top: 42px; }
-@keyframes collab-shortcut-fall {
-    0% { opacity: 0; transform: translateY(8px); animation-timing-function: ease-out; }
-    15%, 65% { opacity: 1; transform: translateY(0); animation-timing-function: ease-in; }
-    100% { opacity: 0; transform: translateY(36px); }
+@keyframes collab-shortcut-throw {
+    0% { opacity: 1; transform: translate(0, 8px) rotate(calc(var(--collab-throw-direction) * -8deg)); }
+    10% { transform: translate(calc(var(--collab-throw-x) * .1), -12.8px) rotate(calc(var(--collab-throw-direction) * -5.4deg)); }
+    20% { transform: translate(calc(var(--collab-throw-x) * .2), -27.2px) rotate(calc(var(--collab-throw-direction) * -2.8deg)); }
+    30% { transform: translate(calc(var(--collab-throw-x) * .3), -35.2px) rotate(calc(var(--collab-throw-direction) * -.2deg)); }
+    40% { transform: translate(calc(var(--collab-throw-x) * .4), -36.8px) rotate(calc(var(--collab-throw-direction) * 2.4deg)); }
+    50% { transform: translate(calc(var(--collab-throw-x) * .5), -32px) rotate(calc(var(--collab-throw-direction) * 5deg)); }
+    60% { opacity: 1; transform: translate(calc(var(--collab-throw-x) * .6), -20.8px) rotate(calc(var(--collab-throw-direction) * 7.6deg)); }
+    70% { transform: translate(calc(var(--collab-throw-x) * .7), -3.2px) rotate(calc(var(--collab-throw-direction) * 10.2deg)); }
+    80% { transform: translate(calc(var(--collab-throw-x) * .8), 20.8px) rotate(calc(var(--collab-throw-direction) * 12.8deg)); }
+    90% { transform: translate(calc(var(--collab-throw-x) * .9), 51.2px) rotate(calc(var(--collab-throw-direction) * 15.4deg)); }
+    100% { opacity: 0; transform: translate(var(--collab-throw-x), 88px) rotate(calc(var(--collab-throw-direction) * 18deg)); }
 }
 @keyframes collab-shortcut-fade {
     0%, 100% { opacity: 0; }
