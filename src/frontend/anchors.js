@@ -277,7 +277,8 @@ function captureEditing() {
         const parents=new Set(blocks.map(block=>block.parentElement.closest('[data-node-id]')));
         selected=blocks.filter(block=>{
             if(parents.has(block))return false;
-            const start=selectionPosition(block,0), end=selectionPosition(block,cursorTextRoot(block).textContent.length), contents=document.createRange();
+            const roots=[...block.querySelectorAll('[contenteditable="true"]')], first=roots[0] || block, last=roots.at(-1) || block;
+            const start=selectionPosition(first,0), end=selectionPosition(last,last.textContent.length), contents=document.createRange();
             contents.setStart(start.node,start.offset);contents.setEnd(end.node,end.offset);
             // Compare text boundaries so touching the next block's start does not select it.
             return range.compareBoundaryPoints(Range.START_TO_END,contents)>0 && range.compareBoundaryPoints(Range.END_TO_START,contents)<0;
