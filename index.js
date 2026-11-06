@@ -412,11 +412,23 @@ function captureEditing() {
     if (document.hidden || !document.hasFocus?.()) return null;
     const active = document.activeElement;
     if (!active?.isContentEditable || !active.closest('.protyle-wysiwyg')) return null;
-    const node = document.getSelection()?.focusNode;
+    const selection = document.getSelection(), node = selection?.focusNode;
     const element = node?.nodeType === 3 ? node.parentElement : node;
     const root=active.closest('.protyle-wysiwyg');
-    const selected=[...root.querySelectorAll('.protyle-wysiwyg--select[data-node-id]')]
+    let selected=[...root.querySelectorAll('.protyle-wysiwyg--select[data-node-id]')]
         .filter(block=>!block.closest('.fn__none') && !block.parentElement.closest('.protyle-wysiwyg--select'));
+    if (!selected.length && selection?.rangeCount && !selection.isCollapsed && root.contains(selection.anchorNode) && root.contains(node)) {
+        const range=selection.getRangeAt(0), blocks=[...root.querySelectorAll('[data-node-id]')]
+            .filter(block=>!block.closest('.fn__none') && range.intersectsNode(block));
+        const parents=new Set(blocks.map(block=>block.parentElement.closest('[data-node-id]')));
+        selected=blocks.filter(block=>{
+            if(parents.has(block))return false;
+            const start=selectionPosition(block,0), end=selectionPosition(block,cursorTextRoot(block).textContent.length), contents=document.createRange();
+            contents.setStart(start.node,start.offset);contents.setEnd(end.node,end.offset);
+            // Compare text boundaries so touching the next block's start does not select it.
+            return range.compareBoundaryPoints(Range.START_TO_END,contents)>0 && range.compareBoundaryPoints(Range.END_TO_START,contents)<0;
+        });
+    }
     const block = selected.find(block=>block.contains(node)) || selected.at(-1) || element?.closest?.('.protyle-wysiwyg [data-node-id]');
     if (!block || block.closest('.fn__none') || !active.contains(node) && !selected.length) return null;
     const editing = { blockId: block.getAttribute('data-node-id'),

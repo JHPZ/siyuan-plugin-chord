@@ -2523,6 +2523,36 @@ await test('自定义颜色完整插件观察停止冒泡点击，主文档和�
                 }finally{fixture.remove();Object.assign(plugin,old);plugin.renderEditing();}
             });
 
+            await test('鼠标跨块文字选区合并光晕，反向、空块、嵌套与零长度边界不误选邻块',async()=>{
+                const old={clients:plugin.clients,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt},fixture=document.createElement('div');
+                fixture.style.cssText='position:fixed;left:40px;top:85px;width:430px;background:white;z-index:100';
+                const ids=Array.from({length:6},(_,i)=>'20261106190000-drag00'+i),doc='20261106190000-doc0001';
+                fixture.innerHTML='<div class="protyle" style="position:relative;width:100%"><div class="protyle-background" data-node-id="'+doc+'"></div><div class="protyle-content" style="height:270px"><div class="protyle-wysiwyg" contenteditable="true"><div class="sb" data-node-id="'+ids[5]+'">'+ids.slice(0,5).map((id,i)=>'<div class="p" data-node-id="'+id+'" style="height:32px;margin:0 0 6px"><div contenteditable="true">'+(i===2?'':'文字'+i+'<strong>加粗</strong>结尾')+'</div><div contenteditable="false">&#8203;</div></div>').join('')+'</div></div></div></div><input>';
+                document.body.append(fixture);const editor=fixture.firstElementChild,root=editor.querySelector('.protyle-wysiwyg'),blocks=ids.slice(0,5).map(id=>root.querySelector('[data-node-id="'+id+'"]')),peer={name:'drag-peer',hue:210},measured=[];
+                const selectRange=(a,ao,b,bo)=>{root.focus();const anchor=selectionPosition(blocks[a],ao),focus=selectionPosition(blocks[b],bo);getSelection().setBaseAndExtent(anchor.node,anchor.offset,focus.node,focus.offset);};
+                const check=(label,expected)=>{
+                    const before=root.outerHTML,text=getSelection().toString(),active=document.activeElement,editing=captureEditing();
+                    assert(editing&&JSON.stringify(editing.blockIds||[editing.blockId])===JSON.stringify(expected.map(i=>ids[i])),'drag selection reduced or enlarged: '+label+' '+JSON.stringify(editing));
+                    plugin.remoteEditing=[{...peer,editing}];plugin.renderEditing();const markers=editor.querySelectorAll('.collab-editing');assert(markers.length===1,'drag selection did not merge: '+label);
+                    const actual=markers[0].getBoundingClientRect(),rects=expected.map(i=>blocks[i].getBoundingClientRect()),bounds={left:Math.min(...rects.map(r=>r.left)),top:Math.min(...rects.map(r=>r.top)),right:Math.max(...rects.map(r=>r.right)),bottom:Math.max(...rects.map(r=>r.bottom))},drift=Math.max(...Object.keys(bounds).map(key=>Math.abs(actual[key]-bounds[key])));
+                    assert(drift<.1,'drag halo drift: '+label+' '+drift);assert(root.outerHTML===before&&getSelection().toString()===text&&document.activeElement===active,'drag display changed native selection/content/focus');measured.push({label,blocks:expected.length,drift});return editing;
+                };
+                try{
+                    plugin.clients=[peer];plugin.remoteSelections=[];plugin.presenceReceivedAt=Date.now();
+                    selectRange(0,1,3,2);check('forward including empty',[0,1,2,3]);assert(!root.querySelector('.protyle-wysiwyg--select'),'drag fixture used native block classes');
+                    selectRange(3,2,0,1);check('reverse including empty',[0,1,2,3]);
+                    selectRange(0,1,1,2);check('nested leaves only',[0,1]);
+                    selectRange(0,1,3,0);check('end at next block start',[0,1,2]);
+                    selectRange(0,cursorTextRoot(blocks[0]).textContent.length,3,2);check('start at previous block end',[1,2,3]);
+                    selectRange(0,1,0,2);assert(!check('within one block',[0]).blockIds,'single block text selection added group');
+                    selectRange(1,2,1,2);assert(!check('collapsed caret',[1]).blockIds,'collapsed caret kept group');
+                    selectRange(0,1,3,2);blocks[1].classList.add('protyle-wysiwyg--select');blocks[4].classList.add('protyle-wysiwyg--select');check('native block selection priority',[1,4]);blocks[1].classList.remove('protyle-wysiwyg--select');blocks[4].classList.remove('protyle-wysiwyg--select');
+                    fixture.lastElementChild.focus();assert(captureEditing()===null,'stale drag selection escaped editor focus');
+                    const other=document.createElement('div');other.className='protyle-wysiwyg';other.contentEditable='true';other.innerHTML='<div data-node-id="20261106190000-other01"><div contenteditable="true">另一编辑器</div></div>';fixture.append(other);root.focus();getSelection().setBaseAndExtent(blocks[0].firstElementChild.firstChild,1,other.firstElementChild.firstElementChild.firstChild,2);assert(!captureEditing()?.blockIds,'cross-editor range merged unrelated blocks');
+                    document.querySelector('#results').dataset.dragSelectionEditing=JSON.stringify({measured,nestedParentExcluded:true,emptyIncluded:true,directions:2,boundaryBlocksExcluded:true,sourceUnchanged:true,foreignEditorExcluded:true});
+                }finally{fixture.remove();Object.assign(plugin,old);plugin.renderEditing();}
+            });
+
             await test('编辑框合并同块多人，随滚动裁剪，缺失块不显示且不改正文', async () => {
                 await expose(block,10);select(block,10);
                 const editing=captureEditing(), before=block.outerHTML;
