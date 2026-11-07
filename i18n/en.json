@@ -2,16 +2,16 @@
   "pluginName": "Chord",
   "onlineBadge": "${count} online",
   "checkOnline": "Participants",
-  "cursorSettings": "Collaboration display settings",
+  "cursorSettings": "Sync frequency",
   "cursorTick": "Update rate",
-  "cursorTickTip": "Low: up to 3 updates/sec; medium: 10; high: 30. Positions update on activity only. Idle presence uses a low-frequency heartbeat.",
+  "cursorTickTip": "Positions sync only during activity. This setting applies to every client.",
   "cursorTickFailed": "Could not save. Choose a preset and check the kernel connection.",
   "cursorTickSaved": "Cursor sync rate saved and applied to all clients.",
   "onlineCount": "Online: ${count} frontend sessions (including this window)",
   "kernelFailed": "Collaboration status is unavailable. Check that the kernel plugin is running and retry.",
   "restoreFailed": "Could not restore this window's document. Check that it is still accessible and open it manually.",
   "renameSelf": "Name and color",
-  "nameLabel": "Name (1–24 characters, unique among online clients)",
+  "nameLabel": "Name",
   "renameFailed": "Could not save. Check your connection and use 1–24 valid characters with a unique online name.",
   "save": "Save",
   "cancel": "Cancel",
@@ -40,5 +40,6 @@
   "colorHue": "Hue ${hue}°",
   "profilePreview": "Cursor name and color preview",
   "profileSaved": "Name and color saved.",
-  "documentViewers": "${count} viewing this document"
+  "documentViewers": "${count} viewing this document",
+  "nameHint": "1–24 characters. Must be unique among online clients."
 }

@@ -171,7 +171,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         clearTimeout(key) { timers.delete(key); },
         require(name) {
             assert.equal(name, "siyuan"); return { Plugin, Menu, Setting, Dialog:class {
-                constructor(options){this.options=options;this.element=element('div');const content=element('div');content.className='b3-dialog__content';this.element.append(content);document.body.append(this.element);}
+                constructor(options){this.options=options;this.element=element('div');const container=element('div');container.className='b3-dialog__container';const header=element('div');header.className='b3-dialog__header';header.textContent=options.title;const content=element('div');content.className='b3-dialog__content';container.append(header,content);this.element.append(container);document.body.append(this.element);}
                 destroy(){this.element.remove();this.options.destroyCallback?.();}
             }, showMessage: (...args) => messages.push(args), openTab: async (args) => {
             opened.push(args);
@@ -794,8 +794,10 @@ test("settings form validates and saves the tick rate through the kernel", async
     const kernel = await createKernel();
     const frontend = await createFrontend(kernel);
     assert.equal(frontend.plugin.displayName, "和弦");
+    assert.equal(frontend.plugin.setting.items.length,1);
+    assert.equal(frontend.plugin.setting.items[0].title,frontend.plugin.i18n.cursorTick);
     const form = frontend.plugin.setting.items.find(item=>item.title===frontend.plugin.i18n.cursorTick).createActionElement();
-    const [input, save, error] = form.children;
+    const input=form.querySelector("select"),save=form.querySelector("button"),error=form.querySelector(".ft__error");
     assert.equal(input.value, "10");
     assert.deepEqual(input.children.map(option=>option.value),['3','10','30']);
     const submit = form.listeners.get("submit");
@@ -1091,7 +1093,7 @@ test("document events update prefix viewer counts, safe menus and halos, then cl
     assert.equal(first.plugin.peopleRows.size,2);
     const ownRow=[...first.plugin.peopleRows.values()][0];
     assert.equal(ownRow.querySelector('.collab-person-name').textContent,'<img src=x>');
-    assert.equal(ownRow.querySelector('.collab-person-self').textContent,' · '+first.plugin.i18n.self);
+    assert.equal(ownRow.querySelector('.collab-person-self').textContent,first.plugin.i18n.self);
     assert.equal(ownRow.getAttribute('data-name'),'<img src=x>');
     first.plugin.openMenu();
     assert.ok(first.menus.at(-1).items[1].label.includes("&lt;img src=x&gt;"));
@@ -1244,4 +1246,20 @@ test('drag metadata is bounded and clicks are transient, burst safe, ordered and
     assert.equal(await click('pointer-user-one',2,1,anchor),true);
     k.advance(90000);await assert.rejects(click('pointer-user-one',2,2,anchor),/expired/);
     await k.plugin.lifecycle.onunload();assert.equal(k.methods.size,0);
+});
+
+test('separate frequency dialog preserves cancel, saves once, retains errors and closes on unload',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin;
+    plugin.openSetting();const dialog=plugin.tickDialog,form=dialog.element.querySelector('form');
+    assert.equal(dialog.options.title,plugin.i18n.cursorTick);assert(dialog.options.width.includes('320px'));assert.equal(dialog.element.querySelector('.collab-name-form'),null);
+    plugin.openSetting();assert.equal(plugin.tickDialog,dialog);
+    form.querySelector('select').value='3';const cancel=form.querySelector('button');cancel.listeners.get('click')();assert.equal(plugin.tickDialog,null);assert.equal(plugin.tick,10);
+    const original=kernel.methods.get('setCursorTick');let release,calls=0;
+    kernel.methods.set('setCursorTick',async rate=>{calls++;await new Promise(resolve=>release=resolve);return original(rate);});
+    plugin.openSetting();const saving=plugin.tickDialog.element.querySelector('form');saving.querySelector('select').value='3';const submit=saving.listeners.get('submit');
+    const first=submit({preventDefault(){}});await submit({preventDefault(){}});assert.equal(calls,1);release();await first;assert.equal(plugin.tick,3);assert.equal(plugin.tickDialog,null);
+    kernel.methods.set('setCursorTick',async()=>{throw Error('offline');});plugin.openSetting();const failing=plugin.tickDialog.element.querySelector('form');failing.querySelector('select').value='30';await failing.listeners.get('submit')({preventDefault(){}});
+    assert.equal(failing.querySelector('select').value,'30');assert.equal(failing.querySelector('.ft__error').textContent,plugin.i18n.cursorTickFailed);assert(plugin.tickDialog);assert.equal(plugin.tick,3);
+    const opened=plugin.tickDialog;await plugin.onunload();assert.equal(plugin.tickDialog,null);assert.equal(opened.element.parentElement.children.includes(opened.element),false);
+    assert.equal(frontend.timers.size,0);await kernel.plugin.lifecycle.onunload();
 });

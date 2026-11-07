@@ -1019,7 +1019,7 @@ function componentFieldContent(field) {
     if(![left,right,top,bottom,sx,sy].every(Number.isFinite) || sx<=0 || sy<=0)return null;
     const content=field.matches('textarea') ? componentFieldMeasure(field,mirror=>{
         const marker=field.ownerDocument.createElement('i');marker.style.cssText='position:absolute;inset:0;padding:0;margin:0;border:0;visibility:hidden;pointer-events:none';mirror.append(marker);
-        const port=marker.getBoundingClientRect(),viewport={left:port.left+field.scrollLeft*sx,right:port.right+field.scrollLeft*sx,top:port.top+field.scrollTop*sy,bottom:port.bottom+field.scrollTop*sy};
+        const port=marker.getBoundingClientRect(),viewport={left:port.left+field.scrollLeft*sx,right:port.right+field.scrollLeft*sx,top:port.top+field.scrollTop*sy,bottom:port.bottom+field.scrollTop*sy};marker.remove();
         return {left:viewport.left+parseFloat(css.paddingLeft)*sx,right:viewport.right-parseFloat(css.paddingRight)*sx,top:viewport.top+parseFloat(css.paddingTop)*sy,bottom:viewport.bottom-parseFloat(css.paddingBottom)*sy,viewport};
     }):{left:rect.left+left*sx,right:rect.right-right*sx,top:rect.top+top*sy,bottom:rect.bottom-bottom*sy};
     cache?.set(field,content);return content;
@@ -1027,6 +1027,7 @@ function componentFieldContent(field) {
 
 function componentFieldMeasure(field,run) {
     if(field.matches(COMPONENT_DATE_FIELD)){const date=componentDateField(field);return date?run(null,offset=>date.glyphs.find(g=>g.offset===offset)?.rect):null;}
+    const cache=componentMeasurements?.fieldMirrors,cached=cache?.get(field);if(cached)return cached.run(run);
     if(typeof Intl.Segmenter!=='function')return null;
     const doc=field.ownerDocument,css=doc.defaultView.getComputedStyle(field);
     if(field.type==='number' && (field.validity.badInput || css.appearance!=='none'))return null;
@@ -1063,8 +1064,11 @@ function componentFieldMeasure(field,run) {
             const segment=segments.containing(offset),start=segment?.index ?? offset,end=segment ? start+segment.segment.length:offset+1;
             const range=doc.createRange();range.setStart(mirror.firstChild,start);range.setEnd(mirror.firstChild,end);const r=range.getBoundingClientRect();return r.height ? r:null;
         };
-        return run(mirror,character,position,segments);
-    }finally{mirror.remove();}
+        const measure=callback=>callback(mirror,character,position,segments);
+        // Share the mirror only within this render; keep it out of native hit testing.
+        if(cache){mirror.style.pointerEvents='none';cache.set(field,{mirror,run:measure});}
+        return measure(run);
+    }finally{if(!cache?.has(field))mirror.remove();}
 }
 function componentVisualHit(doc,point) {
     const cache=componentMeasurements?.visualHits;let probes=cache?.get(doc);
@@ -1081,7 +1085,11 @@ function componentVisualHit(doc,point) {
             // Geometry is stable during this synchronous render; all peers share its hit proxies.
             if(probes.length || !clones.length)cache?.set(doc,probes);
         }
-        const hit=doc.elementFromPoint(point.x,point.y);
+        let hit=doc.elementFromPoint(point.x,point.y);
+        const view=doc.defaultView;
+        // Chromium rounds the last fractional viewport pixel outside the document.
+        if(!hit && point.x>=0 && point.y>=0 && point.x<view.innerWidth && point.y<view.innerHeight)
+            hit=doc.elementFromPoint(Math.min(point.x,view.innerWidth-1),Math.min(point.y,view.innerHeight-1));
         for(const {original,nodes}of probes){const index=nodes.indexOf(hit);if(index>=0)return original[index];}
         return hit;
     }finally{if(!cache?.has(doc))for(const {probe}of probes || [])probe.remove();}
@@ -1535,7 +1543,9 @@ function componentCharacter(element,offset,plane) {
 function componentNearText(element,point,plane) {
     if(element.matches(COMPONENT_DATE_FIELD))return componentDateField(element)?.glyphs || [];
     if(componentTextField(element))return componentFieldMeasure(element,(mirror,character,position,segments)=>{
-        const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y),node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
+        const doc=element.ownerDocument,pointerEvents=mirror.style.pointerEvents;let caret,range;
+        try{mirror.style.pointerEvents='auto';caret=doc.caretPositionFromPoint?.(point.x,point.y);range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);}finally{mirror.style.pointerEvents=pointerEvents;}
+        const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
         if(node!==mirror.firstChild)return null;
         const end=mirror.firstChild.length-1,emptyLine=end===0 || mirror.firstChild.data.charCodeAt(end-1)===10;
         const candidates=[...new Set([position(offset-1),position(offset)])].map(offset=>({offset,rect:character(offset)})).filter(item=>item.rect && (item.offset<end || emptyLine));
@@ -1980,8 +1990,11 @@ function captureMeasuredComponent(hit,plugin,point) {
         if(frames.length>=8)return null;
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
-        point=inside;const inner=componentHit(doc,point);
+        const inner=componentHit(doc,inside);
         if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || componentSuperblockDivider(inner)===null || componentBazaarPackage(inner)===null || inner.matches('canvas'))return null;
+        // A short embedded page leaves visible viewport space beyond its body.
+        if(inner===doc.documentElement)break;
+        point=inside;
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
@@ -2080,10 +2093,17 @@ function resolveMeasuredComponent(cursor,plugin) {
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
     if(!visibleElement(target) || target.closest('[data-private]') || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || componentBazaarPackage(target)===null || !visibleElement(hit) || hit.closest('[data-private]') || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
-    if(element.matches('iframe') && frameToContent(element,point))return null;
+    if(element.matches('iframe')){
+        const inside=frameToContent(element,point);
+        if(inside){
+            let doc;try{doc=element.contentDocument;}catch{}
+            const background=doc && componentHit(doc,inside);
+            if(background!==doc?.documentElement || !visibleElement(background) || background.closest('[data-private]'))return null;
+        }
+    }
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
-        if(frame.ownerDocument.elementFromPoint(point.x,point.y)!==frame)return null;
+        if(componentVisualHit(frame.ownerDocument,point)!==frame)return null;
     }
     return point;
 }
@@ -2293,6 +2313,12 @@ function resolveCursor(cursor, plugin) {
     if(cursor?.surface==='ui')return cursor.ui?.version===3 ? resolveComponent(cursor,plugin):null;
     return resolveDocumentCursor(cursor);
 }
+
+const CURSOR_PATHS = {
+    pointer: 'M2 2L19 8.5L12 12L8.5 19Z',
+    dragging: 'M5 10V7Q5 5 7 5Q8 5 8 7V5Q8 3 10 3Q12 3 12 5V6Q12 4 14 4Q16 4 16 6V8Q16 6 18 7Q19 7 19 9V14Q19 20 13 20H10Q8 20 7 18L3 13Q2 11 4 10L7 13V9Z',
+    editing: 'M7 1H15V3H12V19H15V21H7V19H10V3H7Z'
+};
 
 module.exports = class CollaborationPlugin extends Plugin {
     async onload() {
@@ -2551,52 +2577,46 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     initSettings() {
         this.setting = new Setting({});
-        this.setting.addItem({title:this.i18n.renameSelf, description:this.i18n.profileTip, createActionElement:()=>this.createProfileForm()});
-        this.setting.addItem({
-            title: this.i18n.cursorTick,
-            description: this.i18n.cursorTickTip,
-            createActionElement: () => {
-                const form = document.createElement("form");
-                form.className = "collab-tick-form";
-                const input = document.createElement("select");
-                input.className = "b3-select";
-                for (const [value,key] of [[3,'tickLow'],[10,'tickMedium'],[30,'tickHigh']]) {
-                    const option=document.createElement('option');option.value=String(value);option.textContent=this.i18n[key];input.append(option);
-                }
-
-                input.required = true;
-                input.value = String([3,10,30].includes(this.tick) ? this.tick : 10);
-                input.setAttribute("aria-label", this.i18n.cursorTick);
-                const save = document.createElement("button");
-                save.type = "submit";
-                save.className = "b3-button";
-                save.textContent = this.i18n.save;
-                const error = document.createElement("span");
-                error.className = "ft__error";
-                error.setAttribute("role", "alert");
-                form.append(input, save, error);
-                form.addEventListener("submit", async (event) => {
-                    event.preventDefault();
-                    const tick = Number(input.value);
-                    if (![3,10,30].includes(tick)) {
-                        error.textContent = this.i18n.cursorTickFailed;
-                        return;
-                    }
-                    save.disabled = true;
-                    error.textContent = "";
-                    try {
-                        this.updateCursors(await this.kernel.rpc.call.setCursorTick(tick));
-                        if (!this.stopped) showMessage(this.i18n.cursorTickSaved, 3000, "info");
-                    } catch {
-                        error.textContent = this.i18n.cursorTickFailed;
-                    } finally {
-                        save.disabled = false;
-                    }
-                });
-                return form;
-            },
-        });
+        this.setting.addItem({title:this.i18n.cursorTick, description:this.i18n.cursorTickTip, createActionElement:()=>this.createTickForm()});
     }
+
+    createTickForm(onSaved, onCancel) {
+        const form=document.createElement('form');form.className='collab-tick-form';
+        const input=document.createElement('select');input.className='b3-select';input.required=true;
+        for(const [value,key] of [[3,'tickLow'],[10,'tickMedium'],[30,'tickHigh']]) {
+            const option=document.createElement('option');option.value=String(value);option.textContent=this.i18n[key];input.append(option);
+        }
+        input.value=String([3,10,30].includes(this.tick) ? this.tick : 10);input.setAttribute('aria-label',this.i18n.cursorTick);
+        const error=document.createElement('div');error.className='ft__error';error.setAttribute('role','alert');
+        const actions=document.createElement('div');actions.className='collab-name-actions';
+        if(onCancel){const cancel=document.createElement('button');cancel.type='button';cancel.className='b3-button b3-button--cancel';cancel.textContent=this.i18n.cancel;cancel.addEventListener('click',onCancel);actions.append(cancel);}
+        const save=document.createElement('button');save.type='submit';save.className='b3-button';save.textContent=this.i18n.save;actions.append(save);
+        form.append(input,error,actions);
+        form.addEventListener('submit',async event=>{
+            event.preventDefault();if(save.disabled)return;
+            const tick=Number(input.value);
+            if(![3,10,30].includes(tick)){error.textContent=this.i18n.cursorTickFailed;return;}
+            save.disabled=true;error.textContent='';
+            try {
+                this.updateCursors(await this.kernel.rpc.call.setCursorTick(tick));
+                if(!this.stopped){if(onSaved)onSaved();else showMessage(this.i18n.cursorTickSaved,3000,'info');}
+            } catch {error.textContent=this.i18n.cursorTickFailed;}
+            finally {save.disabled=false;}
+        });
+        return form;
+    }
+
+    openSetting() {
+        if(this.tickDialog)return;
+        const dialog=new Dialog({title:this.i18n.cursorTick,content:'<div class="b3-dialog__content collab-settings-content"></div>',width:'min(320px, calc(100vw - 32px))',destroyCallback:()=>{this.tickDialog=null;}});
+        dialog.element.classList.add('collab-dialog');
+        this.tickDialog=dialog;
+        const tip=document.createElement('p');tip.className='collab-setting-tip';tip.textContent=this.i18n.cursorTickTip;
+        const form=this.createTickForm(()=>dialog.destroy(),()=>dialog.destroy());
+        dialog.element.querySelector('.b3-dialog__content').append(tip,form);form.querySelector('select').focus();
+        dialog.element.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();dialog.destroy();}});
+    }
+
 
     async loadCursors() {
         try { this.updateCursors(await this.kernel.rpc.call.cursorSnapshot()); } catch {}
@@ -2640,7 +2660,6 @@ module.exports = class CollaborationPlugin extends Plugin {
             if(!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))return;
             if (!event.pointerType || event.pointerType === "mouse" || event.pointerType === "pen") {
                 this.pointer = { x: event.clientX, y: event.clientY };
-                if (this.dragOrigin && (event.buttons & 1) && Math.hypot(event.clientX-this.dragOrigin.x,event.clientY-this.dragOrigin.y) >= 4) this.dragging = true;
                 if (event.buttons === 0 && !this.nativeDragging) this.endDrag();
                 if(event.target)this.surfaceTarget=event.target;
                 this.scheduleDocumentReport();
@@ -2671,7 +2690,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         window.addEventListener("resize", this.handleCursorLayout);
         this.handleSelectionActivity = () => this.queueActivity();
         this.handleSceneActivity = (event) => {
-            if (event?.target?.closest?.('.collab-people, .collab-cursor-layer')) return;
+            if(this.renameDialog?.element.contains(event?.target) || this.tickDialog?.element.contains(event?.target))return;
+            if (event?.target?.closest?.('.collab-people, .collab-people__header, .collab-cursor-layer')) return;
             if(event?.target)this.surfaceTarget=event.target;
             const control=event?.target?.closest?.('[id]');
             if(PAGE_CONTROLS.includes(control?.id)){this.pageControl=control.id;this.controlTitle=control.getAttribute('aria-label')?.replace(/<[^>]*>/g,'').slice(0,160);}
@@ -2681,6 +2701,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.scheduleDocumentReport();this.queueActivity();this.scheduleCursorRender();
         };
         this.handleKey = (event) => {
+            if(this.cursorPicker && (!this.cursorPicker.matches(':open') || !event.target?.closest?.('select')))this.cursorPicker=null;
             this.scheduleCursorRender();
             const keys=captureShortcut(event);
             if (keys) {
@@ -2709,8 +2730,7 @@ module.exports = class CollaborationPlugin extends Plugin {
     }
 
     endDrag() {
-        if(!this.dragOrigin && !this.dragging && !this.nativeDragging)return;
-        this.dragOrigin = null;
+        if(!this.dragging && !this.nativeDragging)return;
         this.dragging = this.nativeDragging = false;
         this.queueActivity();
     }
@@ -2718,23 +2738,29 @@ module.exports = class CollaborationPlugin extends Plugin {
     bindInteractions(doc, convert) {
         const down = event => {
             if (event.button !== 0 || event.isPrimary === false || event.pointerType === 'touch') return;
+            this.cursorPicker=null;
             const point = convert(event); if (!point) return;
             this.handlePointer(point);
-            this.dragOrigin = {x:point.clientX,y:point.clientY};
             const cursor = captureCursor(this.pointer,this);
             if (!cursor) return;
-            this.drawClick(this.pointer,this.hue ?? 0);
             this.pendingClicks.push(cursor);
             if(this.pendingClicks.length > 8)this.pendingClicks.shift();
             this.queueActivity();
         };
-        const start = event => {this.nativeDragging=this.dragging=true;const point=convert(event);if(point)this.handlePointer(point);this.queueActivity();};
+        const start = event => {
+            if(event.defaultPrevented){this.endDrag();return;}
+            this.nativeDragging=true;
+            this.dragging=Array.from(event.dataTransfer?.types || []).includes('application/siyuan-block');
+            const point=convert(event);if(point)this.handlePointer(point);
+            this.queueActivity();
+        };
         const over = event => {const point=convert(event);if(point)this.handlePointer(point);};
         const end = event => {this.endDrag();const point=convert(event);if(point)this.handlePointer(point);};
         const cancel = () => {if(!this.nativeDragging)this.endDrag();};
         const handlers = {pointerdown:down,pointerup:end,pointercancel:cancel,dragstart:start,dragover:over,dragend:end,drop:end};
-        for(const [type,handler] of Object.entries(handlers))doc.addEventListener(type,handler,{capture:true,passive:true});
-        return () => {for(const [type,handler] of Object.entries(handlers))doc.removeEventListener(type,handler,true);};
+        // Read drag types after SiYuan's block handler has populated them.
+        for(const [type,handler] of Object.entries(handlers))doc.addEventListener(type,handler,{capture:type!=='dragstart',passive:true});
+        return () => {for(const [type,handler] of Object.entries(handlers))doc.removeEventListener(type,handler,type!=='dragstart');};
     }
 
     bindFrames() {
@@ -2750,10 +2776,10 @@ module.exports = class CollaborationPlugin extends Plugin {
         for(const frame of frames) {
             if(this.frameListeners.has(frame)){this.frameListeners.get(frame).load();continue;}
             let doc,observer,stopInteractions;
-            const convert=(event)=>{
+            const convert=(event,content=true)=>{
                 if(!frame.isConnected)return;
-                let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=false;
-                for(let current=frame;current;){
+                let point={x:event.clientX,y:event.clientY},target=frame,reachedRoot=!content && frame.ownerDocument===document;
+                for(let current=content ? frame:frame.ownerDocument.defaultView?.frameElement;current;){
                     point=frameToParent(current,point);if(!point){this.handlePointerLeave();return;}target=current;
                     if(current.ownerDocument===document){reachedRoot=true;break;}
                     current=current.ownerDocument.defaultView?.frameElement;
@@ -2785,7 +2811,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 observer.observe(doc,{childList:true,characterData:true,subtree:true,attributes:true});
             };
             const onLoad=()=>{load();this.bindFrames();this.handleCursorLayout();};
-            const enter=()=>this.handlePointerLeave();
+            const enter=event=>{const point=convert(event,false);if(point)this.handlePointer(point);};
             frame.addEventListener('load',onLoad);frame.addEventListener('pointerenter',enter,{passive:true});load();
             this.frameListeners.set(frame,{load,stop:()=>{stopDocument();frame.removeEventListener('load',onLoad);frame.removeEventListener('pointerenter',enter);}});
         }
@@ -2833,10 +2859,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             await this.kernel.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
             this.lastCursorSignature = signature;
             this.lastCursorTypingAt=typingAt;
-        } catch {
-            this.remoteCursors = [];
-            this.scheduleCursorRender();
-        } finally {
+        } catch {} finally {
             this.cursorSending = false;
         }
     }
@@ -2850,10 +2873,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             await this.kernel.rpc.call.editingUpdate(this.sessionId, this.generation, ++this.editingSequence, editing);
             this.lastEditingSignature = signature;
             this.editingSentAt = Date.now();
-        } catch {
-            this.remoteEditing = [];
-            this.scheduleCursorRender();
-        } finally { this.editingSending = false; }
+        } catch {} finally { this.editingSending = false; }
     }
 
     async sendSelection() {
@@ -2864,10 +2884,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         try {
             await this.kernel.rpc.call.selectionUpdate(this.sessionId, this.generation, ++this.selectionSequence, selection);
             this.lastSelectionSignature = signature;
-        } catch {
-            this.remoteSelections = [];
-            this.scheduleCursorRender();
-        } finally { this.selectionSending = false; }
+        } catch {} finally { this.selectionSending = false; }
     }
 
     scheduleCursorRender() {
@@ -2881,16 +2898,20 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     renderCursors(animate) {
         const previousMeasurements=componentMeasurements;
-        componentMeasurements={fields:new WeakMap(),scrollbars:new WeakMap(),scrollbarAreas:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap(),siblings:new WeakMap(),visualHits:new Map()};
+        componentMeasurements={fields:new WeakMap(),fieldMirrors:new Map(),scrollbars:new WeakMap(),scrollbarAreas:new WeakMap(),pickers:new WeakMap(),roots:new Map(),routes:new WeakMap(),siblings:new WeakMap(),visualHits:new Map()};
         try {
-            const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].some(element=>getComputedStyle(element).appearance==='base-select');
+            const picker=typeof CSS!=='undefined' && CSS.supports('selector(select:open)') && [...document.querySelectorAll('select:open')].find(element=>getComputedStyle(element).appearance==='base-select');
             if(picker && this.cursorLayer.showPopover){
                 if(!this.cursorLayer.hasAttribute('popover'))this.cursorLayer.setAttribute('popover','manual');
-                // A picker reopened between frames must not cover the read-only cursor layer.
-                if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
-                this.cursorLayer.showPopover();
+                // Promote once per opening; repeated hide/show resets every cursor's rendering.
+                if(this.cursorPicker!==picker || !this.cursorLayer.matches(':popover-open')){
+                    if(this.cursorLayer.matches(':popover-open'))this.cursorLayer.hidePopover();
+                    this.cursorLayer.showPopover();
+                }
+                this.cursorPicker=picker;
             }else if(this.cursorLayer.hasAttribute('popover')){
                 this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
+                this.cursorPicker=null;
             }
             const visible = new Set(),resolved=new Map();
             const positions=[],people=new Set(this.clients.map(client=>client.name));
@@ -2914,7 +2935,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                         const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
                         arrow.setAttribute("viewBox", "0 0 22 22");
                         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                        path.setAttribute("d", "M2 2L19 8.5L12 12L8.5 19Z");
+                        path.setAttribute("d", CURSOR_PATHS.pointer);
                         arrow.append(path);
                         const label = document.createElement("span");
                         marker.append(arrow, label);
@@ -2926,7 +2947,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     const state=client.cursor.dragging ? 'dragging' : client.cursor.state || 'pointer';
                     if(marker.dataset.state!==state){
                         marker.dataset.state=state;
-                        marker.querySelector('path').setAttribute('d',state==='dragging' ? 'M5 10V7Q5 5 7 5Q8 5 8 7V5Q8 3 10 3Q12 3 12 5V6Q12 4 14 4Q16 4 16 6V8Q16 6 18 7Q19 7 19 9V14Q19 20 13 20H10Q8 20 7 18L3 13Q2 11 4 10L7 13V9Z' : state==='pointer' ? 'M2 2L19 8.5L12 12L8.5 19Z':'M7 1H15V3H12V19H15V21H7V19H10V3H7Z');
+                        marker.querySelector('path').setAttribute('d',CURSOR_PATHS[state] || CURSOR_PATHS.editing);
                     }
                     for(const notice of this.shortcutNotices.get(client.name)||[]){
                         if(notice.element.parentElement===this.cursorLayer)continue;
@@ -2939,7 +2960,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                     const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
                     if(marker.cursorTransform!==transform){
-                        marker.style.transitionDuration = animate && marker.cursorTransform ? `${Math.min(120, 1000 / this.tick)}ms` : "0ms";
+                        marker.style.transitionDuration = animate && marker.cursorTransform ? `${1000 / this.tick}ms` : "0ms";
                         marker.style.transform=transform;
                         marker.cursorTransform=transform;
                     }
@@ -2963,7 +2984,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     clearTimeout(effect.timer);element.remove();this.clickEffects.delete(element);
                 }else{element.style.left=`${point.x}px`;element.style.top=`${point.y}px`;}
             }
-        }finally{for(const probes of componentMeasurements.visualHits.values())for(const {probe}of probes)probe.remove();componentMeasurements=previousMeasurements;}
+        }finally{for(const {mirror}of componentMeasurements.fieldMirrors.values())mirror.remove();for(const probes of componentMeasurements.visualHits.values())for(const {probe}of probes)probe.remove();componentMeasurements=previousMeasurements;}
     }
 
     renderEditing() {
@@ -3104,9 +3125,9 @@ module.exports = class CollaborationPlugin extends Plugin {
         const form=document.createElement('form');form.className='collab-name-form';
         const label=document.createElement('label');label.textContent=this.i18n.nameLabel;
         const input=document.createElement('input');input.className='b3-text-field fn__block';input.value=this.clientName;
-        input.maxLength=48;input.required=true;input.autocomplete='off';label.append(input);
-        const colorLabel=document.createElement('label');colorLabel.textContent=this.i18n.colorLabel;
-        const slider=document.createElement('input');slider.type='range';slider.min='0';slider.max='359';slider.step='1';slider.value=String(this.hue ?? 0);slider.className='collab-hue';colorLabel.append(slider);
+        input.maxLength=48;input.required=true;input.autocomplete='off';input.title=this.i18n.nameHint;label.append(input);
+        const colorLabel=document.createElement('div');colorLabel.className='collab-color-field';colorLabel.textContent=this.i18n.colorLabel;
+        const slider=document.createElement('input');slider.type='range';slider.min='0';slider.max='359';slider.step='1';slider.value=String(this.hue ?? 0);slider.className='collab-hue';slider.setAttribute('aria-label',this.i18n.colorLabel);
         const swatches=document.createElement('div');swatches.className='collab-swatches';swatches.setAttribute('role','group');swatches.setAttribute('aria-label',this.i18n.colorLabel);
         for(const hue of [0,30,55,120,180,220,270,320]) {
             const button=document.createElement('button');button.type='button';button.dataset.hue=String(hue);
@@ -3116,15 +3137,36 @@ module.exports = class CollaborationPlugin extends Plugin {
         const sample=document.createElement('div');sample.className='collab-profile-preview';sample.setAttribute('aria-label',this.i18n.profilePreview);
         const marker=document.createElement('div');marker.className='collab-cursor';
         const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 22 22');
-        const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d','M2 2L19 8.5L12 12L8.5 19Z');svg.append(path);
+        const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',CURSOR_PATHS.pointer);svg.append(path);
         const name=document.createElement('span');marker.append(svg,name);sample.append(marker);
-        const preview=()=>{name.textContent=input.value.trim() || this.i18n.self;sample.style.setProperty('--collab-cursor-hue',slider.value);for(const button of swatches.children)button.setAttribute('aria-pressed',String(button.dataset.hue===slider.value));};
+        let dragOrigin=null,position={x:16,y:22};
+        const place=(x,y)=>{
+            const width=sample.clientWidth || 280,height=sample.clientHeight || 64;
+            position={x,y};
+            const labelWidth=Math.min(name.scrollWidth ? name.scrollWidth+2 : 32,252,width-16),labelHeight=name.offsetHeight || 20;
+            const labelX=Math.max(8,Math.min(x+13,width-labelWidth-8)),labelY=Math.max(8,Math.min(y+17,height-labelHeight-8));
+            marker.style.transform=`translate3d(${x}px, ${y}px, 0)`;
+            name.style.transform=`translate(${labelX-x}px, ${labelY-y}px)`;
+            marker.style.setProperty('--collab-preview-label-width',`${width-28}px`);
+        };
+        const reset=()=>{dragOrigin=null;marker.dataset.state='pointer';path.setAttribute('d',CURSOR_PATHS.pointer);};
+        const move=event=>{
+            const rect=sample.getBoundingClientRect();
+            sample.dataset.tracking='true';
+            place((event.clientX-rect.left)*(sample.clientWidth || rect.width)/rect.width,(event.clientY-rect.top)*(sample.clientHeight || rect.height)/rect.height);
+            if(dragOrigin && Math.hypot(event.clientX-dragOrigin.x,event.clientY-dragOrigin.y)>=4){marker.dataset.state='dragging';path.setAttribute('d',CURSOR_PATHS.dragging);}
+        };
+        sample.addEventListener('pointerenter',move);sample.addEventListener('pointermove',move);
+        sample.addEventListener('pointerdown',event=>{if(event.button!==0)return;dragOrigin={x:event.clientX,y:event.clientY};sample.setPointerCapture?.(event.pointerId);move(event);});
+        for(const type of ['pointerup','pointercancel','lostpointercapture'])sample.addEventListener(type,reset);
+        sample.addEventListener('pointerleave',()=>{reset();delete sample.dataset.tracking;place(16,22);});
+        const preview=()=>{name.textContent=input.value.trim() || this.i18n.self;form.style.setProperty('--collab-cursor-hue',slider.value);for(const button of swatches.children)button.setAttribute('aria-pressed',String(button.dataset.hue===slider.value));place(position.x,position.y);};
         input.addEventListener('input',preview);slider.addEventListener('input',preview);preview();
         const status=document.createElement('div');status.className='collab-profile-status';status.setAttribute('role','status');status.setAttribute('aria-live','polite');
         const actions=document.createElement('div');actions.className='collab-name-actions';
         if(onCancel){const cancel=document.createElement('button');cancel.type='button';cancel.className='b3-button b3-button--cancel';cancel.textContent=this.i18n.cancel;cancel.addEventListener('click',onCancel);actions.append(cancel);}
         const save=document.createElement('button');save.type='submit';save.className='b3-button';save.textContent=this.i18n.save;actions.append(save);
-        form.append(label,colorLabel,swatches,sample,status,actions);
+        colorLabel.append(swatches,slider);form.append(label,colorLabel,sample,status,actions);
         form.addEventListener('submit',async event=>{
             event.preventDefault();if(save.disabled)return;save.disabled=true;status.textContent='';status.classList.remove('ft__error');
             try {
@@ -3139,11 +3181,13 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     openRenameDialog() {
         if(this.renameDialog)return;
-        const dialog=new Dialog({title:this.i18n.renameSelf,content:'<div class="b3-dialog__content"></div>',width:'min(380px, calc(100vw - 32px))',destroyCallback:()=>{this.renameDialog=null;}});
+        const dialog=new Dialog({title:this.i18n.renameSelf,content:'<div class="b3-dialog__content collab-settings-content"></div>',width:'min(336px, calc(100vw - 32px))',destroyCallback:()=>{this.renameDialog=null;}});
+        dialog.element.classList.add('collab-dialog');
         this.renameDialog=dialog;
         const form=this.createProfileForm(()=>dialog.destroy(),()=>dialog.destroy());
         dialog.element.querySelector('.b3-dialog__content').append(form);
         form.querySelector('input').focus();form.querySelector('input').select();
+        dialog.element.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();dialog.destroy();}});
     }
 
 
@@ -3163,24 +3207,32 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.peopleDocument = documentId;
         if (!this.peoplePanel) {
             const panel=document.createElement('section');panel.className='collab-people';
-            const dialog=new Dialog({title:this.i18n.peopleTitle,content:'<div class="b3-dialog__content"></div>',width:'min(440px, calc(100vw - 32px))',destroyCallback:()=>{
+            const dialog=new Dialog({title:this.i18n.peopleTitle,content:'<div class="b3-dialog__content collab-people-content"></div>',width:'min(280px, calc(100vw - 32px))',destroyCallback:()=>{
                 if(this.peopleDialog===dialog){this.peopleDialog=null;this.closePeople();}
             }});
             this.peopleDialog=dialog;
-            const header=document.createElement('div');header.className='collab-people__header';
-            const title=document.createElement('strong');
-            const close=document.createElement('button');close.type='button';close.className='b3-button b3-button--outline';close.textContent=this.i18n.close;
-            close.addEventListener('click',()=>this.closePeople());header.append(title,close);
+            dialog.element.classList.add('collab-dialog');
+            const header=dialog.element.querySelector('.b3-dialog__header');header.classList.add('collab-people__header');header.textContent='';
+            const title=document.createElement('span');title.className='collab-people__title';title.id=this.name+'-people-title';title.textContent=this.i18n.peopleTitle;
+            const count=document.createElement('span');count.className='collab-people__count';count.id=this.name+'-people-count';
+            const container=dialog.element.querySelector('.b3-dialog__container');container.setAttribute('aria-labelledby',title.id);container.setAttribute('aria-describedby',count.id);
+            const close=document.createElement('button');close.type='button';close.className='block__icon block__icon--show collab-people__close';close.setAttribute('aria-label',this.i18n.close);close.title=this.i18n.close;
+            close.innerHTML='<svg><use xlink:href="#iconClose"></use></svg>';
+            close.addEventListener('mousedown',event=>event.stopPropagation());
+            close.addEventListener('click',()=>this.closePeople());header.append(title,count,close);
             const list=document.createElement('div');list.className='collab-people__list';
             const actions=document.createElement('div');actions.className='collab-people__actions';
             for(const [label,action] of [[this.i18n.renameSelf,()=>this.openRenameDialog()],[this.i18n.cursorSettings,()=>this.openSetting()]]) {
-                const button=document.createElement('button');button.type='button';button.className='b3-button b3-button--outline';button.textContent=label;
-                button.addEventListener('click',()=>{this.closePeople();action();});actions.append(button);
+                const button=document.createElement('button');button.type='button';button.className='b3-button b3-button--text';button.textContent=label;
+                button.addEventListener('click',()=>{
+                    if(this.stopped || this.peopleDialog!==dialog || this.renameDialog || this.tickDialog)return;
+                    action();
+                });actions.append(button);
             }
-            panel.append(header,list,actions);dialog.element.querySelector('.b3-dialog__content').append(panel);
+            panel.append(list,actions);dialog.element.querySelector('.b3-dialog__content').append(panel);
             this.peoplePanel=panel;this.peopleRows=new Map();
             this.topBar?.setAttribute('aria-expanded','true');
-            panel.addEventListener('keydown',(event)=>{if(event.key==='Escape'){this.closePeople();this.topBar?.focus?.();}});
+            dialog.element.addEventListener('keydown',(event)=>{if(event.key==='Escape'){this.closePeople();this.topBar?.focus?.();}});
             close.focus();
         }
         this.renderPeople();
@@ -3189,7 +3241,7 @@ module.exports = class CollaborationPlugin extends Plugin {
 
     closePeople() {
         const dialog=this.peopleDialog;this.peopleDialog=null;dialog?.destroy();
-        this.peoplePanel?.remove();this.peoplePanel=null;this.peopleRows?.clear();this.peopleEmpty=null;
+        this.peoplePanel=null;this.peopleRows?.clear();this.peopleEmpty=null;
         this.topBar?.setAttribute('aria-expanded','false');
         this.scheduleDocumentReport();
     }
@@ -3197,7 +3249,7 @@ module.exports = class CollaborationPlugin extends Plugin {
     renderPeople() {
         if (!this.peoplePanel) return;
         const clients=this.clients.filter(client=>!this.peopleDocument || client.documentId===this.peopleDocument);
-        this.peoplePanel.querySelector('strong').textContent=(this.peopleDocument ? this.i18n.documentViewers : this.i18n.onlineBadge).replace('${count}',String(this.onlineCount===null ? '—' : this.peopleDocument ? clients.length : this.onlineCount));
+        const count=this.peopleDialog.element.querySelector('.collab-people__count');count.textContent=(this.peopleDocument ? this.i18n.documentViewers : this.i18n.onlineBadge).replace('${count}',String(this.onlineCount===null ? '—' : this.peopleDocument ? clients.length : this.onlineCount));count.title=count.textContent;
         const list=this.peoplePanel.querySelector('.collab-people__list'), visible=new Set();
         for(const client of clients) {
             const key=client.peerId || client.name;visible.add(key);
@@ -3207,7 +3259,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                 const details=document.createElement('div');details.className='collab-person__details';
                 const name=document.createElement('strong'),page=document.createElement('span');page.className='collab-person__page';details.append(name,page);
                 for(const type of ['person-name','person-self']){const part=document.createElement('span');part.className='collab-'+type;part.setAttribute('data-type',type);name.append(part);}
-                const follow=document.createElement('button');follow.type='button';follow.className='b3-button b3-button--outline';follow.textContent=this.i18n.follow;
+                const follow=document.createElement('button');follow.type='button';follow.className='b3-button b3-button--text';follow.textContent=this.i18n.follow;
                 follow.addEventListener('click',async()=>{
                     const target=this.clients.find((person)=>(person.peerId || person.name)===key);
                     if(!target)return;
@@ -3223,7 +3275,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             row.setAttribute('data-name',client.name);
             const own=client.name===this.clientName;
             row.querySelector('.collab-person-name').textContent=client.name;row.querySelector('strong').title=client.name;
-            const self=row.querySelector('.collab-person-self');self.textContent=own ? ' · '+this.i18n.self:'';self.hidden=!own;
+            const self=row.querySelector('.collab-person-self');self.textContent=own ? this.i18n.self:'';self.hidden=!own;
             const page=row.querySelector('.collab-person__page');page.textContent=client.page?.title || (client.documentId ? this.i18n.pageDocument : this.i18n.pageWorkspace);page.title=page.textContent;
             row.querySelector('button').disabled=own || (!client.page && !client.documentId);
         }
@@ -3311,6 +3363,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         cancelAnimationFrame(this.documentFrame);
         this.domObserver?.disconnect();
         this.renameDialog?.destroy();
+        this.tickDialog?.destroy();
         document.querySelectorAll(".sy__file .collab-presence").forEach((row) => this.clearRow(row));
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.off("open-noneditableblock", this.handleRenderTarget);

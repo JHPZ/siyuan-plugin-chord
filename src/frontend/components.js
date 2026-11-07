@@ -475,7 +475,7 @@ function componentFieldContent(field) {
     if(![left,right,top,bottom,sx,sy].every(Number.isFinite) || sx<=0 || sy<=0)return null;
     const content=field.matches('textarea') ? componentFieldMeasure(field,mirror=>{
         const marker=field.ownerDocument.createElement('i');marker.style.cssText='position:absolute;inset:0;padding:0;margin:0;border:0;visibility:hidden;pointer-events:none';mirror.append(marker);
-        const port=marker.getBoundingClientRect(),viewport={left:port.left+field.scrollLeft*sx,right:port.right+field.scrollLeft*sx,top:port.top+field.scrollTop*sy,bottom:port.bottom+field.scrollTop*sy};
+        const port=marker.getBoundingClientRect(),viewport={left:port.left+field.scrollLeft*sx,right:port.right+field.scrollLeft*sx,top:port.top+field.scrollTop*sy,bottom:port.bottom+field.scrollTop*sy};marker.remove();
         return {left:viewport.left+parseFloat(css.paddingLeft)*sx,right:viewport.right-parseFloat(css.paddingRight)*sx,top:viewport.top+parseFloat(css.paddingTop)*sy,bottom:viewport.bottom-parseFloat(css.paddingBottom)*sy,viewport};
     }):{left:rect.left+left*sx,right:rect.right-right*sx,top:rect.top+top*sy,bottom:rect.bottom-bottom*sy};
     cache?.set(field,content);return content;
@@ -483,6 +483,7 @@ function componentFieldContent(field) {
 
 function componentFieldMeasure(field,run) {
     if(field.matches(COMPONENT_DATE_FIELD)){const date=componentDateField(field);return date?run(null,offset=>date.glyphs.find(g=>g.offset===offset)?.rect):null;}
+    const cache=componentMeasurements?.fieldMirrors,cached=cache?.get(field);if(cached)return cached.run(run);
     if(typeof Intl.Segmenter!=='function')return null;
     const doc=field.ownerDocument,css=doc.defaultView.getComputedStyle(field);
     if(field.type==='number' && (field.validity.badInput || css.appearance!=='none'))return null;
@@ -519,8 +520,11 @@ function componentFieldMeasure(field,run) {
             const segment=segments.containing(offset),start=segment?.index ?? offset,end=segment ? start+segment.segment.length:offset+1;
             const range=doc.createRange();range.setStart(mirror.firstChild,start);range.setEnd(mirror.firstChild,end);const r=range.getBoundingClientRect();return r.height ? r:null;
         };
-        return run(mirror,character,position,segments);
-    }finally{mirror.remove();}
+        const measure=callback=>callback(mirror,character,position,segments);
+        // Share the mirror only within this render; keep it out of native hit testing.
+        if(cache){mirror.style.pointerEvents='none';cache.set(field,{mirror,run:measure});}
+        return measure(run);
+    }finally{if(!cache?.has(field))mirror.remove();}
 }
 function componentVisualHit(doc,point) {
     const cache=componentMeasurements?.visualHits;let probes=cache?.get(doc);
@@ -537,7 +541,11 @@ function componentVisualHit(doc,point) {
             // Geometry is stable during this synchronous render; all peers share its hit proxies.
             if(probes.length || !clones.length)cache?.set(doc,probes);
         }
-        const hit=doc.elementFromPoint(point.x,point.y);
+        let hit=doc.elementFromPoint(point.x,point.y);
+        const view=doc.defaultView;
+        // Chromium rounds the last fractional viewport pixel outside the document.
+        if(!hit && point.x>=0 && point.y>=0 && point.x<view.innerWidth && point.y<view.innerHeight)
+            hit=doc.elementFromPoint(Math.min(point.x,view.innerWidth-1),Math.min(point.y,view.innerHeight-1));
         for(const {original,nodes}of probes){const index=nodes.indexOf(hit);if(index>=0)return original[index];}
         return hit;
     }finally{if(!cache?.has(doc))for(const {probe}of probes || [])probe.remove();}
@@ -991,7 +999,9 @@ function componentCharacter(element,offset,plane) {
 function componentNearText(element,point,plane) {
     if(element.matches(COMPONENT_DATE_FIELD))return componentDateField(element)?.glyphs || [];
     if(componentTextField(element))return componentFieldMeasure(element,(mirror,character,position,segments)=>{
-        const doc=element.ownerDocument,caret=doc.caretPositionFromPoint?.(point.x,point.y),range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y),node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
+        const doc=element.ownerDocument,pointerEvents=mirror.style.pointerEvents;let caret,range;
+        try{mirror.style.pointerEvents='auto';caret=doc.caretPositionFromPoint?.(point.x,point.y);range=caret ? null:doc.caretRangeFromPoint?.(point.x,point.y);}finally{mirror.style.pointerEvents=pointerEvents;}
+        const node=caret?.offsetNode || range?.startContainer,offset=caret?.offset ?? range?.startOffset;
         if(node!==mirror.firstChild)return null;
         const end=mirror.firstChild.length-1,emptyLine=end===0 || mirror.firstChild.data.charCodeAt(end-1)===10;
         const candidates=[...new Set([position(offset-1),position(offset)])].map(offset=>({offset,rect:character(offset)})).filter(item=>item.rect && (item.offset<end || emptyLine));
@@ -1436,8 +1446,11 @@ function captureMeasuredComponent(hit,plugin,point) {
         if(frames.length>=8)return null;
         let doc;try{doc=hit.contentDocument;}catch{}
         if(!doc?.body)return null;
-        point=inside;const inner=componentHit(doc,point);
+        const inner=componentHit(doc,inside);
         if(!visibleElement(inner) || inner.closest('[data-private]') || componentSearchField(inner)===null || componentSuperblockDivider(inner)===null || componentBazaarPackage(inner)===null || inner.matches('canvas'))return null;
+        // A short embedded page leaves visible viewport space beyond its body.
+        if(inner===doc.documentElement)break;
+        point=inside;
         original=inner;hit=componentBox(inner,point);
         const route=componentRoute(doc.body,hit);if(!route)return null;frames.push(route);
     }
@@ -1536,10 +1549,17 @@ function resolveMeasuredComponent(cursor,plugin) {
     const treeToggle=hit===element && element.matches('.b3-list-item__toggle') && target?.closest('svg')?.matches('.b3-list-item__arrow') && componentTreeRegion(element);
     // A blank cell must remain blank; a newly inserted child must not inherit its pointer.
     if(!visibleElement(target) || target.closest('[data-private]') || componentSearchField(target)===null || componentAssetPath(target)===null || componentSuperblockDivider(target)===null || componentBazaarPackage(target)===null || !visibleElement(hit) || hit.closest('[data-private]') || hit!==target && !highlight && !treeToggle && !(hit?.namespaceURI==='http://www.w3.org/2000/svg' && target.contains(hit)))return null;
-    if(element.matches('iframe') && frameToContent(element,point))return null;
+    if(element.matches('iframe')){
+        const inside=frameToContent(element,point);
+        if(inside){
+            let doc;try{doc=element.contentDocument;}catch{}
+            const background=doc && componentHit(doc,inside);
+            if(background!==doc?.documentElement || !visibleElement(background) || background.closest('[data-private]'))return null;
+        }
+    }
     for(const frame of frames.reverse()){
         const parentPoint=frameToParent(frame,point);if(!parentPoint)return null;Object.assign(point,parentPoint);
-        if(frame.ownerDocument.elementFromPoint(point.x,point.y)!==frame)return null;
+        if(componentVisualHit(frame.ownerDocument,point)!==frame)return null;
     }
     return point;
 }
