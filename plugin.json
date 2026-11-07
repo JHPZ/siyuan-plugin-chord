@@ -1,7 +1,7 @@
 {
   "name": "siyuan-plugin-chord",
   "author": "Jhpz",
-  "url": "",
+  "url": "https://github.com/JHPZ/siyuan-plugin-chord",
   "version": "1.0.0",
   "minAppVersion": "3.8.9",
   "kernels": [
