@@ -21,8 +21,8 @@
     "zh-CN": "和弦"
   },
   "description": {
-    "default": "Live presence for SiYuan: online participants, document viewers, shared pointers and text selections.",
-    "zh-CN": "思源笔记多人同步展示：在线名单、文档查看人数、共享光标与文本选区。编辑与撤销由思源处理。"
+    "default": "Enhance the online editing experience for multiple people at SiYuan",
+    "zh-CN": "提升思源多人在线编辑体验"
   },
   "readme": {
     "default": "README.en.md",
@@ -31,9 +31,13 @@
   "icon": "icon.png",
   "keywords": [
     "协作",
-    "在线状态",
+    "在线编辑",
     "共享光标",
     "collaboration",
-    "presence"
-  ]
+    "online editing",
+    "share cursor"
+  ],
+  "funding": {
+    "custom": ["https://afdian.com/a/mrjhpz"]
+  }
 }
