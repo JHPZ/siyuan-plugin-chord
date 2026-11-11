@@ -16,11 +16,14 @@ Try it online: [SiYuan Docker demo (access code: 123456)](https://siyuan.q-q.icu
 
 ## Features
 
-- Online participant count in the top bar
-- Precise cursor tracking
-- Multiple cursor states
-- Custom names and colors
-- Support for almost all native SiYuan pages; plugins and widgets have not been tested, so compatibility is not guaranteed
+- v1.0.0
+  - Online participant count in the top bar
+  - Precise cursor tracking
+  - Multiple cursor states
+  - Custom names and colors
+  - Support for almost all native SiYuan pages; plugins and widgets have not been tested, so compatibility is not guaranteed
+- v1.1.0
+  - Optimize packet sending method and size
 
 ## Scope
 
