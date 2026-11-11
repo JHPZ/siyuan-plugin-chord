@@ -1,10 +1,11 @@
 // Run with node tests/browser.test.cjs, then open the printed local URL.
 const http = require("node:http");
+const createRpcWebSocket = require("./helpers/rpc-websocket.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const frontendSource = fs.readFileSync(path.join(root, "index.js"), "utf8");
-const helpers = fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/graphs.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/pdf.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/components.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
+const helpers = fs.readFileSync(path.join(root,'src/wire.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/protocol.js'),'utf8')+'\n'+fs.readFileSync(path.join(root, 'src/frontend/anchors.js'), 'utf8').split('\n').slice(1).join('\n')+'\n'+fs.readFileSync(path.join(root,'src/frontend/graphs.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/pdf.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/components.js'),'utf8')+'\n'+fs.readFileSync(path.join(root,'src/frontend/surfaces.js'),'utf8');
 const selectionMethods = frontendSource.slice(frontendSource.indexOf('    renderSelections() {'), frontendSource.indexOf('    clearRow(')).replace('renderSelections() {','function renderSelections() {') +
     frontendSource.slice(frontendSource.indexOf('    async sendSelection() {'), frontendSource.indexOf('    scheduleCursorRender(')).replace('async sendSelection() {','async function sendSelection() {');
 const treeMethods = frontendSource.slice(frontendSource.indexOf('    clearRow('), frontendSource.indexOf('    openMenu() {'))
@@ -643,6 +644,39 @@ await test('原生颜色框按色块填充、边框和外围留白定位，改�
             componentRoundTrip({x:t.left+5,y:t.top+t.height/2});
         } finally {fixture.remove();}
     });
+    await test('虚拟文档树通过笔记本路径定位，提示时间与节点回收不改变身份',async()=>{
+        const fixture=document.createElement('div');fixture.className='sy__file';fixture.style.cssText='position:fixed;left:25px;top:25px;width:400px;height:200px;z-index:100;background:white';
+        const book='20261030165150-book009',id='20261030165150-doc0009';
+        fixture.innerHTML='<ul><li data-type="navigation-root" data-node-id="" data-tree-key="notebook:'+book+'"><span class="b3-list-item__text ariaLabel" aria-label="笔记本 更新于一分钟前">测试笔记本</span></li><li data-type="navigation-file" data-node-id="'+id+'" data-tree-key="notebook:'+book+'/'+id+'"><span class="b3-list-item__text ariaLabel" aria-label="文档 更新于一分钟前">测试文档</span></li></ul>';
+        document.body.append(fixture);
+        try{for(const label of fixture.querySelectorAll('.b3-list-item__text')){
+            const r=rectAt(label,1),point={x:r.left+r.width*.4,y:r.top+r.height*.6},anchor=componentRoundTrip(point);
+            assert(anchor.ui.scope.kind==='tree','virtual tree identity missing');
+            label.setAttribute('aria-label','另一客户端的时间和文件大小');
+            const copy=label.closest('li').cloneNode(true);label.closest('li').replaceWith(copy);fixture.firstElementChild.prepend(copy);
+            const target=copy.querySelector('.b3-list-item__text'),expected=rectAt(target,1),resolved=resolveCursor(anchor);
+            assert(resolved&&near(resolved.x,expected.left+expected.width*.4)&&near(resolved.y,expected.top+expected.height*.6),'recycled row or tooltip changed identity');
+            copy.dataset.treeKey=copy.dataset.treeKey.replace(book,'20261030165150-book008');assert(resolveCursor(anchor)===null,'other notebook inherited pointer');copy.dataset.treeKey=copy.dataset.treeKey.replace('20261030165150-book008',book);
+            copy.classList.add('fn__none');assert(resolveCursor(anchor)===null,'offscreen virtual row inherited pointer');copy.classList.remove('fn__none');assert(resolveCursor(anchor),'restored row lost pointer');
+        }}finally{fixture.remove();}
+    });
+    await test('轻量标题绑定外层文档，临时块 ID 经增量往返和重新渲染后仍定位字形',async()=>{
+        const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:25px;top:25px;width:650px;z-index:100;background:white';
+        const id='20261030165150-doc0009';
+        fixture.innerHTML='<div class="protyle" data-node-id="'+id+'"><div class="protyle-title" data-node-id="'+id+'"><div class="protyle protyle-title__rich protyle-lite-fragment"><div class="protyle-content"><div class="protyle-wysiwyg"><div class="p" data-node-id="20261030165150-temp001"><div class="protyle-title__input" contenteditable="true">标题精准定位验证</div></div></div></div></div></div></div>';
+        document.body.append(fixture);
+        try{
+            const editor=fixture.firstElementChild,title=fixture.querySelector('.protyle-title__input'),block=title.parentElement,plugin={i18n:{pageDocument:'文档'},currentDocument:()=>id};
+            const r=rectAt(title,2),point={x:r.left+r.width*.3,y:r.top+r.height*.7},anchor=componentRoundTrip(point,plugin);
+            assert(anchor.surface==='ui'&&anchor.ui.scope.kind==='document'&&anchor.ui.edges.x.every(e=>e.kind==='text'&&e.offset===2),'title used a temporary content block');
+            const initial=JSON.parse(JSON.stringify(anchor)),changed={...initial,x:.7234567890123456};
+            const received=wireApply(initial,JSON.parse(JSON.stringify(wireDiff(initial,changed))));received.ui=cleanUIAnchor(received.ui);
+            block.dataset.nodeId='20261030165150-temp002';fixture.style.width='500px';title.style.fontSize='25px';
+            const expected=rectAt(title,2),resolved=resolveCursor(received,plugin);assert(resolved&&near(resolved.x,expected.left+expected.width*changed.x)&&near(resolved.y,expected.top+expected.height*anchor.y),'title rerender or reflow lost precise pointer');
+            editor.dataset.nodeId='20261030165150-other09';assert(resolveCursor(received,plugin)===null,'other document inherited title');editor.dataset.nodeId=id;
+            editor.classList.add('fn__none');assert(resolveCursor(received,plugin)===null,'hidden title retained pointer');editor.classList.remove('fn__none');assert(resolveCursor(received,plugin),'title did not recover');
+        }finally{fixture.remove();}
+    });
     await test('界面空白与分屏缝隙精确往返，旧无身份比例锚点继续拒绝',async()=>{
         const fixture=document.createElement('div');fixture.id='blank-layout';fixture.className='layout__wnd--active';
         fixture.style.cssText='position:fixed;left:20px;top:20px;width:600px;height:240px;background:white;z-index:100';
@@ -863,7 +897,7 @@ await test('原生颜色框按色块填充、边框和外围留白定位，改�
     });
     await test('选区发送去重，取消选区发送清空，不申请编辑权', async () => {
         const sent=[];select(block,10,20);
-        const sender={layoutReady:true,selectionSequence:0,lastSelectionSignature:'null',kernel:{rpc:{call:{selectionUpdate:async(...args)=>sent.push(args)}}}};
+        const sender={layoutReady:true,selectionSequence:0,lastSelectionSignature:'null',rpc:{call:{selectionUpdate:async(...args)=>sent.push(args)}}};
         await sendSelection.call(sender);await sendSelection.call(sender);
         assert(sent.length===1 && sent[0][3].anchor.offset===10,'selection updates not deduplicated');
         const now=Date.now;Date.now=()=>now()+6000;
@@ -2177,7 +2211,12 @@ await test('原生颜色框按色块填充、边框和外围留白定位，改�
     await test('完整插件在在线和断线时都放行正文编辑、拖拽与原生撤销', async () => {
         const commands=[], messages=[], subscriptions=new Map(), editorEvents=new Map();
         const navigation={opened:[],commands:[],tab:null,allow:false};
+        let rpcDispatch;
         const NativePlugin = (() => {
+            const WebSocket = (${createRpcWebSocket.toString()})((name,args)=>rpcDispatch(name,args), notify=>{
+                for(const name of ['presence-changed','cursor-changed','shortcut-shown','pointer-clicked'])subscriptions.set(name,(...params)=>notify({jsonrpc:'2.0',method:name,params}));
+                return ()=>subscriptions.clear();
+            });
             const module={exports:{}};
             const store=new Map(),sessionStorage={getItem:key=>store.get(key),setItem:(key,value)=>store.set(key,value)};
             const require = () => ({
@@ -2211,14 +2250,14 @@ await test('原生颜色框按色块填充、边框和外围留白定位，改�
         const rangeStyle=document.createElement('style');rangeStyle.textContent='input.b3-slider::-webkit-slider-thumb{width:10px;height:10px}';document.head.append(rangeStyle);
         const plugin=new NativePlugin();let offline=false;let presenceClients=[{name:'A',hue:120,documentId:'20261030165150-doc0001'}];
         Object.assign(plugin,{name:'chord-native-test',i18n:${JSON.stringify(JSON.parse(fs.readFileSync(path.join(root,'i18n/zh-CN.json'),'utf8')))},
-            eventBus:{on(name,handler){editorEvents.set(name,handler);},off(name,handler){assert(editorEvents.get(name)===handler,"wrong editor event cleanup");editorEvents.delete(name);}},kernel:{rpc:{bind:async(name,handler)=>subscriptions.set(name,handler),unbind:async name=>subscriptions.delete(name),
-                call:new Proxy({},{get:(_,name)=>async()=>{
+            eventBus:{on(name,handler){editorEvents.set(name,handler);},off(name,handler){assert(editorEvents.get(name)===handler,"wrong editor event cleanup");editorEvents.delete(name);}}});
+        rpcDispatch=async(name)=>{
                     if(offline)throw Error('Offline');
                     if(name==='presenceHeartbeat')return {count:presenceClients.length,clients:presenceClients.slice(),self:{name:'A',hue:120}};
                     if(name==='cursorSnapshot')return {tick:10,cursors:[],selections:[]};
                     if(['cursorUpdate','selectionUpdate','editingUpdate','presenceLeave','pointerClick'].includes(name))return true;
                     throw Error('Unexpected RPC '+name);
-                }})}}});
+                };
         const input=cursorTextRoot(block), original=input.innerHTML;
         try {
             await plugin.onload();await plugin.onLayoutReady();
@@ -2289,13 +2328,86 @@ await test('性能匀速过渡覆盖3、10、30Hz整段间隔，同目标不重�
     }finally{fixture.remove();Object.assign(plugin,saved);plugin.renderCursors(false);}
 });
 
+await test('光标连续性：短暂空包淡出复用节点，跨区域恢复与途中改向均从当前画面继续',async()=>{
+    const saved={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,pointer:plugin.pointer,queueActivity:plugin.queueActivity,refreshInBackground:plugin.refreshInBackground,scheduleCursorRender:plugin.scheduleCursorRender,tick:plugin.tick};
+    plugin.queueActivity=plugin.refreshInBackground=plugin.scheduleCursorRender=()=>{};plugin.pointer=null;plugin.remoteSelections=[];plugin.remoteEditing=[];
+    const fixture=document.createElement('div');fixture.style.cssText='position:fixed;left:30px;top:30px;width:850px;height:150px;z-index:100;display:flex;gap:30px';
+    fixture.innerHTML=['a','b'].map(key=>'<div class="b3-dialog" data-key="motion-'+key+'" style="width:350px;background:white"><button style="width:340px;height:100px">连续光标</button></div>').join('');document.body.append(fixture);
+    const targets=[...fixture.querySelectorAll('button')],peer={name:'continuity-peer',hue:210},rows=[];
+    const point=(i,x)=>{const r=targets[i].getBoundingClientRect();return {x:r.left+x,y:r.top+15};};
+    const send=(i,x,animate=true)=>{plugin.remoteCursors=[{...peer,cursor:NativePlugin.testCapture(point(i,x),plugin)}];plugin.renderCursors(animate);};
+    const movement=marker=>marker.getAnimations().find(a=>a.transitionProperty==='transform');
+    try{for(const tick of [3,10,30]){
+        plugin.clients=[peer];plugin.presenceReceivedAt=Date.now();plugin.tick=tick;send(0,20);const marker=plugin.cursorMarkers.get(peer.name);assert(marker,'initial marker missing');
+        const entrances=marker.getAnimations({subtree:true}).filter(a=>!('transitionProperty'in a));assert(entrances.length===2,'first cursor flashed into view');for(const entrance of entrances){entrance.pause();entrance.currentTime=50;}assert(Number(getComputedStyle(marker.firstElementChild).opacity)>0&&Number(getComputedStyle(marker.firstElementChild).opacity)<1,'first cursor has no intermediate opacity');for(const entrance of entrances)entrance.finish();await frame();
+        send(0,200);const first=movement(marker);assert(first,'initial move teleported');first.pause();first.currentTime=first.effect.getTiming().duration*.4;const interrupted=marker.getBoundingClientRect();
+        plugin.remoteCursors=[];plugin.renderCursors(true);
+        assert(!plugin.cursorMarkers.has(peer.name)&&marker.isConnected,'short missing anchor destroyed the motion node');
+        assert(getComputedStyle(marker).visibility!=='hidden'&&Number(getComputedStyle(marker).opacity)>.1,'empty packet flashed the cursor off');
+        const fade=marker.getAnimations().find(a=>a.transitionProperty==='opacity');assert(fade&&fade.effect.getTiming().delay>=Math.max(120,1000/tick),'missing sample has no grace interval');fade.pause();fade.currentTime=fade.effect.getTiming().delay/2;
+        assert(Number(getComputedStyle(marker).opacity)>.99,'a short empty packet dimmed the cursor');send(1,40);assert(plugin.cursorMarkers.get(peer.name)===marker,'recovery created another cursor');
+        const resumed=movement(marker);assert(resumed,'cross-region recovery teleported');resumed.pause();const start=marker.getBoundingClientRect();assert(Math.hypot(start.left-interrupted.left,start.top-interrupted.top)<.1,'recovery jumped to the old endpoint');
+        resumed.currentTime=resumed.effect.getTiming().duration*.5;const middle=marker.getBoundingClientRect(),end=point(1,40);assert(middle.left>start.left&&middle.left<end.x,'recovered move has no intermediate point');
+        send(0,30);const reverse=movement(marker);assert(reverse&&reverse!==resumed,'retarget failed');reverse.pause();const turning=marker.getBoundingClientRect();assert(Math.hypot(turning.left-middle.left,turning.top-middle.top)<.1,'interruption teleported');
+        plugin.renderCursors(true);assert(movement(marker)===reverse,'same target restarted the animation');reverse.finish();const expected=point(0,30),final=marker.getBoundingClientRect();assert(Math.hypot(final.left-expected.x,final.top-expected.y)<.1,'final precise point drifted');
+        fixture.dataset.private='';plugin.renderCursors(true);assert(!plugin.cursorMarkers.has(peer.name)&&getComputedStyle(marker).visibility==='hidden','private target faded instead of hiding immediately');delete fixture.dataset.private;
+        send(1,80);assert(plugin.cursorMarkers.get(peer.name)===marker&&movement(marker),'hidden target recovery lost its motion history');for(const a of marker.getAnimations())a.finish();
+        plugin.updateCursors({tick,cursors:[],selections:[],editing:[]},true);plugin.renderCursors(true);assert(getComputedStyle(marker).visibility==='hidden','untrusted recovery faded stale coordinates');
+        send(0,30);plugin.cursorReset=false;for(const a of marker.getAnimations())a.finish();
+        plugin.clients=[];plugin.remoteCursors=[];plugin.renderCursors(true);assert(!marker.isConnected&&plugin.cursorCache.size===0,'departed peer retained cached DOM');rows.push({tick,nodeReused:true,interruptionContinuous:true});
+    }document.querySelector('#results').dataset.cursorContinuity=JSON.stringify(rows);
+    }finally{fixture.remove();Object.assign(plugin,saved);plugin.renderCursors(false);}
+});
+
+await test('光标跨层连续性：进入和退出原生下拉顶层均保留画面起点',async()=>{
+    const saved={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,pointer:plugin.pointer,queueActivity:plugin.queueActivity,refreshInBackground:plugin.refreshInBackground,scheduleCursorRender:plugin.scheduleCursorRender,tick:plugin.tick};
+    plugin.queueActivity=plugin.refreshInBackground=plugin.scheduleCursorRender=()=>{};plugin.pointer=null;plugin.remoteSelections=[];plugin.remoteEditing=[];plugin.tick=3;
+    const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='layer-motion';fixture.style.cssText='position:fixed;left:30px;top:30px;width:700px;height:130px;z-index:100;background:white';
+    fixture.innerHTML='<select id="motion-picker" style="appearance:base-select;width:280px"><option>原生顶层光标位置</option><option>第二项</option></select><button style="width:320px;height:70px">普通页面光标位置</button><style>#motion-picker::picker(select){appearance:base-select}</style>';document.body.append(fixture);
+    const field=fixture.querySelector('select'),target=fixture.querySelector('button'),peer={name:'layer-motion-peer',hue:180};plugin.clients=[peer];plugin.presenceReceivedAt=Date.now();
+    const move=point=>{plugin.remoteCursors=[{...peer,cursor:NativePlugin.testCapture(point,plugin)}];assert(plugin.remoteCursors[0].cursor,'layer source anchor missing');plugin.renderCursors(true);};
+    const click=(label,action)=>new Promise((resolve,reject)=>{const button=document.createElement('button');button.textContent=label;button.style.cssText='position:fixed;right:20px;bottom:50px;z-index:99999';fixture.append(button);button.onclick=()=>{try{action?.();button.remove();resolve();}catch(error){button.remove();reject(error);}};});
+    try{
+        const box=target.getBoundingClientRect();move({x:box.left+25,y:box.top+20});await frame();const marker=plugin.cursorMarkers.get(peer.name),before=marker.getBoundingClientRect();
+        await click('验证光标进入原生顶层',()=>field.showPicker());assert(field.matches(':open'),'picker did not open');
+        const glyph=componentCharacter(field.options[0],1),inside={x:glyph.left+glyph.width*.4,y:glyph.top+glyph.height*.6};move(inside);
+        const entry=marker.getAnimations().find(a=>a.transitionProperty==='transform');assert(entry,'top-layer promotion teleported');entry.pause();const start=marker.getBoundingClientRect();assert(Math.hypot(start.left-before.left,start.top-before.top)<.1,'top-layer promotion reset the starting point');entry.currentTime=entry.effect.getTiming().duration*.5;const middle=marker.getBoundingClientRect();assert(Math.hypot(middle.left-before.left,middle.top-before.top)>.1&&Math.hypot(middle.left-inside.x,middle.top-inside.y)>.1,'top layer lacks intermediate position');entry.finish();
+        const leaving=marker.getBoundingClientRect();await click('验证光标退出原生顶层');assert(!field.matches(':open'),'picker did not close');move({x:box.left+200,y:box.top+20});
+        const exit=marker.getAnimations().find(a=>a.transitionProperty==='transform');assert(exit,'top-layer demotion teleported');exit.pause();const returned=marker.getBoundingClientRect();assert(Math.hypot(returned.left-leaving.left,returned.top-leaving.top)<.1,'top-layer exit reset position');exit.finish();
+        assert(Math.hypot(marker.getBoundingClientRect().left-(box.left+200),marker.getBoundingClientRect().top-(box.top+20))<.1,'layer endpoint drifted');document.querySelector('#results').dataset.cursorLayers='entry-and-exit-continuous';
+    }finally{fixture.remove();Object.assign(plugin,saved);plugin.renderCursors(false);}
+});
+
+await test('无损增量定位逐字段保留小数，改宽改字号与隐藏恢复后仍精确绘制',async()=>{
+    const saved={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt};
+    const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='wire-precision';fixture.style.cssText='position:fixed;left:35px;top:55px;width:650px;height:160px;z-index:100;background:white';fixture.innerHTML='<button style="width:620px;height:120px;padding:15px;font:20px/30px sans-serif">增量定位 abc 中文 😀 精确小数与文字、留白边界</button>';document.body.append(fixture);
+    const peer={name:'wire-coordinate',hue:134},anchors=[];plugin.clients=[peer];let baseline=null,previous=null,visible=0;
+    try{
+        const box=fixture.firstElementChild.getBoundingClientRect();
+        for(let i=0;i<20;i++){
+            const point={x:box.left+18+i*23.123456789,y:box.top+12+(i%3)*17.234567891};
+            const original=NativePlugin.testCapture(point,plugin);assert(original,'missing source anchor');
+            const state={tick:10,cursors:[{...peer,cursor:original}],selections:[],editing:[]};
+            const packet=wirePacket('browser-precision',i+1,i?i:null,previous,state);
+            baseline=wireReceive(baseline,JSON.parse(JSON.stringify(packet)));const received=baseline.value.cursors[0].cursor;
+            assert(JSON.stringify(received)===JSON.stringify(original),'wire changed an anchor field');
+            const expected=NativePlugin.testResolve(original,plugin),actual=NativePlugin.testResolve(received,plugin);assert(expected&&actual&&near(expected.x,actual.x)&&near(expected.y,actual.y),'decoded point drifted');
+            plugin.updateCursors(baseline.value);plugin.presenceReceivedAt=Date.now();plugin.renderCursors(false);const r=plugin.cursorMarkers.get(peer.name)?.getBoundingClientRect();assert(r&&Math.hypot(r.left-expected.x,r.top-expected.y)<.1,'rendered wire point drifted');
+            anchors.push([original,received]);previous=state;
+        }
+        fixture.style.visibility='hidden';plugin.renderCursors(false);assert(!plugin.cursorMarkers.size,'hidden target retained wire marker');fixture.style.visibility='';fixture.firstElementChild.style.width='440px';fixture.firstElementChild.style.fontSize='24px';
+        for(const [original,received]of anchors){const a=NativePlugin.testResolve(original,plugin),b=NativePlugin.testResolve(received,plugin);assert(Boolean(a)===Boolean(b),'layout changed wire visibility');if(a){assert(near(a.x,b.x)&&near(a.y,b.y),'layout changed wire precision');visible++;}}
+        assert(visible>0,'no restored anchors');document.querySelector('#results').dataset.wirePrecision=JSON.stringify({anchors:20,restored:visible});
+    }finally{fixture.remove();Object.assign(plugin,saved);plugin.renderCursors(false);}
+});
+
 await test('性能收发链路使用真实前端节流与内核广播，在3、10、30Hz持续移动后收敛并静止停发',async()=>{
     const saved={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,pointer:plugin.pointer,queueActivity:plugin.queueActivity,refreshInBackground:plugin.refreshInBackground,tick:plugin.tick};
     plugin.queueActivity=plugin.refreshInBackground=()=>{};plugin.pointer=null;const previousPresence=presenceClients,peer={name:'wire-peer',hue:210,documentId:null};presenceClients=[...presenceClients,peer];plugin.clients=presenceClients.slice();
     const fixture=document.createElement('div');fixture.className='b3-dialog';fixture.dataset.key='wire-motion';fixture.style.cssText='position:fixed;left:30px;top:30px;width:850px;height:150px;z-index:100;background:white';fixture.innerHTML='<button style="width:820px;height:100px">实际收发链路</button>';document.body.append(fixture);const box=fixture.firstElementChild.getBoundingClientRect(),rows=[];
     const methods=new Map(),runtime={lifecycle:{}},sends=[],receives=[];let receiving=false;
-    new Function('siyuan',${JSON.stringify(fs.readFileSync(path.join(root,'kernel.js'),'utf8'))})({plugin:runtime,rpc:{bind:async(name,fn)=>methods.set(name,fn),unbind:async name=>methods.delete(name),broadcast:async(name,args)=>{if(name==='cursor-changed'&&receiving){await new Promise(r=>setTimeout(r,4));receives.push(performance.now());plugin.presenceReceivedAt=Date.now();plugin.updateCursors(args[0]);}}},logger:{info:async()=>{}},storage:{get:async()=>{throw Error('empty');},put:async()=>{}}});
-    const sender=new NativePlugin();Object.assign(sender,{stopped:false,layoutReady:true,sessionId:'sync-wire-sender',i18n:plugin.i18n,generation:1,cursorSequence:0,selectionSequence:0,editingSequence:0,shortcutSequence:0,clickSequence:0,pendingClicks:[],pendingShortcut:null,lastCursorSignature:'null',lastSelectionSignature:'null',lastEditingSignature:'null',kernel:{rpc:{call:new Proxy({},{get:(_,name)=>async(...args)=>{await new Promise(r=>setTimeout(r,4));if(name==='cursorUpdate')sends.push(performance.now());return methods.get(name)(...args);}})}}});
+    new Function('siyuan',${JSON.stringify(fs.readFileSync(path.join(root,'kernel.js'),'utf8'))})({plugin:runtime,server:{private:{ws:{}}},rpc:{bind:async(name,fn)=>methods.set(name,fn),unbind:async name=>methods.delete(name),broadcast:async(name,args)=>{if(name==='cursor-changed'&&receiving){await new Promise(r=>setTimeout(r,4));receives.push(performance.now());plugin.presenceReceivedAt=Date.now();plugin.updateCursors(args[0]);}}},logger:{info:async()=>{}},storage:{get:async()=>{throw Error('empty');},put:async()=>{}}});
+    const sender=new NativePlugin();Object.assign(sender,{stopped:false,layoutReady:true,sessionId:'sync-wire-sender',i18n:plugin.i18n,generation:1,cursorSequence:0,selectionSequence:0,editingSequence:0,shortcutSequence:0,clickSequence:0,pendingClicks:[],pendingShortcut:null,lastCursorSignature:'null',lastSelectionSignature:'null',lastEditingSignature:'null',rpc:{call:new Proxy({},{get:(_,name)=>async(...args)=>{await new Promise(r=>setTimeout(r,4));if(name==='cursorUpdate')sends.push(performance.now());return methods.get(name)(...args);}})}});
     try{await runtime.lifecycle.onload();await runtime.lifecycle.onrunning();await methods.get('presenceHeartbeat')(sender.sessionId,{generation:1,name:peer.name,hue:peer.hue});
         for(const tick of [3,10,30]){receiving=false;sender.tick=tick;clearTimeout(sender.activityTimer);sender.activityTimer=null;sender.activitySentAt=0;sender.lastCursorSignature=undefined;await methods.get('setCursorTick')(tick);sends.length=receives.length=0;receiving=true;plugin.presenceReceivedAt=Date.now();
             const started=performance.now(),duration=Math.max(1100,1000/tick*6);let finalPoint;
@@ -2309,8 +2421,8 @@ await test('性能收发链路使用真实前端节流与内核广播，在3、1
 await test('视觉双入口分开设置，取消不保存、成功关闭、失败保留草稿且防止重复提交',async()=>{
     const badge=plugin.topBar,text=badge.textContent;
     try{for(const count of [1,12,999]){badge.textContent=count+' 人在线';const box=badge.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(badge);const label=range.getBoundingClientRect();assert(Math.abs(label.left+label.width/2-box.left-box.width/2)<1&&Math.abs(label.top+label.height/2-box.top-box.height/2)<1,'online label is not centered');}}finally{badge.textContent=text;}
-    const call=plugin.kernel.rpc.call,oldTick=plugin.tick;let saves=0,release,fail=false;
-    plugin.kernel.rpc.call=new Proxy(call,{get(target,key){if(key==='setCursorTick')return async tick=>{saves++;if(fail)throw Error('offline');await new Promise(resolve=>release=resolve);return {tick,cursors:[],selections:[],editing:[]};};return target[key];}});
+    const call=plugin.rpc.call,oldTick=plugin.tick;let saves=0,release,fail=false;
+    plugin.rpc.call=new Proxy(call,{get(target,key){if(key==='setCursorTick')return async tick=>{saves++;if(fail)throw Error('offline');await new Promise(resolve=>release=resolve);return {tick,cursors:[],selections:[],editing:[]};};return target[key];}});
     try {
         plugin.openPeople();plugin.peoplePanel.querySelector('.collab-people__actions').lastElementChild.click();await settleDialog();
         let dialog=plugin.tickDialog,form=dialog?.element.querySelector('.collab-tick-form');assert(form&&!dialog.element.querySelector('.collab-name-form'),'frequency entry includes profile');assert(dialog.options.title===plugin.i18n.cursorTick&&dialog.options.width.includes('320px'),'frequency dialog still oversized');
@@ -2319,7 +2431,7 @@ await test('视觉双入口分开设置，取消不保存、成功关闭、失�
         plugin.openSetting();dialog=plugin.tickDialog;plugin.openSetting();assert(plugin.tickDialog===dialog,'repeated open duplicated dialog');form=dialog.element.querySelector('form');form.querySelector('select').value='3';
         form.dispatchEvent(new Event('submit',{cancelable:true}));form.dispatchEvent(new Event('submit',{cancelable:true}));assert(saves===1&&form.querySelector('[type=submit]').disabled,'double submit not blocked');release();await settleDialog();assert(!plugin.tickDialog&&plugin.tick===3,'successful frequency save did not close');
         fail=true;plugin.openSetting();form=plugin.tickDialog.element.querySelector('form');form.querySelector('select').value='30';form.dispatchEvent(new Event('submit',{cancelable:true}));await settleDialog();assert(plugin.tickDialog&&form.querySelector('select').value==='30'&&form.querySelector('[role=alert]').textContent&&!form.querySelector('[type=submit]').disabled,'failure lost frequency draft');form.querySelector('[type=button]').click();await settleDialog();
-    }finally{plugin.kernel.rpc.call=call;plugin.tickDialog?.destroy();plugin.renameDialog?.destroy();plugin.closePeople();await settleDialog();plugin.updateCursors({tick:oldTick,cursors:[],selections:[],editing:[]});}
+    }finally{plugin.rpc.call=call;plugin.tickDialog?.destroy();plugin.renameDialog?.destroy();plugin.closePeople();await settleDialog();plugin.updateCursors({tick:oldTick,cursors:[],selections:[],editing:[]});}
 });
 
 
@@ -2340,12 +2452,12 @@ await test('跨组件逐点穿越正文、控件、留白和嵌入时持续复�
 
 await test('跨组件本地发送偶发失败不清空其他人的光标、选区和编辑状态，后续仍可重试',async()=>{
     await expose(block,10);const r=rectAt(block,10),point={x:r.left+2,y:r.top+4},cursor=NativePlugin.testCapture(point,plugin),peer={name:'SendFailurePeer',hue:120};
-    const saved={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,pointer:plugin.pointer,lastCursorSignature:plugin.lastCursorSignature,lastSelectionSignature:plugin.lastSelectionSignature,lastEditingSignature:plugin.lastEditingSignature},call=plugin.kernel.rpc.call;
-    let failed=true,attempts=0;const channels=new Set(['cursorUpdate','selectionUpdate','editingUpdate']);plugin.kernel.rpc.call=new Proxy(call,{get(target,name){if(channels.has(name))return async()=>{attempts++;if(failed)throw Error('transient local send');};return target[name];}});
+    const saved={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing,presenceReceivedAt:plugin.presenceReceivedAt,pointer:plugin.pointer,lastCursorSignature:plugin.lastCursorSignature,lastSelectionSignature:plugin.lastSelectionSignature,lastEditingSignature:plugin.lastEditingSignature},call=plugin.rpc.call;
+    let failed=true,attempts=0;const channels=new Set(['cursorUpdate','selectionUpdate','editingUpdate']);plugin.rpc.call=new Proxy(call,{get(target,name){if(channels.has(name))return async()=>{attempts++;if(failed)throw Error('transient local send');};return target[name];}});
     plugin.clients=[peer];plugin.remoteCursors=[{...peer,cursor}];plugin.remoteSelections=[];plugin.remoteEditing=[];plugin.presenceReceivedAt=Date.now();plugin.pointer=point;plugin.lastCursorSignature=plugin.lastSelectionSignature=plugin.lastEditingSignature=undefined;
     const remote=[plugin.remoteCursors,plugin.remoteSelections,plugin.remoteEditing];
     try{plugin.renderCursors(false);const marker=plugin.cursorMarkers.get(peer.name);for(const send of ['sendCursor','sendSelection','sendEditing'])await plugin[send]();assert(attempts===3,'failed channels were not exercised');assert(remote.every((value,i)=>value===[plugin.remoteCursors,plugin.remoteSelections,plugin.remoteEditing][i]),'local failure erased remote state');plugin.renderCursors(false);assert(plugin.cursorMarkers.get(peer.name)===marker,'local failure rebuilt the remote cursor');failed=false;for(const send of ['sendCursor','sendSelection','sendEditing'])await plugin[send]();assert(attempts===6,'failed send was not retryable');
-    }finally{plugin.kernel.rpc.call=call;Object.assign(plugin,saved);plugin.renderCursors(false);}
+    }finally{plugin.rpc.call=call;Object.assign(plugin,saved);plugin.renderCursors(false);}
 });
 
 await test('跨组件进入同源嵌入不发送空帧，嵌套缩放和跨域边界按可见性处理',async()=>{
@@ -2408,8 +2520,8 @@ await test('交互点击射线采用客户端颜色、精确可见锚点、独�
     block.style.visibility='hidden';plugin.renderCursors(false);assert(!plugin.clickEffects.size,'hidden click effect remained');plugin.showClick(value);assert(!plugin.clickEffects.size,'hidden target drew click');block.style.visibility='';
     plugin.showClick({...value,cursor:{...cursor,blockId:'20261030165150-missing'}});plugin.showClick({...value,hue:10});plugin.showClick({...value,peerId:'unknown'});assert(!plugin.clickEffects.size,'missing or forged click drew');
     plugin.showClick(value);plugin.showClick(value);assert(plugin.clickEffects.size===2,'second click replaced first');await new Promise(resolve=>setTimeout(resolve,460));assert(!plugin.clickEffects.size,'click timers leaked');
-    const call=plugin.kernel.rpc.call,send=[];plugin.kernel.rpc.call=new Proxy(call,{get(target,name){if(name==='pointerClick')return async(...args)=>send.push(args);return target[name];}});
-    try {for(let i=0;i<2;i++)input.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1,isPrimary:true,pointerType:'mouse',clientX:point.x,clientY:point.y}));assert(!plugin.clickEffects.size,'local click drew rays');assert(plugin.pendingClicks.length===2,'doubleclick coalesced '+JSON.stringify({pending:plugin.pendingClicks.length,point,cursor:NativePlugin.testCapture(point,plugin),hit:document.elementFromPoint(point.x,point.y)?.outerHTML.slice(0,140)}));await new Promise(resolve=>setTimeout(resolve,380));assert(send.length===2&&send[1][2]===send[0][2]+1,'click queue dropped burst');assert(send.every(args=>validCursor(args[3])),'unanchored click transmitted');}finally{plugin.kernel.rpc.call=call;plugin.endDrag();plugin.clearClicks();plugin.clients=presenceClients.slice();}
+    const call=plugin.rpc.call,send=[];plugin.rpc.call=new Proxy(call,{get(target,name){if(name==='pointerClick')return async(...args)=>send.push(args);return target[name];}});
+    try {for(let i=0;i<2;i++)input.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,buttons:1,isPrimary:true,pointerType:'mouse',clientX:point.x,clientY:point.y}));assert(!plugin.clickEffects.size,'local click drew rays');assert(plugin.pendingClicks.length===2,'doubleclick coalesced '+JSON.stringify({pending:plugin.pendingClicks.length,point,cursor:NativePlugin.testCapture(point,plugin),hit:document.elementFromPoint(point.x,point.y)?.outerHTML.slice(0,140)}));await new Promise(resolve=>setTimeout(resolve,380));assert(send.length===2&&send[1][2]===send[0][2]+1,'click queue dropped burst');assert(send.every(args=>validCursor(args[3])),'unanchored click transmitted');}finally{plugin.rpc.call=call;plugin.endDrag();plugin.clearClicks();plugin.clients=presenceClients.slice();}
 });
 
 await test('交互预览连续跟随和归位，边缘标签不翻转、不消失，保留拖拽和统一色条',async()=>{
@@ -2459,16 +2571,16 @@ await test('交互人员与设置使用原生多层窗口，父级不隐藏、�
 });
 
 await test('交互名字颜色实时预览、取消不写入、原子保存和失败保留草稿',async()=>{
-    const old={name:plugin.clientName,hue:plugin.hue,peerId:plugin.peerId,call:plugin.kernel.rpc.call};let saves=0,fail=false,saved;
+    const old={name:plugin.clientName,hue:plugin.hue,peerId:plugin.peerId,call:plugin.rpc.call};let saves=0,fail=false,saved;
     plugin.peerId='profile-self';
-    plugin.kernel.rpc.call=new Proxy(old.call,{get(target,key){if(key==='presenceRename')return async(id,name,generation,hue)=>{saves++;if(fail)throw Error('offline');saved={peerId:'profile-self',name,hue,documentId:'20261030165150-doc0001'};return {count:1,clients:[saved],self:saved};};if(key==='presenceHeartbeat')return async()=>{const self=saved||{peerId:'profile-self',name:old.name,hue:old.hue,documentId:'20261030165150-doc0001'};return {count:1,clients:[self],self};};return target[key];}});
+    plugin.rpc.call=new Proxy(old.call,{get(target,key){if(key==='presenceRename')return async(id,name,generation,hue)=>{saves++;if(fail)throw Error('offline');saved={peerId:'profile-self',name,hue,documentId:'20261030165150-doc0001'};return {count:1,clients:[saved],self:saved};};if(key==='presenceHeartbeat')return async()=>{const self=saved||{peerId:'profile-self',name:old.name,hue:old.hue,documentId:'20261030165150-doc0001'};return {count:1,clients:[self],self};};return target[key];}});
     try {
         plugin.openRenameDialog();const form=plugin.renameDialog.element.querySelector('form'),name=form.querySelector('input'),slider=form.querySelector('[type=range]');name.value='Live <Name>';name.dispatchEvent(new Event('input',{bubbles:true}));form.querySelector('[data-hue="270"]').click();assert(form.querySelector('.collab-profile-preview span').textContent==='Live <Name>'&&!form.querySelector('.collab-profile-preview b'),'preview interpreted text');assert(getComputedStyle(form.querySelector('.collab-profile-preview')).getPropertyValue('--collab-cursor-hue')==='270'&&slider.value==='270','color preview not live');
         form.querySelector('[type=button].b3-button--cancel').click();await settleDialog();assert(saves===0&&plugin.clientName===old.name&&plugin.hue===old.hue,'cancel wrote profile');
         const settings=plugin.createProfileForm();document.body.append(settings);const field=settings.querySelector('input');field.value='Profile Test';field.dispatchEvent(new Event('input'));settings.querySelector('[data-hue="220"]').click();settings.dispatchEvent(new Event('submit',{cancelable:true}));await new Promise(resolve=>setTimeout(resolve,0));assert(saves===1&&plugin.clientName==='Profile Test'&&plugin.hue===220,'profile was not saved together');assert(settings.querySelector('[role=status]').textContent===plugin.i18n.profileSaved,'save feedback missing');
         fail=true;field.value='Keep draft';settings.dispatchEvent(new Event('submit',{cancelable:true}));await new Promise(resolve=>setTimeout(resolve,0));assert(field.value==='Keep draft'&&settings.querySelector('.ft__error')&&!settings.querySelector('[type=submit]').disabled,'error discarded draft or left disabled');settings.remove();
         plugin.updatePresence({count:1,clients:[{peerId:'profile-self',name:'Broadcast Name',hue:320,documentId:null}]});assert(plugin.clientName==='Broadcast Name'&&plugin.hue===320,'own broadcast did not update color');
-    }finally{plugin.renameDialog?.destroy();await settleDialog();plugin.kernel.rpc.call=old.call;plugin.peerId=old.peerId;plugin.rememberName(old.name);plugin.hue=old.hue;plugin.clients=presenceClients.slice();plugin.clearClicks();}
+    }finally{plugin.renameDialog?.destroy();await settleDialog();plugin.rpc.call=old.call;plugin.peerId=old.peerId;plugin.rememberName(old.name);plugin.hue=old.hue;plugin.clients=presenceClients.slice();plugin.clearClicks();}
 });
 
 await test('交互文档树与名单按文档计数，总名单紧凑排列且长名字不溢出',async()=>{
@@ -2822,7 +2934,9 @@ await test('自定义颜色完整插件观察停止冒泡点击，主文档和�
                 const activity={name:'<b>Bob</b>',hue:210,editing:legacyEditing};
                 const previousPresence=presenceClients;presenceClients=[...previousPresence,{name:activity.name,hue:activity.hue,documentId:editing.documentId}];
                 try{await plugin.refreshInBackground();
-                plugin.updateCursors({tick:10,cursors:[],editing:[{name:'A',hue:120,editing},activity]});
+                plugin.updateCursors({tick:10,cursors:[],editing:[]});plugin.renderEditing();
+                assert(document.querySelector('.collab-editing')?.textContent==='A 正在编辑','local editing depends on an echoed packet');
+                plugin.updateCursors({tick:10,cursors:[],editing:[activity]});
                 await frame();
                 await plugin.refreshInBackground();plugin.renderEditing();
                 let markers=document.querySelectorAll('.collab-editing');
@@ -2846,6 +2960,8 @@ await test('自定义颜色完整插件观察停止冒泡点击，主文档和�
                 assert(!document.querySelector('.collab-editing'),'hidden block retained frame');
                 block.classList.remove('fn__none');await frame();
                 const saved=editing.documentId;
+                document.activeElement.blur();plugin.updateCursors({tick:10,cursors:[],editing:[]});plugin.renderEditing();
+                assert(!document.querySelector('.collab-editing'),'local editing survived blur without an echoed packet');
                 plugin.updateCursors({tick:10,cursors:[],editing:[{...activity,editing:{...editing,documentId:'20261030165150-other01'}}]});await frame();
                 assert(!document.querySelector('.collab-editing'),'other document framed');
                 plugin.updateCursors({tick:10,cursors:[],editing:[{...activity,editing:{...editing,blockId:'20261030165150-missing'}}]});await frame();
@@ -2917,9 +3033,9 @@ await test('自定义颜色完整插件观察停止冒泡点击，主文档和�
                 }
             });
             await test('编辑状态只读焦点，切块与离开编辑区清空，发送失败可重试', async () => {
-                const sent=[], realUpdate=plugin.kernel.rpc.call;
+                const sent=[], realUpdate=plugin.rpc.call;
                 let fail=true;
-                plugin.kernel.rpc.call={editingUpdate:async(...args)=>{if(fail)throw Error('offline');sent.push(args);}};
+                plugin.rpc.call={editingUpdate:async(...args)=>{if(fail)throw Error('offline');sent.push(args);}};
                 try {
                     select(block,10);plugin.lastEditingSignature='null';await plugin.sendEditing();
                     fail=false;await plugin.sendEditing();await plugin.sendEditing();
@@ -2931,7 +3047,7 @@ await test('自定义颜色完整插件观察停止冒泡点击，主文档和�
                     const outside=document.createElement('input');document.body.append(outside);outside.focus();
                     assert(captureEditing()===null,'stale editor selection reported while typing outside');
                     await plugin.sendEditing();assert(sent.at(-1)[3]===null,'leaving editor did not clear');outside.remove();
-                } finally {plugin.kernel.rpc.call=realUpdate;}
+                } finally {plugin.rpc.call=realUpdate;}
             });
             await test('字体拖拽克隆十六光标同帧复用命中副本并在异常时清理',async()=>{
                 const f=fontDragFixture(),old={clients:plugin.clients,remoteCursors:plugin.remoteCursors,remoteSelections:plugin.remoteSelections,remoteEditing:plugin.remoteEditing},observer=new MutationObserver(()=>{});

@@ -33,8 +33,17 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.selectionSequence = 0;
         this.lastSelectionSignature = "null";
         this.cursorMarkers = new Map();
+        this.cursorCache = new Map();
         this.cursorSequence = 0;
         this.lastCursorSignature = "null";
+        this.rpc = new ChordRpcSocket(this.name, this.app?.appId, () => {
+            if (!this.layoutReady || this.stopped) return;
+            this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
+            return this.refreshInBackground().then(() => this.loadCursors());
+        }, () => {
+            this.pendingShortcut = null;
+            this.clearPresence();
+        });
         try {
             const id = sessionStorage.getItem(`${this.name}:session-id`);
             const generation = Number(sessionStorage.getItem(`${this.name}:generation`));
@@ -50,7 +59,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.resumeDocument = sessionStorage.getItem(`${this.name}:document`);
         } catch {}
         this.handlePresence = (presence) => this.updatePresence(presence);
-        this.handleCursors = (state) => this.updateCursors(state);
+        this.handleCursors = (state, reset) => this.updateCursors(state, reset);
         this.handleDocument = () => this.scheduleDocumentReport();
         this.handleRenderTarget = rememberRenderTarget;
         this.handleKernelState = ({ detail }) => {
@@ -61,10 +70,10 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.loadCursors();
             }
         };
-        await this.kernel.rpc.bind("presence-changed", this.handlePresence);
-        await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
-        await this.kernel.rpc.bind("shortcut-shown", this.handleShortcut);
-        await this.kernel.rpc.bind("pointer-clicked", this.handleClick);
+        await this.rpc.bind("presence-changed", this.handlePresence);
+        await this.rpc.bind("cursor-changed", this.handleCursors);
+        await this.rpc.bind("shortcut-shown", this.handleShortcut);
+        await this.rpc.bind("pointer-clicked", this.handleClick);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.on("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) {
@@ -185,28 +194,29 @@ module.exports = class CollaborationPlugin extends Plugin {
         }
         const documentId = this.currentDocument();
         try { sessionStorage.setItem(`${this.name}:document`, documentId || ""); } catch {}
-        const presence = await this.kernel.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation, ...(this.hue === undefined ? {} : {hue:this.hue}) });
+        const presence = await this.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation, ...(this.hue === undefined ? {} : {hue:this.hue}) });
         this.updatePresence(presence);
         if(this.trackingStarted)this.queueActivity();
         return presence;
     }
 
+    clearPresence() {
+        if (this.stopped) return;
+        this.onlineCount = null;
+        this.clients = [];
+        this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
+        this.renderOnlineCount();
+        this.scheduleTreeRender();
+        this.remoteCursors = [];
+        this.remoteSelections = [];
+        this.remoteEditing = [];
+        this.clearClicks();
+        this.renderPeople();
+        this.scheduleCursorRender();
+    }
+
     refreshInBackground() {
-        return this.refreshOnline().catch(() => {
-            if (!this.stopped) {
-                this.onlineCount = null;
-                this.clients = [];
-                this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
-                this.renderOnlineCount();
-                this.scheduleTreeRender();
-                this.remoteCursors = [];
-                this.remoteSelections = [];
-                this.remoteEditing = [];
-                this.clearClicks();
-                this.renderPeople();
-                this.scheduleCursorRender();
-            }
-        });
+        return this.refreshOnline().catch(() => this.clearPresence());
     }
 
     scheduleDocumentReport() {
@@ -282,7 +292,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             if(![3,10,30].includes(tick)){error.textContent=this.i18n.cursorTickFailed;return;}
             save.disabled=true;error.textContent='';
             try {
-                this.updateCursors(await this.kernel.rpc.call.setCursorTick(tick));
+                this.updateCursors(await this.rpc.call.setCursorTick(tick));
                 if(!this.stopped){if(onSaved)onSaved();else showMessage(this.i18n.cursorTickSaved,3000,'info');}
             } catch {error.textContent=this.i18n.cursorTickFailed;}
             finally {save.disabled=false;}
@@ -303,29 +313,23 @@ module.exports = class CollaborationPlugin extends Plugin {
 
 
     async loadCursors() {
-        try { this.updateCursors(await this.kernel.rpc.call.cursorSnapshot()); } catch {}
+        try { this.updateCursors(await this.rpc.call.cursorSnapshot()); } catch {}
     }
 
     async onDataChanged() {
         await this.loadCursors();
     }
 
-    updateCursors(state) {
+    updateCursors(state, reset = false) {
         if (this.stopped) return;
-        if (!state || !Number.isInteger(state.tick) || state.tick < 1 || state.tick > 30 || !Array.isArray(state.cursors) || state.cursors.some((client) =>
-            !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 || !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validCursor(client.cursor))) throw new Error("Invalid cursor response");
-        const selections = state.selections || [];
-        if (!Array.isArray(selections) || selections.some((client) => !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 ||
-            !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validSelection(client.selection))) throw new Error("Invalid selection response");
-        const editing = state.editing || [];
-        if (!Array.isArray(editing) || editing.some((client) => !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 ||
-            !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validEditing(client.editing))) throw new Error("Invalid editing response");
+        const {selections, editing} = validateCursorState(state);
         if (this.tick !== state.tick) {
             this.tick = state.tick;
             for(const select of document.querySelectorAll('.collab-tick-form select'))select.value=String([3,10,30].includes(this.tick) ? this.tick : 10);
             if (this.trackingStarted) this.startCursorTimer();
         }
         this.remoteCursors = state.cursors;
+        this.cursorReset = reset;
         this.remoteSelections = selections;
         this.remoteEditing = editing;
         this.scheduleCursorRender();
@@ -509,8 +513,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.activityTimer=setTimeout(async()=>{
             this.activityTimer=null;this.activitySentAt=Date.now();this.activityFlushing=true;
             const keys=this.pendingShortcut;this.pendingShortcut=null;
-            if (keys && !this.stopped) this.kernel.rpc.call.shortcut(this.sessionId,this.generation,++this.shortcutSequence,keys).catch(()=>{});
-            for(const cursor of this.pendingClicks.splice(0))if(!this.stopped)this.kernel.rpc.call.pointerClick(this.sessionId,this.generation,++this.clickSequence,cursor).catch(()=>{});
+            if (keys && !this.stopped) this.rpc.call.shortcut(this.sessionId,this.generation,++this.shortcutSequence,keys).catch(()=>{});
+            for(const cursor of this.pendingClicks.splice(0))if(!this.stopped)this.rpc.call.pointerClick(this.sessionId,this.generation,++this.clickSequence,cursor).catch(()=>{});
             await Promise.allSettled([this.sendCursor(),this.sendSelection(),this.sendEditing()]);
             this.activityFlushing=false;
             if(this.activityQueued){this.activityQueued=false;this.queueActivity();}
@@ -540,7 +544,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (signature === this.lastCursorSignature && typingAt===this.lastCursorTypingAt) return;
         this.cursorSending = true;
         try {
-            await this.kernel.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
+            await this.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
             this.lastCursorSignature = signature;
             this.lastCursorTypingAt=typingAt;
         } catch {} finally {
@@ -554,7 +558,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (signature === this.lastEditingSignature) return;
         this.editingSending = true;
         try {
-            await this.kernel.rpc.call.editingUpdate(this.sessionId, this.generation, ++this.editingSequence, editing);
+            await this.rpc.call.editingUpdate(this.sessionId, this.generation, ++this.editingSequence, editing);
             this.lastEditingSignature = signature;
             this.editingSentAt = Date.now();
         } catch {} finally { this.editingSending = false; }
@@ -566,7 +570,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (signature === this.lastSelectionSignature) return;
         this.selectionSending = true;
         try {
-            await this.kernel.rpc.call.selectionUpdate(this.sessionId, this.generation, ++this.selectionSequence, selection);
+            await this.rpc.call.selectionUpdate(this.sessionId, this.generation, ++this.selectionSequence, selection);
             this.lastSelectionSignature = signature;
         } catch {} finally { this.selectionSending = false; }
     }
@@ -597,22 +601,24 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
                 this.cursorPicker=null;
             }
-            const visible = new Set(),resolved=new Map();
+            const visible = new Set(),resolved=new Map(),announced=new Set(this.remoteCursors.map(client=>client.name));
             const positions=[],people=new Set(this.clients.map(client=>client.name));
-            if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
+            const live=!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT;
+            if (live) {
                 for (const client of this.remoteCursors) {
                     if (client.name === this.clientName || !people.has(client.name)) continue;
                     const key=JSON.stringify(client.cursor);
                     if(!resolved.has(key))resolved.set(key,resolveCursor(client.cursor,this));
                     const point=resolved.get(key);
                     if (!point) continue;
-                    const marker=this.cursorMarkers.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
+                    const marker=this.cursorMarkers.get(client.name)||this.cursorCache.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
                     positions.push({client,point,rect});
                 }
                 // Resolve every anchor before writing markers so peers share one layout measurement.
                 for(const {client,point,rect:measured}of positions){
                     visible.add(client.name);
-                    let marker = this.cursorMarkers.get(client.name);
+                    let marker = this.cursorMarkers.get(client.name) || this.cursorCache.get(client.name);
+                    const entering=!marker;
                     if (!marker) {
                         marker = document.createElement("div");
                         marker.className = "collab-cursor";
@@ -624,8 +630,12 @@ module.exports = class CollaborationPlugin extends Plugin {
                         const label = document.createElement("span");
                         marker.append(arrow, label);
                         this.cursorLayer.append(marker);
-                        this.cursorMarkers.set(client.name, marker);
                     }
+                    this.cursorCache.delete(client.name);
+                    this.cursorMarkers.set(client.name, marker);
+                    marker.style.visibility='';
+                    marker.style.setProperty('--collab-cursor-fade-delay','0ms');
+                    marker.cursorAnchor=client.cursor;
                     const label=marker.querySelector('span');
                     if(label.textContent!==client.name)label.textContent=client.name;
                     const state=client.cursor.dragging ? 'dragging' : client.cursor.state || 'pointer';
@@ -644,7 +654,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                     const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
                     if(marker.cursorTransform!==transform){
-                        marker.style.transitionDuration = animate && marker.cursorTransform ? `${1000 / this.tick}ms` : "0ms";
+                        marker.style.setProperty('--collab-cursor-move',animate && marker.cursorTransform ? `${1000 / this.tick}ms` : '0ms');
                         marker.style.transform=transform;
                         marker.cursorTransform=transform;
                     }
@@ -652,13 +662,24 @@ module.exports = class CollaborationPlugin extends Plugin {
                     const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
                         this.pointer.y >= rect.top - 32 && this.pointer.y <= rect.bottom + 32;
                     marker.style.opacity = nearby ? "0.3" : "1";
+                    if(entering && animate)for(const child of marker.children)child.animate([{opacity:0},{opacity:1}],{duration:100,easing:'ease-out'});
                 }
             }
             for (const [name, marker] of this.cursorMarkers) {
                 if (!visible.has(name)) {
-                    marker.remove();
+                    const transform=getComputedStyle(marker).transform || marker.cursorTransform;
+                    marker.style.setProperty('--collab-cursor-move','0ms');
+                    marker.style.transform=marker.cursorTransform=transform;
+                    marker.style.setProperty('--collab-cursor-fade-delay',`${Math.max(120,1000/this.tick)}ms`);
+                    marker.style.opacity='0';
+                    this.cursorCache.set(name,marker);
                     this.cursorMarkers.delete(name);
                 }
+            }
+            for(const [name,marker]of this.cursorCache){
+                if(!live || !people.has(name) || name===this.clientName){marker.remove();this.cursorCache.delete(name);continue;}
+                // Only a missing remote sample may fade; unresolvable or untrusted targets hide immediately.
+                if(this.cursorReset || announced.has(name) || !resolveCursor(marker.cursorAnchor,this))marker.style.visibility='hidden';
             }
             this.renderSelections();
             this.renderEditing();
@@ -674,7 +695,9 @@ module.exports = class CollaborationPlugin extends Plugin {
     renderEditing() {
         const groups = new Map(), visible = new Set();
         const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
-        if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
+        const editing = captureEditing(), clients = [...this.remoteEditing];
+        if (editing && !clients.some(client => client.name === this.clientName)) clients.unshift({name:this.clientName,hue:this.hue,editing});
+        if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of clients) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
             const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, [...(client.editing.blockIds || [client.editing.blockId])].sort()]);
             if (!groups.has(key)) groups.set(key, []);
@@ -855,7 +878,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             event.preventDefault();if(save.disabled)return;save.disabled=true;status.textContent='';status.classList.remove('ft__error');
             try {
                 await this.refreshOnline();if(this.stopped)return;
-                this.updatePresence(await this.kernel.rpc.call.presenceRename(this.sessionId,input.value,this.generation,Number(slider.value)));
+                this.updatePresence(await this.rpc.call.presenceRename(this.sessionId,input.value,this.generation,Number(slider.value)));
                 status.textContent=this.i18n.profileSaved;onSaved?.();
             } catch {status.classList.add('ft__error');status.textContent=this.i18n.renameFailed;}
             finally {save.disabled=false;}
@@ -1025,6 +1048,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.shortcutNotices.clear();
         this.cursorLayer?.remove();
         this.cursorMarkers.clear();
+        this.cursorCache.clear();
         this.editingMarkers.clear();
         for(const layer of this.editingLayers.values())layer.remove();this.editingLayers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
@@ -1052,7 +1076,9 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.off("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
-        await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut),this.kernel.rpc.unbind("pointer-clicked",this.handleClick)]);
-        await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
+        await Promise.allSettled([this.rpc.unbind("presence-changed", this.handlePresence), this.rpc.unbind("cursor-changed", this.handleCursors), this.rpc.unbind("shortcut-shown", this.handleShortcut),this.rpc.unbind("pointer-clicked",this.handleClick)]);
+        try {
+            if (this.rpc.isOpen) await this.rpc.call.presenceLeave(this.sessionId, this.generation);
+        } catch {} finally { this.rpc.close(); }
     }
 };

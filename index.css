@@ -55,7 +55,7 @@
     width: 22px;
     height: 22px;
     color: hsl(var(--collab-cursor-hue) 78% 42%);
-    transition: transform 100ms linear, opacity 100ms ease-out;
+    transition: transform var(--collab-cursor-move, 100ms) linear, opacity 100ms ease-out var(--collab-cursor-fade-delay, 0ms);
     pointer-events: none;
 }
 
@@ -118,7 +118,7 @@
 .collab-dialog:not(.b3-dialog--open) .b3-dialog__container { transform:translateY(4px); }
 
 @media (prefers-reduced-motion: reduce) {
-    .collab-cursor { transition: none; }
+    .collab-cursor { transition: opacity 80ms ease-out var(--collab-cursor-fade-delay, 0ms); }
 }
 
 .collab-editing-layer {

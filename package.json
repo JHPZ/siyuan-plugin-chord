@@ -7,7 +7,7 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "test": "node scripts/compile.cjs --check && node tests/smoke.test.cjs",
+    "test": "node scripts/compile.cjs --check && node --test tests/smoke.test.cjs tests/rpc.test.cjs tests/wire.test.cjs",
     "test:browser": "node scripts/compile.cjs --check && node tests/browser.test.cjs",
     "check": "node scripts/compile.cjs --check && node scripts/check.cjs",
     "check:release": "node scripts/compile.cjs --check && node scripts/check.cjs --release",

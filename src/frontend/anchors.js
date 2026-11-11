@@ -27,8 +27,12 @@ function characterRect(node, offset) {
 }
 
 function editorDocumentId(editor) {
-    return editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') ||
+    return editor?.getAttribute('data-node-id') || editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') ||
         editor?.closest('.backlinkList__item[data-node-id]')?.getAttribute('data-node-id');
+}
+
+function cursorEditor(element) {
+    return element.closest('.protyle:not(.protyle-title__rich)');
 }
 
 function cursorTextRoot(block) {
@@ -130,7 +134,7 @@ function captureDocumentSpace(editor, hit, point) {
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = componentVisualHit(document,point), editor = hit?.closest('.protyle-wysiwyg');
-    if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"]')) return null;
+    if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"],.protyle-title')) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
     const blank = !text && captureDocumentSpace(editor, hit, point);

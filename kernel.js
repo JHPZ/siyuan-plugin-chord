@@ -144,8 +144,96 @@ function validEditing(editing) {
             new Set(editing.blockIds).size===editing.blockIds.length && editing.blockIds.includes(editing.blockId));
 }
 
+// Version 1 field indices are append-only; reordering requires a new wire version.
+const CHORD_WIRE_KEYS = 'x y kind id documentId blockId surface region page title state dragging screen space offset gap side ratio text ui version scope key route count index nameKey frame frames target edges step textHash imagePoint pdf file part mark graph node layout row column group pane tick cursors selections editing name hue cursor selection anchor focus blockIds wire'.split(' ');
+const CHORD_WIRE_INDEX = new Map(CHORD_WIRE_KEYS.map((key, index) => [key, index]));
+
+function wireKey(key) { return CHORD_WIRE_INDEX.has(key) ? CHORD_WIRE_INDEX.get(key) : key; }
+function wireReadKey(key) {
+    if (Number.isInteger(key) && key >= 0 && key < CHORD_WIRE_KEYS.length) return CHORD_WIRE_KEYS[key];
+    if (typeof key === 'string' && key.length <= 160 && !['__proto__', 'constructor', 'prototype'].includes(key)) return key;
+    throw Error('Invalid compact field');
+}
+
+function wirePack(value) {
+    if (Array.isArray(value)) return [4, ...value.map(item => wirePack(item ?? null))];
+    if (value && typeof value === 'object') return [3, ...Object.entries(value).filter(([, value]) => value !== undefined).flatMap(([key, value]) => [wireKey(key), wirePack(value)])];
+    if (value === null || ['string', 'boolean'].includes(typeof value) || typeof value === 'number' && Number.isFinite(value)) return value;
+    throw Error('Invalid compact value');
+}
+
+function wireBudget() { return { nodes: 0 }; }
+function wireCheck(budget, depth) {
+    if (++budget.nodes > 4194304 || depth > 64) throw Error('Compact message too complex');
+}
+
+function wireUnpack(value, budget = wireBudget(), depth = 0) {
+    wireCheck(budget, depth);
+    if (!Array.isArray(value)) {
+        if (value === null || typeof value === 'boolean' || typeof value === 'string' && value.length <= 2097152 || typeof value === 'number' && Number.isFinite(value)) return value;
+        throw Error('Invalid compact value');
+    }
+    if (value[0] === 4) return value.slice(1).map(item => wireUnpack(item, budget, depth + 1));
+    if (value[0] !== 3 || value.length % 2 !== 1) throw Error('Invalid compact object');
+    const result = {};
+    for (let index = 1; index < value.length; index += 2) {
+        const key = wireReadKey(value[index]);
+        if (Object.hasOwn(result, key)) throw Error('Duplicate compact field');
+        result[key] = wireUnpack(value[index + 1], budget, depth + 1);
+    }
+    return result;
+}
+
+// Patches replace exact values; coordinates are never rounded or arithmetically accumulated.
+function wireDiff(before, after) {
+    if (before === after) return null;
+    if (!before || !after || typeof before !== 'object' || typeof after !== 'object' || Array.isArray(before) !== Array.isArray(after) || Array.isArray(after) && before.length !== after.length) return [0, wirePack(after)];
+    const patch = [1];
+    for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) patch.push(wireKey(key), [2]);
+    for (const [key, value] of Object.entries(after)) {
+        const child = Object.hasOwn(before, key) ? wireDiff(before[key], value) : [0, wirePack(value)];
+        if (child) patch.push(Array.isArray(after) ? Number(key) : wireKey(key), child);
+    }
+    return patch.length === 1 ? null : patch;
+}
+
+function wireApply(before, patch, budget = wireBudget(), depth = 0) {
+    wireCheck(budget, depth);
+    if (!Array.isArray(patch)) throw Error('Invalid compact patch');
+    if (patch.length === 2 && patch[0] === 0) return wireUnpack(patch[1], budget, depth + 1);
+    if (patch[0] !== 1 || patch.length % 2 !== 1 || !before || typeof before !== 'object') throw Error('Missing compact baseline');
+    const array = Array.isArray(before), result = array ? before.slice() : { ...before }, seen = new Set();
+    for (let index = 1; index < patch.length; index += 2) {
+        const token = patch[index], child = patch[index + 1];
+        const key = array ? token : wireReadKey(token);
+        if (array && (!Number.isInteger(key) || key < 0 || key >= before.length) || seen.has(key)) throw Error('Invalid compact index');
+        seen.add(key);
+        if (Array.isArray(child) && child.length === 1 && child[0] === 2) {
+            if (array || !Object.hasOwn(before, key)) throw Error('Invalid compact deletion');
+            delete result[key];
+        } else result[key] = wireApply(before[key], child, budget, depth + 1);
+    }
+    return result;
+}
+
+function wirePacket(epoch, revision, baseRevision, before, after) {
+    return [1, epoch, revision, baseRevision, before === null ? [0, wirePack(after)] : wireDiff(before, after) || [1]];
+}
+
+function wireReceive(baseline, packet) {
+    if (!Array.isArray(packet) || packet.length !== 5 || packet[0] !== 1 || typeof packet[1] !== 'string' || !/^[a-z0-9-]{1,64}$/.test(packet[1]) || !Number.isSafeInteger(packet[2]) || packet[2] < 1 ||
+        packet[3] !== null && (!Number.isSafeInteger(packet[3]) || packet[3] < 1 || packet[3] >= packet[2])) throw Error('Invalid compact revision');
+    const [, epoch, revision, baseRevision, patch] = packet;
+    if (baseline?.epoch === epoch && revision <= baseline.revision) return baseline;
+    if (baseRevision === null) {
+        if (!Array.isArray(patch) || patch[0] !== 0) throw Error('Invalid compact snapshot');
+    } else if (!baseline || baseline.epoch !== epoch || baseline.revision !== baseRevision) throw Object.assign(Error('Missing compact revision'), {code:'WIRE_BASELINE'});
+    return { epoch, revision, value: wireApply(baseRevision === null ? null : baseline.value, patch) };
+}
+
 const { plugin, rpc, logger, storage } = siyuan;
 const sessions = new Map();
+const rpcMethods = new Map(), streams = new Set();
 let peerSequence = 0;
 let presenceRevision = 0;
 const SESSION_TIMEOUT = 90000;
@@ -154,6 +242,8 @@ let cursorTimer;
 let tick = 10;
 let cursorDirty = false;
 let settingsWrite = Promise.resolve();
+const wireEpoch = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+let wireEnabled = false, wireRevision = 0, wireState = null, wireForceFull = false, cursorFlush = null;
 const BLOCK_ID = /^\d{14}-[a-z0-9]{7}$/;
 
 function normalizeCursor(value) {
@@ -204,22 +294,96 @@ function normalizeEditing(value) {
         ...(value.blockIds!==undefined ? {blockIds:[...value.blockIds]}:{}) };
 }
 
-function cursorSnapshot() {
-    return { tick, cursors: [...sessions.values()].filter((client) => client.cursor && Date.now() - client.lastSeen < SESSION_TIMEOUT)
+function cursorSnapshot(excludeId) {
+    const clients=[...sessions.values()].filter(client=>client!==sessions.get(excludeId));
+    return { tick, cursors: clients.filter((client) => client.cursor && Date.now() - client.lastSeen < SESSION_TIMEOUT)
         .map(({ name, hue, cursor }) => ({ name, hue, cursor })),
-        selections: [...sessions.values()].filter((client) => client.selection && Date.now() - client.lastSeen < SESSION_TIMEOUT)
+        selections: clients.filter((client) => client.selection && Date.now() - client.lastSeen < SESSION_TIMEOUT)
             .map(({ name, hue, selection }) => ({ name, hue, selection })),
-        editing: [...sessions.values()].filter((client) => client.editing && Date.now() - client.editingSeen < 30000 && Date.now() - client.lastSeen < SESSION_TIMEOUT)
+        editing: clients.filter((client) => client.editing && Date.now() - client.editingSeen < 30000 && Date.now() - client.lastSeen < SESSION_TIMEOUT)
             .map(({ name, hue, editing }) => ({ name, hue, editing })) };
 }
 
-async function flushCursors() {
+async function bindRpc(name, handler, description) {
+    rpcMethods.set(name,handler);
+    await rpc.bind(name,handler,description);
+}
+
+async function sendStream(stream, message) {
+    try {
+        if(stream.closed)throw Error('Connection closed');
+        if(stream.port.bufferedAmount>1048576)throw Error('Send buffer full');
+        // apply owns its argument array; SiYuan exports native send arguments after this VM call returns.
+        await stream.port.send.apply(stream.port,[JSON.stringify(message)]);
+    } catch(error){stream.closed=true;streams.delete(stream);stream.port.close();throw error;}
+}
+
+async function flushStream(stream) {
+    const client=sessions.get(stream.id);
+    if(!client || client.generation!==stream.generation)return;
+    const next=cursorSnapshot(stream.id),patch=stream.state ? wireDiff(stream.state,next):[0,wirePack(next)];
+    if(!patch)return;
+    const revision=stream.revision+1,packet=[1,wireEpoch,revision,stream.state ? stream.revision:null,patch];
+    await sendStream(stream,{jsonrpc:'2.0',method:'cursor-delta',params:[packet]});
+    stream.state=next;stream.revision=revision;
+}
+
+async function broadcastEvent(method, params) {
+    await Promise.allSettled([...streams].filter(stream=>stream.id).map(stream=>sendStream(stream,{jsonrpc:'2.0',method,params})));
+    await rpc.broadcast(method,params);
+}
+
+function openStream(request) {
+    const port=request.port;
+    if(request.url.path!=='/plugin/private/'+plugin.name+'/rpc'){port.close();return;}
+    const stream={port,revision:0,state:null,pending:0,closed:false};streams.add(stream);
+    port.onclose=()=>{stream.closed=true;streams.delete(stream);};
+    port.onmessage=event=>{
+        const respond=async()=>{
+            let message,id=null;
+            try {
+                if(typeof event.data!=='string' || event.data.length>1048576)throw Error('Invalid RPC message');
+                try{message=JSON.parse(event.data);}catch{throw Object.assign(Error('Parse error'),{code:-32700});}
+                if(!message || message.jsonrpc!=='2.0' || !(typeof message.id==='string' || typeof message.id==='number' && Number.isFinite(message.id)) || typeof message.method!=='string' || !Array.isArray(message.params))throw Object.assign(Error('Invalid request'),{code:-32600});
+                id=message.id;
+                if(stream.pending>=64)throw Error('Too many pending requests');
+                const handler=rpcMethods.get(message.method);if(!handler)throw Object.assign(Error('Method not found'),{code:-32601});
+                stream.pending++;
+                let result;
+                try {
+                    if(message.method==='cursorSync'){
+                        const client=sessions.get(stream.id);if(!client || client.generation!==stream.generation)throw Error('Session expired or superseded');
+                        await flushCursors();
+                        if(!stream.state){stream.state=cursorSnapshot(stream.id);stream.revision++;}
+                        result=wirePacket(wireEpoch,stream.revision,null,null,stream.state);
+                    }else{
+                        result=await handler(...message.params);
+                        if(message.method==='presenceHeartbeat'){
+                            const client=sessions.get(message.params[0]);
+                            if(client?.direct){
+                                for(const old of streams)if(old!==stream && old.id===message.params[0]){old.closed=true;streams.delete(old);old.port.close();}
+                                stream.id=message.params[0];stream.generation=client.generation;
+                            }
+                        }
+                        if(message.method==='setCursorTick')result=cursorSnapshot(stream.id);
+                    }
+                }finally{stream.pending--;}
+                await sendStream(stream,{jsonrpc:'2.0',id,result:result ?? null});
+            }catch(error){
+                if(!stream.closed)await sendStream(stream,{jsonrpc:'2.0',id,error:{code:Number.isInteger(error.code) ? error.code:-32603,message:error.message}});
+            }
+        };
+        respond().catch(()=>{});
+    };
+}
+
+async function flushCursorState() {
     for (const client of sessions.values()) {
         if (client.editing && (Date.now() - client.editingSeen >= 30000 || Date.now() - client.lastSeen >= SESSION_TIMEOUT)) {
             client.editing = null;
             cursorDirty = true;
         }
-        if(client.cursor?.state==='typing' && Date.now()-client.cursorSeen>=2000) {client.cursor.state='editing';cursorDirty=true;}
+        if(client.cursor?.state==='typing' && Date.now()-client.cursorSeen>=2000) {client.cursor={...client.cursor,state:'editing'};cursorDirty=true;}
         if (client.cursor && Date.now() - client.lastSeen >= SESSION_TIMEOUT) {
             client.cursor = null;
             cursorDirty = true;
@@ -231,9 +395,26 @@ async function flushCursors() {
     }
     if (cursorDirty) {
         cursorDirty = false;
-        try { await rpc.broadcast("cursor-changed", [cursorSnapshot()]); }
-        catch (error) { cursorDirty = true; throw error; }
+        const state = cursorSnapshot();
+        try {
+            await Promise.allSettled([...streams].filter(stream=>stream.id).map(flushStream));
+            const legacy=[...sessions.values()].filter(client=>!client.direct);
+            if (wireEnabled) {
+                const packet = wirePacket(wireEpoch, ++wireRevision, wireForceFull || !wireState ? null : wireRevision - 1, wireForceFull ? null : wireState, state);
+                // Normalized activity stays immutable so unchanged selections need no deep traversal.
+                wireState = state;
+                wireForceFull = false;
+                if(legacy.some(client=>client.wire))await rpc.broadcast('cursor-delta', [packet]);
+            }
+            if (legacy.some(client=>!client.wire)) await rpc.broadcast('cursor-changed', [state]);
+        } catch (error) { cursorDirty = true; wireForceFull = true; throw error; }
     }
+}
+
+async function flushCursors() {
+    if (cursorFlush) return cursorFlush;
+    cursorFlush = flushCursorState();
+    try { await cursorFlush; } finally { cursorFlush = null; }
 }
 
 function startCursorTimer() {
@@ -244,7 +425,7 @@ function startCursorTimer() {
 // shortcut: 每个前端窗口是一名参与者，接入账号身份后再做跨窗口去重。
 function snapshot(selfId) {
     const clients = [...sessions.values()].map(({ peerId, name, documentId, hue, page }) => ({ peerId, name, documentId, hue, page:page || null }));
-    const result = { count: clients.length, clients, revision:presenceRevision };
+    const result = { count: clients.length, clients, revision:presenceRevision, wire: 1 };
     const self = sessions.get(selfId);
     if (self) {
         result.self = { peerId: self.peerId, name: self.name, hue: self.hue };
@@ -305,7 +486,7 @@ function pruneSessions() {
 
 function broadcastPresence() {
     presenceRevision++;
-    return rpc.broadcast("presence-changed", [snapshot()]);
+    return broadcastEvent("presence-changed", [snapshot()]);
 }
 
 async function expireSessions() {
@@ -314,13 +495,30 @@ async function expireSessions() {
     }
 }
 
+async function updateCursor(id, generation, sequence, value) {
+    validateSession(id);
+    validateGeneration(generation);
+    if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid cursor sequence");
+    const cursor = normalizeCursor(value);
+    const client = sessions.get(id);
+    if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
+    if (sequence <= (client.cursorSequence || 0)) return false;
+    client.cursorSequence = sequence;
+    client.wireCursor = null;
+    if (JSON.stringify(client.cursor ?? null) !== JSON.stringify(cursor)) cursorDirty = true;
+    client.cursor = cursor;
+    client.cursorSeen = Date.now();
+    return true;
+}
+
 plugin.lifecycle.onload = async () => {
+    siyuan.server.private.ws.handler=openStream;
     try {
         const saved = await (await storage.get("cursor-settings.json")).json();
         if (Number.isInteger(saved.tick) && saved.tick >= 1 && saved.tick <= 30) tick = saved.tick;
     } catch { /* 首次安装没有设置文件，使用 10 tick/秒。 */ }
-    await rpc.bind("cursorSnapshot", async () => cursorSnapshot(), "Read current cursor positions and tick rate.");
-    await rpc.bind("setCursorTick", (value) => {
+    await bindRpc("cursorSnapshot", async () => cursorSnapshot(), "Read current cursor positions and tick rate.");
+    await bindRpc("setCursorTick", (value) => {
         if (!Number.isInteger(value) || value < 1 || value > 30) throw new Error("Tick must be an integer from 1 to 30");
         settingsWrite = settingsWrite.catch(() => {}).then(async () => {
             await storage.put("cursor-settings.json", JSON.stringify({ tick: value }));
@@ -332,21 +530,27 @@ plugin.lifecycle.onload = async () => {
         });
         return settingsWrite;
     }, "Persist the shared cursor tick rate.");
-    await rpc.bind("cursorUpdate", async (id, generation, sequence, value) => {
-        validateSession(id);
-        validateGeneration(generation);
-        if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid cursor sequence");
-        const cursor = normalizeCursor(value);
+    await bindRpc('cursorUpdate', updateCursor, "Update a frontend's content-relative pointer position.");
+    await bindRpc('cursorSync', async () => {
+        wireEnabled = true;
+        await flushCursors();
+        if (!wireState) { wireState = cursorSnapshot(); wireRevision++; }
+        return wirePacket(wireEpoch, wireRevision, null, null, wireState);
+    }, 'Read a revisioned, lossless display baseline.');
+    await bindRpc('cursorDelta', async (id, generation, sequence, base, patch) => {
+        validateSession(id); validateGeneration(generation);
+        if (!Number.isSafeInteger(sequence) || sequence < 1 || base !== null && (!Number.isSafeInteger(base) || base < 1 || base >= sequence)) throw Error('Invalid compact cursor sequence');
         const client = sessions.get(id);
-        if (!client || client.generation !== generation) throw new Error("Session expired or superseded");
+        if (!client || client.generation !== generation) throw Error('Session expired or superseded');
         if (sequence <= (client.cursorSequence || 0)) return false;
-        client.cursorSequence = sequence;
-        if (JSON.stringify(client.cursor ?? null) !== JSON.stringify(cursor)) cursorDirty = true;
-        client.cursor = cursor;
-        client.cursorSeen = Date.now();
-        return true;
-    }, "Update a frontend's content-relative pointer position.");
-    await rpc.bind("selectionUpdate", async (id, generation, sequence, value) => {
+        if (base !== null && client.wireCursor?.sequence !== base) return {reset:1};
+        if (base === null && (!Array.isArray(patch) || patch[0] !== 0)) throw Error('Invalid compact cursor baseline');
+        const value = wireApply(base === null ? null : client.wireCursor.value, patch);
+        const accepted = await updateCursor(id, generation, sequence, value);
+        if (accepted && client.cursorSequence === sequence) client.wireCursor = {sequence, value:client.cursor};
+        return accepted;
+    }, 'Update an exact cursor using a validated lossless patch.');
+    await bindRpc("selectionUpdate", async (id, generation, sequence, value) => {
         validateSession(id);
         validateGeneration(generation);
         if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid selection sequence");
@@ -359,7 +563,7 @@ plugin.lifecycle.onload = async () => {
         client.selection = selection;
         return true;
     }, "Share text selection anchors.");
-    await rpc.bind("editingUpdate", async (id, generation, sequence, value) => {
+    await bindRpc("editingUpdate", async (id, generation, sequence, value) => {
         validateSession(id);
         validateGeneration(generation);
         if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid editing sequence");
@@ -373,7 +577,7 @@ plugin.lifecycle.onload = async () => {
         client.editingSeen = Date.now();
         return true;
     }, "Share focused or selected blocks; never reserve them or restrict editing.");
-    await rpc.bind('shortcut', async (id,generation,sequence,value) => {
+    await bindRpc('shortcut', async (id,generation,sequence,value) => {
         validateSession(id);validateGeneration(generation);
         if (!Number.isSafeInteger(sequence) || sequence<1 || !validShortcut(value)) throw new Error('Invalid shortcut');
         const client=sessions.get(id);
@@ -382,10 +586,10 @@ plugin.lifecycle.onload = async () => {
         client.shortcutSequence=sequence;
         if (Date.now()-(client.shortcutAt ?? -Infinity)<1000/tick) return false;
         client.shortcutAt=Date.now();
-        await rpc.broadcast('shortcut-shown',[{peerId:client.peerId,name:client.name,hue:client.hue,keys:value,page:client.page || null}]);
+        await broadcastEvent('shortcut-shown',[{peerId:client.peerId,name:client.name,hue:client.hue,keys:value,page:client.page || null}]);
         return true;
     },'Show a key combination without executing it or sharing clipboard content.');
-    await rpc.bind('pointerClick', async (id,generation,sequence,value) => {
+    await bindRpc('pointerClick', async (id,generation,sequence,value) => {
         validateSession(id);validateGeneration(generation);
         if(!Number.isSafeInteger(sequence) || sequence<1)throw Error('Invalid click sequence');
         const cursor=normalizeCursor(value);if(!cursor)throw Error('Invalid click anchor');
@@ -396,14 +600,14 @@ plugin.lifecycle.onload = async () => {
         client.clickTimes=(client.clickTimes || []).filter(time=>Date.now()-time<1000);
         if(client.clickTimes.length>=30)return false;
         client.clickTimes.push(Date.now());
-        await rpc.broadcast('pointer-clicked',[{peerId:client.peerId,name:client.name,hue:client.hue,cursor}]);
+        await broadcastEvent('pointer-clicked',[{peerId:client.peerId,name:client.name,hue:client.hue,cursor}]);
         return true;
     },'Show an ephemeral click at a validated content anchor; never execute a click.');
-    await rpc.bind("getStatus", async () => {
+    await bindRpc("getStatus", async () => {
         await expireSessions();
         return { name: plugin.name, version: plugin.version, platform: plugin.platform, onlineCount: sessions.size };
     }, "Return kernel metadata and the online frontend count.");
-    await rpc.bind("presenceHeartbeat", async (id, state = {}) => {
+    await bindRpc("presenceHeartbeat", async (id, state = {}) => {
         validateSession(id);
         if (!state || typeof state !== "object" || Array.isArray(state)) {
             throw new Error("Invalid presence state");
@@ -438,6 +642,9 @@ plugin.lifecycle.onload = async () => {
             cursorDirty = true;
         }
         client.generation = generation;
+        client.wire = state.wire === 1;
+        client.direct = state.direct === 1;
+        if (client.wire) wireEnabled = true;
         if (state.documentId !== undefined && client.documentId !== state.documentId) {
             client.documentId = state.documentId;
             if (client.cursor?.surface === "document" && client.cursor.documentId !== client.documentId) { client.cursor = null; cursorDirty = true; }
@@ -453,7 +660,7 @@ plugin.lifecycle.onload = async () => {
         }
         return snapshot(id);
     }, "Register a frontend, assign its name and update its viewed document.");
-    await rpc.bind("presenceRename", async (id, value, generation = 0, hue) => {
+    await bindRpc("presenceRename", async (id, value, generation = 0, hue) => {
         validateSession(id);
         validateGeneration(generation);
         const name = normalizeName(value);
@@ -475,7 +682,7 @@ plugin.lifecycle.onload = async () => {
         }
         return snapshot(id);
     }, "Atomically change this frontend's display name and optional cursor hue.");
-    await rpc.bind("presenceLeave", async (id, generation = 0) => {
+    await bindRpc("presenceLeave", async (id, generation = 0) => {
         validateSession(id);
         validateGeneration(generation);
         const expired = pruneSessions();
@@ -497,8 +704,10 @@ plugin.lifecycle.onrunning = () => {
 };
 
 plugin.lifecycle.onunload = async () => {
+    siyuan.server.private.ws.handler=null;
+    for(const stream of streams){stream.closed=true;stream.port.close();}streams.clear();rpcMethods.clear();
     clearInterval(sweepTimer);
     clearInterval(cursorTimer);
     sessions.clear();
-    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorUpdate", "selectionUpdate", "editingUpdate", "shortcut", "pointerClick", "setCursorTick"].map((name) => rpc.unbind(name)));
+    await Promise.all(["getStatus", "presenceHeartbeat", "presenceRename", "presenceLeave", "cursorSnapshot", "cursorSync", "cursorDelta", "cursorUpdate", "selectionUpdate", "editingUpdate", "shortcut", "pointerClick", "setCursorTick"].map((name) => rpc.unbind(name)));
 };

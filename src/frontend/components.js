@@ -623,7 +623,7 @@ function componentKey(element) {
     const font=componentFontIdentity(element);
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-font-config-key','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
-    const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    const values=attributes.filter(name=>(name!=='src' || !thumbnailImage) && (name!=='data-node-id' || !element.closest('.protyle-title__rich'))).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
     if(element.matches('input[type="color"][data-field]'))values.push(['color-field',componentHash(element.dataset.field)]);
     if(element.matches('[data-type="themeColorEditor"] > div')){const fields=[...element.querySelectorAll('input[type="color"][data-field]')].map(e=>e.dataset.field).sort();if(fields.length)values.push(['color-group',componentHash(JSON.stringify(fields))]);}
     if(element.matches('[data-panel="builtinEditor"],[data-panel="customEditor"]')&&element.querySelector('[data-type="themeColorEditor"]'))values.push(['color-editor',element.dataset.panel,componentHash(element.dataset.panel==='customEditor' ? JSON.stringify(componentColorContext(element)):textLabel(element.querySelector('[data-role="title"]')))]);
@@ -675,7 +675,7 @@ function componentKey(element) {
         values.push(['between',[neighbour(element.previousElementSibling),neighbour(element.nextElementSibling)].sort()]);
     }
     const privateText=element.matches('select') || element.closest('input,textarea,[contenteditable],[data-private]');
-    const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
+    const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (tree && element.matches('.b3-list-item__text') ? textLabel(element):element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') || element.matches(COMPONENT_HIGHLIGHT_TEXT) ? textLabel(element):'')):'';
     const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^protyle-wysiwyg--select$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(font && element.matches('.config-font-family__chip') && name==='b3-chip--dragging') && !(pdfNumber && name==='loading' && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage==='none') && !(name==='selected' && element.matches('.thumbnail')) && !(name==='wrapContainers' && element.matches('.pdf__outer #findbar')) && !(element.matches('.pdf__outer') && ['pdf__outer--maximized','sidebarOpen'].includes(name))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
@@ -783,7 +783,7 @@ function componentTextHash(element) {
 function componentTreeRegion(element) {
     const files=element.closest('.sy__file'),file=files && element.closest('li[data-type="navigation-file"],li[data-type="navigation-root"]');
     if(file && files.contains(file)){
-        const notebook=file.closest('ul[data-url]')?.getAttribute('data-url'),id=file.getAttribute('data-node-id') || '';
+        const notebook=file.closest('ul[data-url]')?.getAttribute('data-url') || /^notebook:(\d{14}-[a-z0-9]{7})(?:\/|$)/.exec(file.getAttribute('data-tree-key') || '')?.[1],id=file.getAttribute('data-node-id') || '';
         return {panel:files,root:file,identity:DOCUMENT_ID.test(notebook || '') && (id ? DOCUMENT_ID.test(id):file.getAttribute('data-type')==='navigation-root') ? ['file',notebook,id]:null};
     }
     const backlink=componentBacklinkContext(element);
@@ -919,7 +919,7 @@ function componentScope(element,plugin) {
             return make(root,'dock',dock.id+'|'+graphContext(model));
         }
     }
-    const editor=element.closest('.protyle');
+    const editor=cursorEditor(element);
     if(editor){
         const id=editorDocumentId(editor),region=cursorRegion(editor);
         return DOCUMENT_ID.test(id || '') && region ? make(editor,'document',id+'|'+region.kind+'|'+region.id):null;

@@ -7,6 +7,9 @@ const root = path.resolve(__dirname, "..");
 const json = (file) => JSON.parse(readFileSync(path.join(root, file), "utf8"));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
+const wireOps=vm.runInNewContext(readFileSync(path.join(root,'src/wire.js'),'utf8')+'\n({wirePack,wireDiff,wireApply,wirePacket,wireReceive})');
+const plain=value=>JSON.parse(JSON.stringify(value));
+
 async function createKernel(options = {}) {
     let now = 100000;
     const methods = new Map();
@@ -14,19 +17,22 @@ async function createKernel(options = {}) {
     const subscribers = new Set();
     const broadcasts = [];
     const storage = options.storage || new Map();
+    const server={private:{ws:{}}};
+    const directMessages=[];
     const plugin = { ...json("plugin.json"), platform: "windows", lifecycle: {} };
     const rpc = {
         bind: async (name, callback) => { methods.set(name, callback); },
         unbind: async (name) => { methods.delete(name); },
         broadcast: async (name, args) => {
+            if(options.beforeBroadcast)await options.beforeBroadcast(name,args);
             broadcasts.push({ name, args });
             for (const handlers of subscribers) {
                 handlers.get(name)?.(...args);
             }
         },
     };
-    vm.runInNewContext(readFileSync(path.join(root, "kernel.js"), "utf8"), {
-        siyuan: { plugin, rpc, logger: { info: async () => {} }, storage: {
+    const direct=vm.runInNewContext(readFileSync(path.join(root, "kernel.js"), "utf8")+'\n({rpcMethods})', {
+        siyuan: { plugin, rpc, server, logger: { info: async () => {} }, storage: {
             get: async (name) => { if (!storage.has(name)) throw new Error("Not found"); return { json: async () => JSON.parse(storage.get(name)) }; },
             put: async (name, value) => { if (options.writeFails) throw new Error("Storage unavailable"); storage.set(name, value); },
         } },
@@ -35,9 +41,14 @@ async function createKernel(options = {}) {
         clearInterval(key) { timers.delete(key); },
         console,
     });
+    const setMethod=methods.set.bind(methods);methods.set=(name,handler)=>{direct.rpcMethods.set(name,handler);return setMethod(name,handler);};
+    const deleteMethod=methods.delete.bind(methods);methods.delete=name=>{direct.rpcMethods.delete(name);return deleteMethod(name);};
     await plugin.lifecycle.onload();
     await plugin.lifecycle.onrunning();
-    return { plugin, methods, timers, subscribers, broadcasts, storage, advance(ms) { now += ms; } };
+    return { plugin, methods, timers, subscribers, broadcasts, directMessages, storage, advance(ms) { now += ms; }, connect(notify,close){
+        const port={readyState:1,bufferedAmount:0,async send(raw){const message=JSON.parse(raw);if(options.beforeSend)await options.beforeSend(message,port);directMessages.push(message);notify(raw);},close(){if(port.readyState===3)return;port.readyState=3;port.onclose?.();close();}};
+        server.private.ws.handler({url:{path:'/plugin/private/'+plugin.name+'/rpc'},port});return port;
+    } };
 }
 
 async function createFrontend(kernel, locale = "zh-CN", options = {}) {
@@ -76,7 +87,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         const properties = new Map();
         const node = {
             tagName: tag.toUpperCase(), children: [], textContent: "", parentElement: null, dataset: {},
-            style: { setProperty: (name, value) => properties.set(name, value), removeProperty: (name) => properties.delete(name) },
+            style: { setProperty: (name, value) => properties.set(name, value), getPropertyValue: name => properties.get(name) || '', removeProperty: (name) => properties.delete(name) },
             classList: { [Symbol.iterator]: () => classes.values(), add: (name) => classes.add(name), remove: (name) => classes.delete(name), contains: (name) => classes.has(name) },
             setAttribute: (name, value) => attributes.set(name, value),
             getAttribute: (name) => attributes.get(name) ?? null,
@@ -92,6 +103,7 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
                 return null;
             },
             listeners: new Map(),
+            animate() {},
             addEventListener(name, callback) { node.listeners.set(name, callback); }, focus() {}, select() {},
             closest() { return null; },
             getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0 }; },
@@ -137,7 +149,15 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         }
         assert.equal(frames.size, 0);
     }
-    kernel.subscribers.add(handlers);
+    const WebSocket = require('./helpers/rpc-websocket.cjs')((name, args) => {
+        if (!kernel.methods.has(name)) throw new Error('Kernel unavailable');
+        if(options.legacy && name==='presenceHeartbeat')args=[args[0],{...args[1],direct:undefined}];
+        return kernel.methods.get(name)(...args);
+    }, notify => {
+        for (const name of ['presence-changed','cursor-changed','cursor-delta','shortcut-shown','pointer-clicked']) handlers.set(name,(...params)=>notify({jsonrpc:'2.0',method:name,params}));
+        kernel.subscribers.add(handlers);
+        return () => { kernel.subscribers.delete(handlers); handlers.clear(); };
+    },options.legacy ? undefined:(notify,close)=>kernel.connect(notify,close));
     const button = { setAttribute: (name, value) => attrs.set(name, value), getBoundingClientRect: () => ({ width: 24, right: 100, bottom: 40 }) };
     class Plugin {
         constructor(options) { Object.assign(this, options); }
@@ -155,11 +175,12 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
     }
     const moduleObject = { exports: {} };
     const runtime = {
-        module: moduleObject,
+        module: moduleObject, URL, WebSocket,
         Date: class extends Date { static now() { return options.now ? options.now() : Date.now(); } },
         console: { error() {} },
         document,
-        window: { innerWidth:1280,innerHeight:720,addEventListener: (name, callback) => listen(windowListeners, name, callback), removeEventListener: (name, callback) => unlisten(windowListeners, name, callback) },
+        getComputedStyle: node => node.style,
+        window: { location: {origin:"https://siyuan.example"}, innerWidth:1280,innerHeight:720,addEventListener: (name, callback) => listen(windowListeners, name, callback), removeEventListener: (name, callback) => unlisten(windowListeners, name, callback) },
         sessionStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
         MutationObserver: class { observe() {} disconnect() {} },
         queueMicrotask,
@@ -186,27 +207,19 @@ async function createFrontend(kernel, locale = "zh-CN", options = {}) {
         } }; },
     };
     vm.runInNewContext(readFileSync(path.join(root, "index.js"), "utf8"), runtime);
-    const call = new Proxy({}, { get: (_, name) => (...args) => {
-        if (!kernel.methods.has(name)) { return Promise.reject(new Error("Kernel unavailable")); }
-        return kernel.methods.get(name)(...args);
-    } });
     const plugin = new moduleObject.exports({
         name: kernel.plugin.name,
         app: { appId: "test-frontend" },
         displayName: kernel.plugin.displayName[locale] || kernel.plugin.displayName.default,
         i18n: json(`i18n/${locale}.json`),
-        kernel: { rpc: {
-            bind: async (name, callback) => { handlers.set(name, callback); },
-            unbind: async (name) => { handlers.delete(name); },
-            call,
-        } },
+        kernel: { rpc: { call: new Proxy({}, {get:()=>()=>{throw Error('Unexpected HTTP RPC');}}) } },
         eventBus: { on: (name, callback) => events.set(name, callback), off: (name) => events.delete(name) },
     });
     await plugin.onload();
     const layout = plugin.onLayoutReady();
     if (!options.deferLayout) await layout;
     await flush();
-    return { plugin, commands, menus, messages, timers, handlers, events, button, attrs, document, rows, addRow, cursorControl, renderFrames, storage, frames, opened, layout, listeners, windowListeners, completeOpen: () => completeOpen() };
+    return { plugin, commands, menus, messages, timers, handlers, events, button, attrs, document, rows, addRow, cursorControl, renderFrames, storage, frames, opened, layout, listeners, windowListeners, sockets: WebSocket.instances, completeOpen: () => completeOpen() };
 }
 
 test("refresh reuses identity and late old-instance requests cannot overwrite it", async () => {
@@ -847,11 +860,11 @@ test('moving into blank space clears a pointer after an in-flight send at every 
         plugin.tick=tick;
         const row=frontend.cursorControl(frontend.addRow('20261030165150-skkm1a3'));
         row.getBoundingClientRect=()=>({left:0,top:0,right:400,bottom:40,width:400,height:40});frontend.document.elementFromPoint=()=>row;
-        const update=kernel.methods.get('cursorUpdate');let first=true;
-        kernel.methods.set('cursorUpdate',async(...args)=>{if(first){first=false;await new Promise(resolve=>release=resolve);}return update(...args);});
+        const update=kernel.methods.get('cursorDelta');let first=true;
+        kernel.methods.set('cursorDelta',async(...args)=>{if(first){first=false;await new Promise(resolve=>release=resolve);}return update(...args);});
         const run=()=>{const timer=plugin.activityTimer,callback=frontend.timers.get(timer).callback;frontend.timers.delete(timer);return callback();};
         frontend.listeners.get('pointermove')({clientX:100,clientY:20,pointerType:'mouse'});
-        const sending=run();frontend.document.elementFromPoint=()=>null;
+        const sending=run();await flush();frontend.document.elementFromPoint=()=>null;
         frontend.listeners.get('pointermove')({clientX:500,clientY:200,pointerType:'mouse'});
         release();await sending;
         assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors.length,1);
@@ -940,7 +953,15 @@ test("remote glowing pointers follow local scrolling, stay text-only and exclude
     first.listeners.get("scroll")();
     await first.renderFrames();
     assert.equal(marker.style.transform, "translate3d(110px, 40px, 0)");
-    assert.equal(marker.style.transitionDuration, "100ms", "layout changes also ease toward the new local position");
+    assert.equal(marker.style.getPropertyValue('--collab-cursor-move'), "100ms", "layout changes also ease toward the new local position");
+    first.plugin.updateCursors({tick:10,cursors:[],selections:[],editing:[]});await first.renderFrames();
+    assert.equal(first.plugin.cursorMarkers.size,0);assert.equal(first.plugin.cursorCache.get(second.plugin.clientName),marker);assert.equal(marker.style.opacity,'0');
+    const recovered={tick:10,cursors:[{name:second.plugin.clientName,hue:second.plugin.hue,cursor:{...cursor,x:.75}}],selections:[],editing:[]};
+    first.plugin.updateCursors(recovered);await first.renderFrames();
+    assert.equal(first.plugin.cursorMarkers.get(second.plugin.clientName),marker,'a brief gap must reuse its original motion node');
+    assert.equal(marker.style.getPropertyValue('--collab-cursor-move'),'100ms');assert.equal(first.plugin.cursorCache.size,0);
+    first.plugin.updateCursors({tick:10,cursors:[],selections:[],editing:[]},true);await first.renderFrames();assert.equal(marker.style.visibility,'hidden','baseline recovery must hide immediately');
+    first.plugin.updateCursors(recovered);await first.renderFrames();assert.equal(marker.style.visibility,'');
     const renamed = await kernel.methods.get("presenceRename")(second.plugin.sessionId, "<b>Alice</b>", second.plugin.generation);
     second.plugin.updatePresence(renamed);
     await flushCursors();
@@ -953,6 +974,7 @@ test("remote glowing pointers follow local scrolling, stay text-only and exclude
     first.plugin.presenceReceivedAt -= 90000;
     first.plugin.renderCursors(false);
     assert.equal(first.plugin.cursorMarkers.size, 0);
+    assert.equal(first.plugin.cursorCache.size,0,'expired presence must release cached cursor nodes');
     await first.plugin.onunload();
     assert.equal(first.document.body.children.length, 0);
 });
@@ -1262,4 +1284,202 @@ test('separate frequency dialog preserves cancel, saves once, retains errors and
     assert.equal(failing.querySelector('select').value,'30');assert.equal(failing.querySelector('.ft__error').textContent,plugin.i18n.cursorTickFailed);assert(plugin.tickDialog);assert.equal(plugin.tick,3);
     const opened=plugin.tickDialog;await plugin.onunload();assert.equal(plugin.tickDialog,null);assert.equal(opened.element.parentElement.children.includes(opened.element),false);
     assert.equal(frontend.timers.size,0);await kernel.plugin.lifecycle.onunload();
+});
+
+test('all frontend RPC methods use one WebSocket, including settings, profile and leave',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin;
+    const cursor={surface:'document',documentId:'20261030165150-doc0001',blockId:'20261030165150-block01',x:.4,y:.5};
+    await plugin.rpc.call.getStatus();
+    await plugin.rpc.call.presenceRename(plugin.sessionId,'WS participant',plugin.generation,180);
+    await plugin.rpc.call.setCursorTick(3);
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,plugin.generation,1,cursor);
+    await plugin.rpc.call.selectionUpdate(plugin.sessionId,plugin.generation,1,null);
+    await plugin.rpc.call.editingUpdate(plugin.sessionId,plugin.generation,1,null);
+    await plugin.rpc.call.shortcut(plugin.sessionId,plugin.generation,1,'Ctrl+C');
+    await plugin.rpc.call.pointerClick(plugin.sessionId,plugin.generation,1,cursor);
+    assert.equal(frontend.sockets.length,1);
+    assert.equal(plugin.clientName,'WS participant');
+    assert.equal(plugin.tick,3);
+    await plugin.onunload();
+    const methods=new Set(frontend.sockets[0].sent.map(message=>message.method));
+    assert.deepEqual([...methods].sort(),['presenceHeartbeat','getStatus','presenceRename','setCursorTick','cursorSync','cursorDelta','selectionUpdate','editingUpdate','shortcut','pointerClick','presenceLeave'].sort());
+    assert.equal((await kernel.methods.get('getStatus')()).onlineCount,0);
+    assert.equal(frontend.sockets[0].readyState,3);assert.equal(frontend.timers.size,0);assert.equal(kernel.subscribers.size,0);
+    await kernel.plugin.lifecycle.onunload();
+});
+
+test('transport reconnect restores presence and the latest pointer without replaying clicks',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin;
+    const row=frontend.cursorControl(frontend.addRow('20261030165150-skkm1a3'));
+    row.getBoundingClientRect=()=>({left:0,top:0,right:400,bottom:40,width:400,height:40});frontend.document.elementFromPoint=()=>row;
+    plugin.pointer={x:100,y:20};await plugin.sendCursor();
+    plugin.pendingClicks.push({});plugin.pendingShortcut='Ctrl+C';
+    frontend.sockets[0].close();
+    assert.equal(plugin.onlineCount,null);assert.equal(plugin.pendingClicks.length,0);assert.equal(plugin.pendingShortcut,null);
+    plugin.pointer={x:300,y:20};await plugin.sendCursor();
+    assert.equal(plugin.rpc.pending.size,0);
+    const timer=plugin.rpc.retryTimer,run=frontend.timers.get(timer).callback;frontend.timers.delete(timer);run();await flush();
+    assert.equal(plugin.onlineCount,1);assert.equal(frontend.sockets.length,2);
+    await plugin.sendCursor();
+    assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.x,.75);
+    assert(!frontend.sockets[1].sent.some(message=>['shortcut','pointerClick'].includes(message.method)));
+    frontend.sockets[1].close();const sockets=frontend.sockets.length;await plugin.onunload();
+    assert.equal(frontend.sockets.length,sockets,'unload reopened the connection');assert.equal(frontend.timers.size,0);
+    await kernel.plugin.lifecycle.onunload();
+});
+
+test('compact cursor uploads and downloads equal legacy normalized snapshots across all anchor fixtures',async()=>{
+    const kernel=await createKernel(),legacy=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin;
+    const observer=await createFrontend(kernel);
+    await legacy.methods.get('presenceHeartbeat')('reference-session',{generation:1,name:plugin.clientName,hue:plugin.hue});
+    const flush=()=>[...kernel.timers.values()].find(t=>t.delay===100).callback();
+    let sequence=0;
+    for(const fixture of require('./helpers/wire-fixtures.cjs')())for(let i=0;i<20;i++){
+        const cursor=plain(fixture);cursor.x=(i+1)/21;cursor.screen.x=Math.sin(i)**2;
+        await plugin.rpc.call.cursorUpdate(plugin.sessionId,plugin.generation,++sequence,cursor);
+        await legacy.methods.get('cursorUpdate')('reference-session',1,sequence,cursor);
+        await flush();
+        const current=await kernel.methods.get('cursorSnapshot')(),reference=await legacy.methods.get('cursorSnapshot')();
+        assert.deepEqual(plain(current),plain(reference));assert.deepEqual(plain(observer.plugin.rpc.download.value),plain(reference));
+        assert.deepEqual(plain({tick:plugin.tick,cursors:plugin.remoteCursors,selections:plugin.remoteSelections,editing:plugin.remoteEditing}),{tick:10,cursors:[],selections:[],editing:[]});
+    }
+    assert(!kernel.broadcasts.some(b=>b.name==='cursor-changed'),'modern peers received full snapshots');
+    await observer.plugin.onunload();await plugin.onunload();await kernel.plugin.lifecycle.onunload();await legacy.plugin.lifecycle.onunload();
+});
+
+test('server-side typing expiry does not corrupt the next upload baseline',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin;
+    const cursor={...require('./helpers/wire-fixtures.cjs')()[0],state:'typing'};
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,plugin.generation,1,cursor);
+    kernel.advance(2100);await [...kernel.timers.values()].find(t=>t.delay===100).callback();
+    assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.state,'editing');
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,plugin.generation,2,{...cursor,x:.7654321098765432});
+    const current=(await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor;
+    assert.equal(current.state,'typing');assert.equal(current.x,.7654321098765432);
+    await plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('upload baseline reset recovers once and malformed patches never bypass anchor validation',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin,cursor=require('./helpers/wire-fixtures.cjs')()[1];
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,1,1,cursor);
+    await kernel.methods.get('cursorUpdate')(plugin.sessionId,1,2,{...cursor,x:.1});
+    const start=frontend.sockets[0].sent.length;
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,1,3,{...cursor,x:.8636779505946935});
+    const sent=frontend.sockets[0].sent.slice(start);assert.equal(sent.length,2);assert.equal(sent[0].params[3],1);assert.equal(sent[1].params[3],null);
+    assert.equal((await kernel.methods.get('cursorSnapshot')()).cursors[0].cursor.x,.8636779505946935);
+    const delta=kernel.methods.get('cursorDelta'),before=plain(await kernel.methods.get('cursorSnapshot')());
+    await assert.rejects(delta(plugin.sessionId,1,4,3,[1,'__proto__',[0,[3,'polluted',true]]]));
+    await assert.rejects(delta(plugin.sessionId,1,4,null,[0,wireOps.wirePack({...cursor,x:-.1})]));
+    await assert.rejects(delta(plugin.sessionId,0,4,null,[0,wireOps.wirePack(cursor)]),/superseded/);
+    assert.deepEqual(plain(await kernel.methods.get('cursorSnapshot')()),before);
+    await plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('failed compact broadcasts force a fresh full baseline rather than assuming delivery',async()=>{
+    const kernel=await createKernel(),id='compact-broadcast-retry';await kernel.methods.get('presenceHeartbeat')(id,{generation:1,wire:1});
+    const baseline=wireOps.wireReceive(null,plain(await kernel.methods.get('cursorSync')()));
+    let attempts=0;kernel.subscribers.add(new Map([['cursor-delta',()=>{if(++attempts===1)throw Error('Injected compact failure');}]]));
+    await kernel.methods.get('cursorUpdate')(id,1,1,require('./helpers/wire-fixtures.cjs')()[0]);
+    const timer=[...kernel.timers.values()].find(t=>t.delay===100);await timer.callback();await timer.callback();
+    const packet=kernel.broadcasts.at(-1).args[0];assert.equal(packet[3],null);
+    const restored=wireOps.wireReceive(baseline,plain(packet));assert.deepEqual(plain(restored.value),plain(await kernel.methods.get('cursorSnapshot')()));
+    await kernel.plugin.lifecycle.onunload();
+});
+
+test('legacy participants retain full snapshots while modern peers receive the same exact state',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),plugin=frontend.plugin;
+    await kernel.methods.get('presenceHeartbeat')('legacy-participant',{generation:1});
+    await kernel.methods.get('presenceHeartbeat')('legacy-wire-participant',{generation:1,wire:1});
+    await kernel.methods.get('cursorUpdate')('legacy-participant',1,1,require('./helpers/wire-fixtures.cjs')()[1]);
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,1,1,require('./helpers/wire-fixtures.cjs')()[0]);
+    await [...kernel.timers.values()].find(t=>t.delay===100).callback();
+    assert(kernel.broadcasts.some(b=>b.name==='cursor-changed'));assert(kernel.broadcasts.some(b=>b.name==='cursor-delta'));
+    const expected=plain(await kernel.methods.get('cursorSnapshot')());expected.cursors=expected.cursors.filter(client=>client.name!==plugin.clientName);
+    assert.deepEqual(plain(plugin.rpc.download.value),expected);
+    await plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('legacy overlapping broadcasts and snapshot requests preserve the exact revision baseline',async()=>{
+    let hold=false,release;
+    const kernel=await createKernel({beforeBroadcast:async name=>{if(hold&&name==='cursor-delta')await new Promise(resolve=>release=resolve);}});
+    const frontend=await createFrontend(kernel,'zh-CN',{legacy:true}),plugin=frontend.plugin,cursor=require('./helpers/wire-fixtures.cjs')()[0];
+    const flush=()=>[...kernel.timers.values()].find(t=>t.delay===100).callback();
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,1,1,{...cursor,x:.1});
+    hold=true;const first=flush();await new Promise(resolve=>setImmediate(resolve));
+    await plugin.rpc.call.cursorUpdate(plugin.sessionId,1,2,{...cursor,x:.2});
+    const overlapping=flush(),syncing=kernel.methods.get('cursorSync')();hold=false;release();
+    await Promise.all([first,overlapping]);const baseline=wireOps.wireReceive(null,plain(await syncing));
+    assert.equal(baseline.value.cursors[0].cursor.x,.1,'snapshot revision described an unbroadcast value');
+    await flush();
+    const final=wireOps.wireReceive(baseline,plain(kernel.broadcasts.at(-1).args[0]));
+    assert.deepEqual(plain(final.value),plain(await kernel.methods.get('cursorSnapshot')()));
+    assert.equal(plugin.remoteCursors[0].cursor.x,.2);
+    await plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('single direct participant sends no activity notifications back to itself',async()=>{
+    const kernel=await createKernel(),frontend=await createFrontend(kernel),p=frontend.plugin,cursor=require('./helpers/wire-fixtures.cjs')()[0];
+    const flush=()=>[...kernel.timers.values()].find(t=>t.delay===100).callback();
+    const selection={documentId:cursor.documentId,anchor:{blockId:cursor.blockId,offset:1},focus:{blockId:cursor.blockId,offset:4}},editing={documentId:cursor.documentId,blockId:cursor.blockId};
+    const revision=p.rpc.download.revision;
+    for(let i=1;i<=60;i++){
+        await p.rpc.call.cursorUpdate(p.sessionId,1,i,{...cursor,x:i/61});await p.rpc.call.selectionUpdate(p.sessionId,1,i,selection);await p.rpc.call.editingUpdate(p.sessionId,1,i,editing);await flush();
+    }
+    assert.equal(p.rpc.download.revision,revision);assert.deepEqual(plain(p.rpc.download.value),{tick:10,cursors:[],selections:[],editing:[]});
+    assert.equal(frontend.sockets[0].received.filter(m=>m.method==='cursor-delta').length,0);assert(!kernel.broadcasts.some(m=>m.name.startsWith('cursor-')));
+    assert.equal(frontend.sockets[0].sent.filter(m=>m.method==='cursorDelta').length,60,'upload confirmations were lost');
+    await p.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('three direct recipients have independent exact baselines excluding their own pointer, selection and editing',async()=>{
+    const kernel=await createKernel(),frontends=await Promise.all([createFrontend(kernel),createFrontend(kernel),createFrontend(kernel)]),fixture=require('./helpers/wire-fixtures.cjs')()[0];
+    const flush=()=>[...kernel.timers.values()].find(t=>t.delay===100).callback();
+    for(let i=1;i<=25;i++){
+        for(const [index,f]of frontends.entries()){
+            const p=f.plugin;
+            await p.rpc.call.cursorUpdate(p.sessionId,1,i,{...fixture,x:(i+index)/30,state:i%2?'typing':'editing'});
+            await p.rpc.call.selectionUpdate(p.sessionId,1,i,{documentId:fixture.documentId,anchor:{blockId:fixture.blockId,offset:index},focus:{blockId:fixture.blockId,offset:i+index}});
+            await p.rpc.call.editingUpdate(p.sessionId,1,i,{documentId:fixture.documentId,blockId:fixture.blockId});
+        }
+        await flush();const state=plain(await kernel.methods.get('cursorSnapshot')());
+        for(const f of frontends){const expected=plain(state);for(const field of ['cursors','selections','editing'])expected[field]=expected[field].filter(c=>c.name!==f.plugin.clientName);assert.deepEqual(plain(f.plugin.rpc.download.value),expected);assert(!f.plugin.rpc.resync);}
+    }
+    const before=frontends.map(f=>f.plugin.rpc.download.revision),a=frontends[0].plugin;
+    await a.rpc.call.cursorUpdate(a.sessionId,1,26,{...fixture,x:.9876543210987654});await flush();
+    assert.equal(a.rpc.download.revision,before[0]);assert.equal(frontends[1].plugin.rpc.download.revision,before[1]+1);assert.equal(frontends[2].plugin.rpc.download.revision,before[2]+1);
+    for(const f of frontends)assert.equal(f.sockets[0].sent.filter(m=>m.method==='cursorSync').length,1,'personalized revisions triggered a false resync');
+    for(const f of frontends)await f.plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('overlapping direct sends and snapshot responses keep each recipient revision coherent',async()=>{
+    let hold=false,release,target;
+    const kernel=await createKernel({beforeSend:async(message,port)=>{if(hold&&port===target&&message.method==='cursor-delta')await new Promise(resolve=>release=resolve);}});
+    const a=await createFrontend(kernel),b=await createFrontend(kernel),cursor=require('./helpers/wire-fixtures.cjs')()[0];target=b.sockets[0].port;
+    const flush=()=>[...kernel.timers.values()].find(t=>t.delay===100).callback();
+    await a.plugin.rpc.call.cursorUpdate(a.plugin.sessionId,1,1,{...cursor,x:.1});hold=true;const pending=flush();await new Promise(setImmediate);
+    await a.plugin.rpc.call.cursorUpdate(a.plugin.sessionId,1,2,{...cursor,x:.2});const syncing=b.plugin.rpc.call.cursorSnapshot();await new Promise(setImmediate);hold=false;release();await pending;
+    assert.equal((await syncing).cursors[0].cursor.x,.1);await flush();assert.equal(b.plugin.rpc.download.value.cursors[0].cursor.x,.2);
+    assert.equal(a.plugin.rpc.download.value.cursors.length,0);assert(!b.plugin.rpc.resync);
+    await a.plugin.onunload();await b.plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('a failed or backpressured direct recipient reconnects without disturbing another recipient',async()=>{
+    const kernel=await createKernel(),a=await createFrontend(kernel),b=await createFrontend(kernel),c=await createFrontend(kernel),cursor=require('./helpers/wire-fixtures.cjs')()[0];
+    const flush=()=>[...kernel.timers.values()].find(t=>t.delay===100).callback();b.sockets[0].port.bufferedAmount=1048577;
+    await a.plugin.rpc.call.cursorUpdate(a.plugin.sessionId,1,1,{...cursor,x:.7654321098765432});await flush();
+    assert.equal(b.sockets[0].readyState,3);assert.equal(b.plugin.rpc.download,null);assert.equal(c.plugin.rpc.download.value.cursors[0].cursor.x,.7654321098765432);
+    const timer=b.plugin.rpc.retryTimer,run=b.timers.get(timer).callback;b.timers.delete(timer);run();await flush();await new Promise(setImmediate);
+    assert.equal(b.sockets.length,2);assert.equal(b.plugin.rpc.download.value.cursors[0].cursor.x,.7654321098765432);
+    assert(!b.sockets[1].sent.some(m=>m.method==='pointerClick'||m.method==='shortcut'));
+    for(const f of [a,b,c])await f.plugin.onunload();await kernel.plugin.lifecycle.onunload();
+});
+
+test('private RPC validates envelopes, rejects unaffiliated snapshots and preserves method validation',async()=>{
+    const kernel=await createKernel(),messages=[],port=kernel.connect(raw=>messages.push(JSON.parse(raw)),()=>{});
+    port.onmessage({data:'broken'});await new Promise(setImmediate);assert.equal(messages.at(-1).error.code,-32700);
+    port.onmessage({data:JSON.stringify({jsonrpc:'2.0',id:1,method:'cursorSync',params:[]})});await new Promise(setImmediate);assert.match(messages.at(-1).error.message,/Session/);
+    port.onmessage({data:JSON.stringify({jsonrpc:'2.0',id:2,method:'missing',params:[]})});await new Promise(setImmediate);assert.equal(messages.at(-1).error.code,-32601);
+    port.onmessage({data:JSON.stringify({jsonrpc:'2.0',id:3,method:'setCursorTick',params:[99]})});await new Promise(setImmediate);assert.match(messages.at(-1).error.message,/Tick/);
+    port.onmessage({data:JSON.stringify({jsonrpc:'2.0',id:4,method:'getStatus',params:{}})});await new Promise(setImmediate);assert.equal(messages.at(-1).error.code,-32600);
+    port.close();await kernel.plugin.lifecycle.onunload();
 });

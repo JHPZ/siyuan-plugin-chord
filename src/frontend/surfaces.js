@@ -39,12 +39,12 @@ function cursorRegion(element) {
             {kind:'dock',id:'search-'+componentHash(JSON.stringify([dialog ? 'dialog':'tab',preview.id]))}:null;
     }
     if(dialog)return null;
-    const backlink=componentBacklinkContext(element),editor=element.closest('.protyle');
+    const backlink=componentBacklinkContext(element),editor=cursorEditor(element);
     if(backlink && editor && backlink.panel.contains(editor))return backlink.identity ? {kind:'dock',id:'backlink-'+componentHash(JSON.stringify(backlink.identity))}:null;
     const dock=dockPage(element);
     if(dock)return {kind:'dock',id:dock.id};
     if(element.closest('.dockPanel'))return null;
-    const id=element.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+    const id=editorDocumentId(editor);
     return DOCUMENT_ID.test(id || '') ? {kind:'document',id}:null;
 }
 

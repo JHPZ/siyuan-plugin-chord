@@ -144,6 +144,93 @@ function validEditing(editing) {
             new Set(editing.blockIds).size===editing.blockIds.length && editing.blockIds.includes(editing.blockId));
 }
 
+// Version 1 field indices are append-only; reordering requires a new wire version.
+const CHORD_WIRE_KEYS = 'x y kind id documentId blockId surface region page title state dragging screen space offset gap side ratio text ui version scope key route count index nameKey frame frames target edges step textHash imagePoint pdf file part mark graph node layout row column group pane tick cursors selections editing name hue cursor selection anchor focus blockIds wire'.split(' ');
+const CHORD_WIRE_INDEX = new Map(CHORD_WIRE_KEYS.map((key, index) => [key, index]));
+
+function wireKey(key) { return CHORD_WIRE_INDEX.has(key) ? CHORD_WIRE_INDEX.get(key) : key; }
+function wireReadKey(key) {
+    if (Number.isInteger(key) && key >= 0 && key < CHORD_WIRE_KEYS.length) return CHORD_WIRE_KEYS[key];
+    if (typeof key === 'string' && key.length <= 160 && !['__proto__', 'constructor', 'prototype'].includes(key)) return key;
+    throw Error('Invalid compact field');
+}
+
+function wirePack(value) {
+    if (Array.isArray(value)) return [4, ...value.map(item => wirePack(item ?? null))];
+    if (value && typeof value === 'object') return [3, ...Object.entries(value).filter(([, value]) => value !== undefined).flatMap(([key, value]) => [wireKey(key), wirePack(value)])];
+    if (value === null || ['string', 'boolean'].includes(typeof value) || typeof value === 'number' && Number.isFinite(value)) return value;
+    throw Error('Invalid compact value');
+}
+
+function wireBudget() { return { nodes: 0 }; }
+function wireCheck(budget, depth) {
+    if (++budget.nodes > 4194304 || depth > 64) throw Error('Compact message too complex');
+}
+
+function wireUnpack(value, budget = wireBudget(), depth = 0) {
+    wireCheck(budget, depth);
+    if (!Array.isArray(value)) {
+        if (value === null || typeof value === 'boolean' || typeof value === 'string' && value.length <= 2097152 || typeof value === 'number' && Number.isFinite(value)) return value;
+        throw Error('Invalid compact value');
+    }
+    if (value[0] === 4) return value.slice(1).map(item => wireUnpack(item, budget, depth + 1));
+    if (value[0] !== 3 || value.length % 2 !== 1) throw Error('Invalid compact object');
+    const result = {};
+    for (let index = 1; index < value.length; index += 2) {
+        const key = wireReadKey(value[index]);
+        if (Object.hasOwn(result, key)) throw Error('Duplicate compact field');
+        result[key] = wireUnpack(value[index + 1], budget, depth + 1);
+    }
+    return result;
+}
+
+// Patches replace exact values; coordinates are never rounded or arithmetically accumulated.
+function wireDiff(before, after) {
+    if (before === after) return null;
+    if (!before || !after || typeof before !== 'object' || typeof after !== 'object' || Array.isArray(before) !== Array.isArray(after) || Array.isArray(after) && before.length !== after.length) return [0, wirePack(after)];
+    const patch = [1];
+    for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) patch.push(wireKey(key), [2]);
+    for (const [key, value] of Object.entries(after)) {
+        const child = Object.hasOwn(before, key) ? wireDiff(before[key], value) : [0, wirePack(value)];
+        if (child) patch.push(Array.isArray(after) ? Number(key) : wireKey(key), child);
+    }
+    return patch.length === 1 ? null : patch;
+}
+
+function wireApply(before, patch, budget = wireBudget(), depth = 0) {
+    wireCheck(budget, depth);
+    if (!Array.isArray(patch)) throw Error('Invalid compact patch');
+    if (patch.length === 2 && patch[0] === 0) return wireUnpack(patch[1], budget, depth + 1);
+    if (patch[0] !== 1 || patch.length % 2 !== 1 || !before || typeof before !== 'object') throw Error('Missing compact baseline');
+    const array = Array.isArray(before), result = array ? before.slice() : { ...before }, seen = new Set();
+    for (let index = 1; index < patch.length; index += 2) {
+        const token = patch[index], child = patch[index + 1];
+        const key = array ? token : wireReadKey(token);
+        if (array && (!Number.isInteger(key) || key < 0 || key >= before.length) || seen.has(key)) throw Error('Invalid compact index');
+        seen.add(key);
+        if (Array.isArray(child) && child.length === 1 && child[0] === 2) {
+            if (array || !Object.hasOwn(before, key)) throw Error('Invalid compact deletion');
+            delete result[key];
+        } else result[key] = wireApply(before[key], child, budget, depth + 1);
+    }
+    return result;
+}
+
+function wirePacket(epoch, revision, baseRevision, before, after) {
+    return [1, epoch, revision, baseRevision, before === null ? [0, wirePack(after)] : wireDiff(before, after) || [1]];
+}
+
+function wireReceive(baseline, packet) {
+    if (!Array.isArray(packet) || packet.length !== 5 || packet[0] !== 1 || typeof packet[1] !== 'string' || !/^[a-z0-9-]{1,64}$/.test(packet[1]) || !Number.isSafeInteger(packet[2]) || packet[2] < 1 ||
+        packet[3] !== null && (!Number.isSafeInteger(packet[3]) || packet[3] < 1 || packet[3] >= packet[2])) throw Error('Invalid compact revision');
+    const [, epoch, revision, baseRevision, patch] = packet;
+    if (baseline?.epoch === epoch && revision <= baseline.revision) return baseline;
+    if (baseRevision === null) {
+        if (!Array.isArray(patch) || patch[0] !== 0) throw Error('Invalid compact snapshot');
+    } else if (!baseline || baseline.epoch !== epoch || baseline.revision !== baseRevision) throw Object.assign(Error('Missing compact revision'), {code:'WIRE_BASELINE'});
+    return { epoch, revision, value: wireApply(baseRevision === null ? null : baseline.value, patch) };
+}
+
 const { Plugin, Menu, Dialog, Setting, showMessage, openTab, openSetting, getActiveTab, getAllTabs, getModelByDockType, globalCommand } = require("siyuan");
 const PRESENCE_TIMEOUT = 90000;
 const DOCUMENT_ID = /^\d{14}-[a-z0-9]{7}$/;
@@ -173,8 +260,12 @@ function characterRect(node, offset) {
 }
 
 function editorDocumentId(editor) {
-    return editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') ||
+    return editor?.getAttribute('data-node-id') || editor?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id') ||
         editor?.closest('.backlinkList__item[data-node-id]')?.getAttribute('data-node-id');
+}
+
+function cursorEditor(element) {
+    return element.closest('.protyle:not(.protyle-title__rich)');
 }
 
 function cursorTextRoot(block) {
@@ -276,7 +367,7 @@ function captureDocumentSpace(editor, hit, point) {
 function captureDocumentCursor(point) {
     if (!point || document.hidden) return null;
     const hit = componentVisualHit(document,point), editor = hit?.closest('.protyle-wysiwyg');
-    if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"]')) return null;
+    if (!editor || !visibleElement(hit) || hit.closest('[data-type="NodeAttributeView"],.protyle-title')) return null;
     let block = hit.closest('.protyle-wysiwyg [data-node-id]');
     const text = block && captureTextPoint(cursorTextRoot(block), point, true);
     const blank = !text && captureDocumentSpace(editor, hit, point);
@@ -1167,7 +1258,7 @@ function componentKey(element) {
     const font=componentFontIdentity(element);
     const thumbnailImage=element.matches('.thumbnail img') && pdfModel(element);
     const attributes=['data-node-id','data-command-id','data-font-config-key','data-url','data-name','data-type','data-subtype','data-page-number','data-annotation-id','data-statusbar-entry','data-topbar-entry','role','type','name','href','src','d','points','viewBox'];
-    const values=attributes.filter(name=>name!=='src' || !thumbnailImage).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
+    const values=attributes.filter(name=>(name!=='src' || !thumbnailImage) && (name!=='data-node-id' || !element.closest('.protyle-title__rich'))).map(name=>[name,element.getAttribute(name)]).filter(([,value])=>value).map(([name,value])=>[name,componentHash(value)]);
     if(element.matches('input[type="color"][data-field]'))values.push(['color-field',componentHash(element.dataset.field)]);
     if(element.matches('[data-type="themeColorEditor"] > div')){const fields=[...element.querySelectorAll('input[type="color"][data-field]')].map(e=>e.dataset.field).sort();if(fields.length)values.push(['color-group',componentHash(JSON.stringify(fields))]);}
     if(element.matches('[data-panel="builtinEditor"],[data-panel="customEditor"]')&&element.querySelector('[data-type="themeColorEditor"]'))values.push(['color-editor',element.dataset.panel,componentHash(element.dataset.panel==='customEditor' ? JSON.stringify(componentColorContext(element)):textLabel(element.querySelector('[data-role="title"]')))]);
@@ -1219,7 +1310,7 @@ function componentKey(element) {
         values.push(['between',[neighbour(element.previousElementSibling),neighbour(element.nextElementSibling)].sort()]);
     }
     const privateText=element.matches('select') || element.closest('input,textarea,[contenteditable],[data-private]');
-    const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (element.getAttribute('aria-label') || element.getAttribute('title') ||
+    const label=!privateText && !values.length && !(element.matches('.counter') && (tree || element.closest('.search__list'))) ? (tree && element.matches('.b3-list-item__text') ? textLabel(element):element.getAttribute('aria-label') || element.getAttribute('title') ||
         (!element.children.length || element.matches('.b3-list-item,.b3-menu__item') || element.matches(COMPONENT_HIGHLIGHT_TEXT) ? textLabel(element):'')):'';
     const classes=[...new Set([...element.classList].filter(name=>!/^collab-|^ariaLabel$|^fn__none$|^protyle-wysiwyg--select$|^b3-menu__item--(?:current|show|group-first|group-last)$|^b3-list-item__arrow--open$/.test(name) && !(font && element.matches('.config-font-family__chip') && name==='b3-chip--dragging') && !(pdfNumber && name==='loading' && element.ownerDocument.defaultView.getComputedStyle(element).backgroundImage==='none') && !(name==='selected' && element.matches('.thumbnail')) && !(name==='wrapContainers' && element.matches('.pdf__outer #findbar')) && !(element.matches('.pdf__outer') && ['pdf__outer--maximized','sidebarOpen'].includes(name))).map(name=>name.replace(/--(?:focus|active|selected|hover)$/,'')))].sort().join(' ');
     return componentHash(JSON.stringify([element.tagName.toLowerCase(),classes,values,label]));
@@ -1327,7 +1418,7 @@ function componentTextHash(element) {
 function componentTreeRegion(element) {
     const files=element.closest('.sy__file'),file=files && element.closest('li[data-type="navigation-file"],li[data-type="navigation-root"]');
     if(file && files.contains(file)){
-        const notebook=file.closest('ul[data-url]')?.getAttribute('data-url'),id=file.getAttribute('data-node-id') || '';
+        const notebook=file.closest('ul[data-url]')?.getAttribute('data-url') || /^notebook:(\d{14}-[a-z0-9]{7})(?:\/|$)/.exec(file.getAttribute('data-tree-key') || '')?.[1],id=file.getAttribute('data-node-id') || '';
         return {panel:files,root:file,identity:DOCUMENT_ID.test(notebook || '') && (id ? DOCUMENT_ID.test(id):file.getAttribute('data-type')==='navigation-root') ? ['file',notebook,id]:null};
     }
     const backlink=componentBacklinkContext(element);
@@ -1463,7 +1554,7 @@ function componentScope(element,plugin) {
             return make(root,'dock',dock.id+'|'+graphContext(model));
         }
     }
-    const editor=element.closest('.protyle');
+    const editor=cursorEditor(element);
     if(editor){
         const id=editorDocumentId(editor),region=cursorRegion(editor);
         return DOCUMENT_ID.test(id || '') && region ? make(editor,'document',id+'|'+region.kind+'|'+region.id):null;
@@ -2149,12 +2240,12 @@ function cursorRegion(element) {
             {kind:'dock',id:'search-'+componentHash(JSON.stringify([dialog ? 'dialog':'tab',preview.id]))}:null;
     }
     if(dialog)return null;
-    const backlink=componentBacklinkContext(element),editor=element.closest('.protyle');
+    const backlink=componentBacklinkContext(element),editor=cursorEditor(element);
     if(backlink && editor && backlink.panel.contains(editor))return backlink.identity ? {kind:'dock',id:'backlink-'+componentHash(JSON.stringify(backlink.identity))}:null;
     const dock=dockPage(element);
     if(dock)return {kind:'dock',id:dock.id};
     if(element.closest('.dockPanel'))return null;
-    const id=element.closest('.protyle')?.querySelector('.protyle-background[data-node-id]')?.getAttribute('data-node-id');
+    const id=editorDocumentId(editor);
     return DOCUMENT_ID.test(id || '') ? {kind:'document',id}:null;
 }
 
@@ -2314,6 +2405,239 @@ function resolveCursor(cursor, plugin) {
     return resolveDocumentCursor(cursor);
 }
 
+class ChordRpcSocket {
+    constructor(name, appId, onReconnect, onDisconnect) {
+        const url = new URL('/plugin/private/' + encodeURIComponent(name) + '/rpc', window.location.origin);
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+        if (appId) url.searchParams.set('appId', appId);
+        this.url = url.href;
+        this.onReconnect = onReconnect;
+        this.onDisconnect = onDisconnect;
+        this.pending = new Map();
+        this.handlers = new Map();
+        this.sequence = 0;
+        this.retryDelay = 250;
+        this.call = new Proxy({}, { get: (_, method) => (...params) => this.request(method, params) });
+    }
+
+    get isOpen() { return this.socket?.readyState === WebSocket.OPEN; }
+
+    bind(method, handler) {
+        if (!this.handlers.has(method)) this.handlers.set(method, new Set());
+        this.handlers.get(method).add(handler);
+    }
+
+    unbind(method, handler) {
+        const handlers = this.handlers.get(method);
+        handlers?.delete(handler);
+        if (!handlers?.size) this.handlers.delete(method);
+    }
+
+    connect() {
+        if (this.closed) return Promise.reject(new Error('RPC transport closed'));
+        if (this.isOpen) return Promise.resolve(this.socket);
+        if (this.opening) return this.opening;
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        this.opening = new Promise((resolve, reject) => { this.resolveOpen = resolve; this.rejectOpen = reject; });
+        const opening = this.opening;
+        this.connectTimer = setTimeout(() => this.disconnect(new Error('RPC connection timed out')), 10000);
+        try {
+            const socket = this.socket = new WebSocket(this.url);
+            socket.onopen = () => {
+                if (this.socket !== socket || this.closed) return;
+                clearTimeout(this.connectTimer);
+                this.opening = null;
+                this.retryDelay = 250;
+                this.resolveOpen(socket);
+                this.resolveOpen = this.rejectOpen = null;
+                if (this.recovering) Promise.resolve().then(() => this.onReconnect?.()).catch(error => console.error('RPC recovery failed:', error));
+                this.recovering = false;
+            };
+            socket.onmessage = event => { if (this.socket === socket && !this.closed) this.receive(event.data); };
+            socket.onerror = socket.onclose = () => {
+                if (this.socket === socket) this.disconnect(new Error('RPC connection lost'));
+            };
+        } catch (error) { this.disconnect(error); }
+        return opening;
+    }
+
+    async request(method, params, fullCursor = false) {
+        if (this.closed) throw new Error('RPC transport closed');
+        // Transient activity must never wait for a reconnect and replay an old position or click.
+        if (['cursorUpdate', 'selectionUpdate', 'editingUpdate', 'shortcut', 'pointerClick'].includes(method) && !this.isOpen) {
+            throw new Error('RPC connection unavailable');
+        }
+        const socket = await this.connect();
+        if (this.closed || this.socket !== socket || !this.isOpen) throw new Error('RPC connection lost');
+        if (this.pending.size >= 64) throw new Error('Too many pending RPC requests');
+        if (socket.bufferedAmount > 1024 * 1024) {
+            this.disconnect(new Error('RPC send buffer full'));
+            throw new Error('RPC send buffer full');
+        }
+        let wireMethod = method, wireParams = params, upload = null;
+        if (method === 'presenceHeartbeat' && (params[1] === undefined || params[1] && typeof params[1] === 'object' && !Array.isArray(params[1]))) wireParams = [params[0], {...params[1], wire:1, direct:1}];
+        if (this.compact && method === 'cursorSnapshot') wireMethod = 'cursorSync';
+        if (this.compact && method === 'cursorUpdate') {
+            const value = JSON.parse(JSON.stringify(params[3])), sequence = params[2];
+            const previous = !fullCursor && this.uploadCursor && this.uploadCursor.sequence < sequence ? this.uploadCursor : null;
+            let patch = previous ? wireDiff(previous.value, value) || [1] : [0, wirePack(value)];
+            let base = previous?.sequence ?? null;
+            if (base !== null) {
+                const replacement = [0, wirePack(value)];
+                if (JSON.stringify(replacement).length < JSON.stringify(patch).length) { patch = replacement; base = null; }
+            }
+            wireMethod = 'cursorDelta'; wireParams = [params[0],params[1],sequence,base,patch];
+            upload = {sequence, value};
+        }
+        const id = ++this.sequence;
+        const body = JSON.stringify({ jsonrpc: '2.0', id, method:wireMethod, params:wireParams });
+        const result = await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => this.disconnect(new Error('RPC request timed out')), 10000);
+            this.pending.set(id, { resolve, reject, timer });
+            try { socket.send(body); }
+            catch (error) { this.disconnect(error); }
+        });
+        if (this.closed || this.socket !== socket) throw new Error('RPC connection lost');
+        if (method === 'presenceHeartbeat' && result?.wire === 1) this.compact = true;
+        if (wireMethod === 'cursorSync') return this.acceptSnapshot(result);
+        if (upload) {
+            if (result?.reset === 1) {
+                this.uploadCursor = null;
+                if (fullCursor) throw Error('Compact cursor baseline rejected');
+                return this.request(method, params, true);
+            }
+            if (result === true && (!this.uploadCursor || this.uploadCursor.sequence < upload.sequence)) this.uploadCursor = upload;
+        }
+        return result;
+    }
+
+    dispatch(method, params) {
+        for (const handler of this.handlers.get(method) || []) {
+            try { Promise.resolve(handler(...params)).catch(error => console.error('RPC notification failed:', error)); }
+            catch (error) { console.error('RPC notification failed:', error); }
+        }
+    }
+
+    acceptSnapshot(packet) {
+        let next = wireReceive(this.download, packet);
+        validateCursorState(next.value);
+        for (const queued of (this.waitingDeltas || []).filter(value => value[1] === next.epoch && value[2] > next.revision).sort((a,b) => a[2]-b[2])) {
+            next = wireReceive(next, queued);
+            validateCursorState(next.value);
+        }
+        if (this.requiredRevision?.epoch === next.epoch && next.revision < this.requiredRevision.revision) throw Error('Compact recovery is behind received data');
+        this.download = next;
+        this.waitingDeltas = [];
+        this.waitingBytes = 0;
+        this.requiredRevision = null;
+        return next.value;
+    }
+
+    rememberDelta(packet) {
+        const [,epoch,revision] = packet;
+        if (this.requiredRevision?.epoch !== epoch || this.requiredRevision.revision < revision) this.requiredRevision = {epoch,revision};
+        const bytes = JSON.stringify(packet).length;
+        if ((this.waitingDeltas?.length || 0) >= 512 || (this.waitingBytes || 0) + bytes > 1048576) {
+            this.waitingDeltas = [];
+            this.waitingBytes = 0;
+            return;
+        }
+        (this.waitingDeltas ||= []).push(packet);
+        this.waitingBytes = (this.waitingBytes || 0) + bytes;
+    }
+
+    recoverSnapshot(retried = false) {
+        if (this.resync) return;
+        const tick = this.download?.value.tick || 10;
+        this.download = null;
+        this.dispatch('cursor-changed', [{tick,cursors:[],selections:[],editing:[]}, true]);
+        this.resync = this.request('cursorSnapshot', []).then(value => this.dispatch('cursor-changed', [value])).catch(() => {}).finally(() => {
+            this.resync = null;
+            if (this.requiredRevision && this.isOpen) {
+                if (retried) this.disconnect(new Error('Compact recovery failed'));
+                else this.recoverSnapshot(true);
+            }
+        });
+    }
+
+    receive(raw) {
+        let messages;
+        try { messages = JSON.parse(raw); } catch { return; }
+        for (const message of Array.isArray(messages) ? messages : [messages]) {
+            if (!message || message.jsonrpc !== '2.0') continue;
+            if (message.id === undefined && typeof message.method === 'string') {
+                if (!Array.isArray(message.params)) continue;
+                if (message.method === 'cursor-delta') {
+                    this.compact = true;
+                    try { this.dispatch('cursor-changed', [this.acceptSnapshot(message.params[0])]); }
+                    catch (error) {
+                        if (error.code === 'WIRE_BASELINE') this.rememberDelta(message.params[0]);
+                        this.recoverSnapshot();
+                    }
+                } else if (message.method !== 'cursor-changed' || !this.download) this.dispatch(message.method, message.params);
+                continue;
+            }
+            const pending = this.pending.get(message.id);
+            if (!pending) continue;
+            const hasResult = Object.hasOwn(message, 'result'), hasError = Object.hasOwn(message, 'error');
+            if (hasResult === hasError || (hasError && (!message.error || !Number.isInteger(message.error.code) || typeof message.error.message !== 'string'))) continue;
+            this.pending.delete(message.id);
+            clearTimeout(pending.timer);
+            if (hasError) pending.reject(Object.assign(new Error(message.error.message), { code: message.error.code }));
+            else pending.resolve(message.result);
+        }
+    }
+
+    disconnect(error) {
+        const socket = this.socket;
+        this.compact = false;
+        this.uploadCursor = this.download = null;
+        this.waitingDeltas = [];
+        this.waitingBytes = 0;
+        this.requiredRevision = null;
+        this.socket = null;
+        clearTimeout(this.connectTimer);
+        this.rejectOpen?.(error);
+        this.opening = this.resolveOpen = this.rejectOpen = null;
+        for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
+        this.pending.clear();
+        if (socket) {
+            socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
+            socket.close();
+        }
+        if (!this.closed) {
+            this.recovering = true;
+            try { this.onDisconnect?.(); }
+            catch (error) { console.error('RPC disconnect handler failed:', error); }
+            if (!this.retryTimer) {
+                this.retryTimer = setTimeout(() => { this.retryTimer = null; this.connect().catch(() => {}); }, this.retryDelay);
+                this.retryDelay = Math.min(this.retryDelay * 2, 5000);
+            }
+        }
+    }
+
+    close() {
+        this.closed = true;
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        this.disconnect(new Error('RPC transport closed'));
+        this.handlers.clear();
+    }
+}
+
+function validateCursorState(state) {
+    if (!state || !Number.isInteger(state.tick) || state.tick < 1 || state.tick > 30 || !Array.isArray(state.cursors) || state.cursors.some((client) =>
+        !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 || !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validCursor(client.cursor))) throw new Error("Invalid cursor response");
+    const selections = state.selections || [];
+    if (!Array.isArray(selections) || selections.some((client) => !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 ||
+        !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validSelection(client.selection))) throw new Error("Invalid selection response");
+    const editing = state.editing || [];
+    if (!Array.isArray(editing) || editing.some((client) => !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 ||
+        !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validEditing(client.editing))) throw new Error("Invalid editing response");
+    return {selections, editing};
+}
+
 const CURSOR_PATHS = {
     pointer: 'M2 2L19 8.5L12 12L8.5 19Z',
     dragging: 'M5 10V7Q5 5 7 5Q8 5 8 7V5Q8 3 10 3Q12 3 12 5V6Q12 4 14 4Q16 4 16 6V8Q16 6 18 7Q19 7 19 9V14Q19 20 13 20H10Q8 20 7 18L3 13Q2 11 4 10L7 13V9Z',
@@ -2349,8 +2673,17 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.selectionSequence = 0;
         this.lastSelectionSignature = "null";
         this.cursorMarkers = new Map();
+        this.cursorCache = new Map();
         this.cursorSequence = 0;
         this.lastCursorSignature = "null";
+        this.rpc = new ChordRpcSocket(this.name, this.app?.appId, () => {
+            if (!this.layoutReady || this.stopped) return;
+            this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
+            return this.refreshInBackground().then(() => this.loadCursors());
+        }, () => {
+            this.pendingShortcut = null;
+            this.clearPresence();
+        });
         try {
             const id = sessionStorage.getItem(`${this.name}:session-id`);
             const generation = Number(sessionStorage.getItem(`${this.name}:generation`));
@@ -2366,7 +2699,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             this.resumeDocument = sessionStorage.getItem(`${this.name}:document`);
         } catch {}
         this.handlePresence = (presence) => this.updatePresence(presence);
-        this.handleCursors = (state) => this.updateCursors(state);
+        this.handleCursors = (state, reset) => this.updateCursors(state, reset);
         this.handleDocument = () => this.scheduleDocumentReport();
         this.handleRenderTarget = rememberRenderTarget;
         this.handleKernelState = ({ detail }) => {
@@ -2377,10 +2710,10 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.loadCursors();
             }
         };
-        await this.kernel.rpc.bind("presence-changed", this.handlePresence);
-        await this.kernel.rpc.bind("cursor-changed", this.handleCursors);
-        await this.kernel.rpc.bind("shortcut-shown", this.handleShortcut);
-        await this.kernel.rpc.bind("pointer-clicked", this.handleClick);
+        await this.rpc.bind("presence-changed", this.handlePresence);
+        await this.rpc.bind("cursor-changed", this.handleCursors);
+        await this.rpc.bind("shortcut-shown", this.handleShortcut);
+        await this.rpc.bind("pointer-clicked", this.handleClick);
         this.eventBus.on("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.on("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) {
@@ -2501,28 +2834,29 @@ module.exports = class CollaborationPlugin extends Plugin {
         }
         const documentId = this.currentDocument();
         try { sessionStorage.setItem(`${this.name}:document`, documentId || ""); } catch {}
-        const presence = await this.kernel.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation, ...(this.hue === undefined ? {} : {hue:this.hue}) });
+        const presence = await this.rpc.call.presenceHeartbeat(this.sessionId, { name: this.clientName, documentId, page: currentPage(this), generation: this.generation, ...(this.hue === undefined ? {} : {hue:this.hue}) });
         this.updatePresence(presence);
         if(this.trackingStarted)this.queueActivity();
         return presence;
     }
 
+    clearPresence() {
+        if (this.stopped) return;
+        this.onlineCount = null;
+        this.clients = [];
+        this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
+        this.renderOnlineCount();
+        this.scheduleTreeRender();
+        this.remoteCursors = [];
+        this.remoteSelections = [];
+        this.remoteEditing = [];
+        this.clearClicks();
+        this.renderPeople();
+        this.scheduleCursorRender();
+    }
+
     refreshInBackground() {
-        return this.refreshOnline().catch(() => {
-            if (!this.stopped) {
-                this.onlineCount = null;
-                this.clients = [];
-                this.lastCursorSignature = this.lastSelectionSignature = this.lastEditingSignature = undefined;
-                this.renderOnlineCount();
-                this.scheduleTreeRender();
-                this.remoteCursors = [];
-                this.remoteSelections = [];
-                this.remoteEditing = [];
-                this.clearClicks();
-                this.renderPeople();
-                this.scheduleCursorRender();
-            }
-        });
+        return this.refreshOnline().catch(() => this.clearPresence());
     }
 
     scheduleDocumentReport() {
@@ -2598,7 +2932,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             if(![3,10,30].includes(tick)){error.textContent=this.i18n.cursorTickFailed;return;}
             save.disabled=true;error.textContent='';
             try {
-                this.updateCursors(await this.kernel.rpc.call.setCursorTick(tick));
+                this.updateCursors(await this.rpc.call.setCursorTick(tick));
                 if(!this.stopped){if(onSaved)onSaved();else showMessage(this.i18n.cursorTickSaved,3000,'info');}
             } catch {error.textContent=this.i18n.cursorTickFailed;}
             finally {save.disabled=false;}
@@ -2619,29 +2953,23 @@ module.exports = class CollaborationPlugin extends Plugin {
 
 
     async loadCursors() {
-        try { this.updateCursors(await this.kernel.rpc.call.cursorSnapshot()); } catch {}
+        try { this.updateCursors(await this.rpc.call.cursorSnapshot()); } catch {}
     }
 
     async onDataChanged() {
         await this.loadCursors();
     }
 
-    updateCursors(state) {
+    updateCursors(state, reset = false) {
         if (this.stopped) return;
-        if (!state || !Number.isInteger(state.tick) || state.tick < 1 || state.tick > 30 || !Array.isArray(state.cursors) || state.cursors.some((client) =>
-            !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 || !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validCursor(client.cursor))) throw new Error("Invalid cursor response");
-        const selections = state.selections || [];
-        if (!Array.isArray(selections) || selections.some((client) => !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 ||
-            !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validSelection(client.selection))) throw new Error("Invalid selection response");
-        const editing = state.editing || [];
-        if (!Array.isArray(editing) || editing.some((client) => !client || typeof client.name !== "string" || !client.name || [...client.name].length > 24 ||
-            !Number.isInteger(client.hue) || client.hue < 0 || client.hue >= 360 || !validEditing(client.editing))) throw new Error("Invalid editing response");
+        const {selections, editing} = validateCursorState(state);
         if (this.tick !== state.tick) {
             this.tick = state.tick;
             for(const select of document.querySelectorAll('.collab-tick-form select'))select.value=String([3,10,30].includes(this.tick) ? this.tick : 10);
             if (this.trackingStarted) this.startCursorTimer();
         }
         this.remoteCursors = state.cursors;
+        this.cursorReset = reset;
         this.remoteSelections = selections;
         this.remoteEditing = editing;
         this.scheduleCursorRender();
@@ -2825,8 +3153,8 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.activityTimer=setTimeout(async()=>{
             this.activityTimer=null;this.activitySentAt=Date.now();this.activityFlushing=true;
             const keys=this.pendingShortcut;this.pendingShortcut=null;
-            if (keys && !this.stopped) this.kernel.rpc.call.shortcut(this.sessionId,this.generation,++this.shortcutSequence,keys).catch(()=>{});
-            for(const cursor of this.pendingClicks.splice(0))if(!this.stopped)this.kernel.rpc.call.pointerClick(this.sessionId,this.generation,++this.clickSequence,cursor).catch(()=>{});
+            if (keys && !this.stopped) this.rpc.call.shortcut(this.sessionId,this.generation,++this.shortcutSequence,keys).catch(()=>{});
+            for(const cursor of this.pendingClicks.splice(0))if(!this.stopped)this.rpc.call.pointerClick(this.sessionId,this.generation,++this.clickSequence,cursor).catch(()=>{});
             await Promise.allSettled([this.sendCursor(),this.sendSelection(),this.sendEditing()]);
             this.activityFlushing=false;
             if(this.activityQueued){this.activityQueued=false;this.queueActivity();}
@@ -2856,7 +3184,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (signature === this.lastCursorSignature && typingAt===this.lastCursorTypingAt) return;
         this.cursorSending = true;
         try {
-            await this.kernel.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
+            await this.rpc.call.cursorUpdate(this.sessionId, this.generation, ++this.cursorSequence, cursor);
             this.lastCursorSignature = signature;
             this.lastCursorTypingAt=typingAt;
         } catch {} finally {
@@ -2870,7 +3198,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (signature === this.lastEditingSignature) return;
         this.editingSending = true;
         try {
-            await this.kernel.rpc.call.editingUpdate(this.sessionId, this.generation, ++this.editingSequence, editing);
+            await this.rpc.call.editingUpdate(this.sessionId, this.generation, ++this.editingSequence, editing);
             this.lastEditingSignature = signature;
             this.editingSentAt = Date.now();
         } catch {} finally { this.editingSending = false; }
@@ -2882,7 +3210,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         if (signature === this.lastSelectionSignature) return;
         this.selectionSending = true;
         try {
-            await this.kernel.rpc.call.selectionUpdate(this.sessionId, this.generation, ++this.selectionSequence, selection);
+            await this.rpc.call.selectionUpdate(this.sessionId, this.generation, ++this.selectionSequence, selection);
             this.lastSelectionSignature = signature;
         } catch {} finally { this.selectionSending = false; }
     }
@@ -2913,22 +3241,24 @@ module.exports = class CollaborationPlugin extends Plugin {
                 this.cursorLayer.hidePopover();this.cursorLayer.removeAttribute('popover');
                 this.cursorPicker=null;
             }
-            const visible = new Set(),resolved=new Map();
+            const visible = new Set(),resolved=new Map(),announced=new Set(this.remoteCursors.map(client=>client.name));
             const positions=[],people=new Set(this.clients.map(client=>client.name));
-            if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) {
+            const live=!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT;
+            if (live) {
                 for (const client of this.remoteCursors) {
                     if (client.name === this.clientName || !people.has(client.name)) continue;
                     const key=JSON.stringify(client.cursor);
                     if(!resolved.has(key))resolved.set(key,resolveCursor(client.cursor,this));
                     const point=resolved.get(key);
                     if (!point) continue;
-                    const marker=this.cursorMarkers.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
+                    const marker=this.cursorMarkers.get(client.name)||this.cursorCache.get(client.name),rect=this.pointer&&marker?.getBoundingClientRect();
                     positions.push({client,point,rect});
                 }
                 // Resolve every anchor before writing markers so peers share one layout measurement.
                 for(const {client,point,rect:measured}of positions){
                     visible.add(client.name);
-                    let marker = this.cursorMarkers.get(client.name);
+                    let marker = this.cursorMarkers.get(client.name) || this.cursorCache.get(client.name);
+                    const entering=!marker;
                     if (!marker) {
                         marker = document.createElement("div");
                         marker.className = "collab-cursor";
@@ -2940,8 +3270,12 @@ module.exports = class CollaborationPlugin extends Plugin {
                         const label = document.createElement("span");
                         marker.append(arrow, label);
                         this.cursorLayer.append(marker);
-                        this.cursorMarkers.set(client.name, marker);
                     }
+                    this.cursorCache.delete(client.name);
+                    this.cursorMarkers.set(client.name, marker);
+                    marker.style.visibility='';
+                    marker.style.setProperty('--collab-cursor-fade-delay','0ms');
+                    marker.cursorAnchor=client.cursor;
                     const label=marker.querySelector('span');
                     if(label.textContent!==client.name)label.textContent=client.name;
                     const state=client.cursor.dragging ? 'dragging' : client.cursor.state || 'pointer';
@@ -2960,7 +3294,7 @@ module.exports = class CollaborationPlugin extends Plugin {
                     marker.style.setProperty("--collab-cursor-hue", String(client.hue));
                     const transform=`translate3d(${point.x}px, ${point.y}px, 0)`;
                     if(marker.cursorTransform!==transform){
-                        marker.style.transitionDuration = animate && marker.cursorTransform ? `${1000 / this.tick}ms` : "0ms";
+                        marker.style.setProperty('--collab-cursor-move',animate && marker.cursorTransform ? `${1000 / this.tick}ms` : '0ms');
                         marker.style.transform=transform;
                         marker.cursorTransform=transform;
                     }
@@ -2968,13 +3302,24 @@ module.exports = class CollaborationPlugin extends Plugin {
                     const nearby = this.pointer && this.pointer.x >= rect.left - 32 && this.pointer.x <= rect.right + 32 &&
                         this.pointer.y >= rect.top - 32 && this.pointer.y <= rect.bottom + 32;
                     marker.style.opacity = nearby ? "0.3" : "1";
+                    if(entering && animate)for(const child of marker.children)child.animate([{opacity:0},{opacity:1}],{duration:100,easing:'ease-out'});
                 }
             }
             for (const [name, marker] of this.cursorMarkers) {
                 if (!visible.has(name)) {
-                    marker.remove();
+                    const transform=getComputedStyle(marker).transform || marker.cursorTransform;
+                    marker.style.setProperty('--collab-cursor-move','0ms');
+                    marker.style.transform=marker.cursorTransform=transform;
+                    marker.style.setProperty('--collab-cursor-fade-delay',`${Math.max(120,1000/this.tick)}ms`);
+                    marker.style.opacity='0';
+                    this.cursorCache.set(name,marker);
                     this.cursorMarkers.delete(name);
                 }
+            }
+            for(const [name,marker]of this.cursorCache){
+                if(!live || !people.has(name) || name===this.clientName){marker.remove();this.cursorCache.delete(name);continue;}
+                // Only a missing remote sample may fade; unresolvable or untrusted targets hide immediately.
+                if(this.cursorReset || announced.has(name) || !resolveCursor(marker.cursorAnchor,this))marker.style.visibility='hidden';
             }
             this.renderSelections();
             this.renderEditing();
@@ -2990,7 +3335,9 @@ module.exports = class CollaborationPlugin extends Plugin {
     renderEditing() {
         const groups = new Map(), visible = new Set();
         const dialog = [...document.querySelectorAll('.b3-dialog')].filter(visibleElement).at(-1);
-        if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of this.remoteEditing) {
+        const editing = captureEditing(), clients = [...this.remoteEditing];
+        if (editing && !clients.some(client => client.name === this.clientName)) clients.unshift({name:this.clientName,hue:this.hue,editing});
+        if (!document.hidden && Date.now() - this.presenceReceivedAt < PRESENCE_TIMEOUT) for (const client of clients) {
             if (!this.clients.some((person) => person.name === client.name)) continue;
             const key = JSON.stringify([client.editing.region?.kind ?? 'document', client.editing.region?.id ?? client.editing.documentId, client.editing.documentId, [...(client.editing.blockIds || [client.editing.blockId])].sort()]);
             if (!groups.has(key)) groups.set(key, []);
@@ -3171,7 +3518,7 @@ module.exports = class CollaborationPlugin extends Plugin {
             event.preventDefault();if(save.disabled)return;save.disabled=true;status.textContent='';status.classList.remove('ft__error');
             try {
                 await this.refreshOnline();if(this.stopped)return;
-                this.updatePresence(await this.kernel.rpc.call.presenceRename(this.sessionId,input.value,this.generation,Number(slider.value)));
+                this.updatePresence(await this.rpc.call.presenceRename(this.sessionId,input.value,this.generation,Number(slider.value)));
                 status.textContent=this.i18n.profileSaved;onSaved?.();
             } catch {status.classList.add('ft__error');status.textContent=this.i18n.renameFailed;}
             finally {save.disabled=false;}
@@ -3341,6 +3688,7 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.shortcutNotices.clear();
         this.cursorLayer?.remove();
         this.cursorMarkers.clear();
+        this.cursorCache.clear();
         this.editingMarkers.clear();
         for(const layer of this.editingLayers.values())layer.remove();this.editingLayers.clear();
         if (typeof CSS !== 'undefined' && CSS.highlights) for (const key of this.selectionHighlights) CSS.highlights.delete(key);
@@ -3368,7 +3716,9 @@ module.exports = class CollaborationPlugin extends Plugin {
         this.eventBus.off("kernel-plugin-state-change", this.handleKernelState);
         this.eventBus.off("open-noneditableblock", this.handleRenderTarget);
         for (const event of EDITOR_EVENTS) this.eventBus.off(event, this.handleDocument);
-        await Promise.allSettled([this.kernel.rpc.unbind("presence-changed", this.handlePresence), this.kernel.rpc.unbind("cursor-changed", this.handleCursors), this.kernel.rpc.unbind("shortcut-shown", this.handleShortcut),this.kernel.rpc.unbind("pointer-clicked",this.handleClick)]);
-        await this.kernel.rpc.call.presenceLeave(this.sessionId, this.generation).catch(() => {});
+        await Promise.allSettled([this.rpc.unbind("presence-changed", this.handlePresence), this.rpc.unbind("cursor-changed", this.handleCursors), this.rpc.unbind("shortcut-shown", this.handleShortcut),this.rpc.unbind("pointer-clicked",this.handleClick)]);
+        try {
+            if (this.rpc.isOpen) await this.rpc.call.presenceLeave(this.sessionId, this.generation);
+        } catch {} finally { this.rpc.close(); }
     }
 };
